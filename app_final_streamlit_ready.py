@@ -570,7 +570,8 @@ def calculate_dynamic_b6(condition_start, EI0, daily_pkm, CI,
     for idx, t in enumerate(range(1, int(lifetime_years) + 1)):
         C_t = condition_start[idx]
         EI_t = EI0 * (1.0 + alpha * (1.0 - C_t))
-        PKM_t = daily_pkm * 365.0 * ((1.0 + g) ** t)
+        # (1+g)^(t-1): the first operating year (t=1) is the baseline (no growth yet)
+        PKM_t = daily_pkm * 365.0 * ((1.0 + g) ** (t - 1))
         co2_dyn = EI_t * PKM_t * CI / 1000.0
         co2_static = EI0 * PKM_t * CI / 1000.0
         b6_dyn += co2_dyn
@@ -717,6 +718,21 @@ def calculate_core_lca_lcc(params):
     total_lifecycle_co2_dynamic = total_embodied_co2 + a4_transport_co2_tons + b6['b6_dynamic_tons']
     co2_kg_per_pkm_dynamic = (total_lifecycle_co2_dynamic * 1000 / b6['total_pkm']) if b6['total_pkm'] > 0 else np.nan
 
+    # ── ACTIVE result selector — every headline card/report/export uses active_* ──
+    # When SD is OFF the headline equals the Phase 1b static result (g not applied).
+    # When SD is ON the headline switches to the dynamic, condition-dependent result.
+    if sd_enabled:
+        active_b6_mode = "dynamic"
+        active_b6_tons = b6['b6_dynamic_tons']
+        active_total_pkm = b6['total_pkm']
+        active_total_lifecycle_co2_tons = total_lifecycle_co2_dynamic
+    else:
+        active_b6_mode = "static"
+        active_b6_tons = lca_results['lifetime_operational_co2_tons']
+        active_total_pkm = lca_results['lifetime_pax_km']
+        active_total_lifecycle_co2_tons = lca_results['total_lifecycle_co2_tons']
+    active_co2_kg_per_pkm = (active_total_lifecycle_co2_tons * 1000 / active_total_pkm) if active_total_pkm > 0 else np.nan
+
     # Economic (LCCA)
     construction_cost = params['construction_cost']
     annual_maintenance = params['maintenance_cost']
@@ -791,6 +807,12 @@ def calculate_core_lca_lcc(params):
         'co2_kg_per_pkm_dynamic': co2_kg_per_pkm_dynamic,
         'sd_params': {'C0': sd_C0, 'delta': sd_delta, 'interval': sd_interval,
                       'rho': sd_rho, 'tau': sd_tau, 'alpha': sd_alpha, 'g_pct': sd_g * 100},
+        # ── ACTIVE result (static or dynamic depending on sd_enable) ──
+        'active_b6_mode': active_b6_mode,
+        'active_b6_tons': active_b6_tons,
+        'active_total_pkm': active_total_pkm,
+        'active_total_lifecycle_co2_tons': active_total_lifecycle_co2_tons,
+        'active_co2_kg_per_pkm': active_co2_kg_per_pkm,
     }
 
 
@@ -1149,18 +1171,18 @@ with tabs[0]:
     # Key metrics row
     m1, m2, m3, m4, m5 = st.columns(5)
     with m1:
-        co2_pkm = results['co2_kg_per_pkm']
+        co2_pkm = results['active_co2_kg_per_pkm']
         st.markdown(f"""
         <div class="metric-card">
             <div class="metric-value">{co2_pkm:.4f}</div>
             <div class="metric-label">kg CO₂e / passenger-km</div>
-            <div class="metric-delta">Scientific LCA indicator</div>
+            <div class="metric-delta">LCA indicator · B6 {results['active_b6_mode']}</div>
         </div>""", unsafe_allow_html=True)
     with m2:
         st.markdown(f"""
         <div class="metric-card">
-            <div class="metric-value">{results['total_lifecycle_co2']:,.0f}</div>
-            <div class="metric-label">Total CO₂ (tons)</div>
+            <div class="metric-value">{results['active_total_lifecycle_co2_tons']:,.0f}</div>
+            <div class="metric-label">Total CO₂ (tons) · {results['active_b6_mode']}</div>
             <div class="metric-delta">Embodied: {results['lca_results']['embodied_co2_tons']:,.0f}t</div>
         </div>""", unsafe_allow_html=True)
     with m3:
@@ -1322,7 +1344,7 @@ with tabs[0]:
    • Annual Operational CO₂: {results['annual_co2_operational']:.1f} tons
    • Embodied CO₂ A1-A3 (GROSS): {results['total_embodied_co2']:.1f} tons
    • A4 Transport CO₂: {results['lca_results']['a4_transport_co2_tons']:.1f} tons
-   • Total Lifecycle CO₂ (A1-A3 gross + A4 + Lifetime Operational): {results['total_lifecycle_co2']:.1f} tons
+   • Total Lifecycle CO₂ (A1-A3 gross + A4 + B6 {results['active_b6_mode']}): {results['active_total_lifecycle_co2_tons']:.1f} tons
    • Module D recycling credit (separate, NOT in total): -{results['lca_results']['module_d_carbon_credit_tons']:.1f} tons
    • Grid Carbon Intensity (applied to core B6): {results['effective_carbon_intensity']:.3f} kg CO₂/kWh
    • Total Embodied Energy: {results['total_ee']:.0f} MJ
@@ -1368,8 +1390,8 @@ Carbon factors: ICE Database Educational V4.1 (Oct 2025). Module D (recycling) r
                               mime="text/plain")
         with exp2:
             csv_data = pd.DataFrame([
-                {'Category': 'LCA', 'Metric': 'Total lifecycle CO₂', 'Value': f"{results['total_lifecycle_co2']:.1f}", 'Unit': 'tons CO₂e'},
-                {'Category': 'LCA', 'Metric': 'CO₂ intensity', 'Value': f"{results['co2_kg_per_pkm']:.6f}", 'Unit': 'kg CO₂e/pkm'},
+                {'Category': 'LCA', 'Metric': f"Total lifecycle CO₂ (B6 {results['active_b6_mode']})", 'Value': f"{results['active_total_lifecycle_co2_tons']:.1f}", 'Unit': 'tons CO₂e'},
+                {'Category': 'LCA', 'Metric': f"CO₂ intensity (B6 {results['active_b6_mode']})", 'Value': f"{results['active_co2_kg_per_pkm']:.6f}", 'Unit': 'kg CO₂e/pkm'},
                 {'Category': 'LCA', 'Metric': 'Embodied CO₂ A1-A3 (gross)', 'Value': f"{results['lca_results']['embodied_co2_tons']:.1f}", 'Unit': 'tons CO₂e'},
                 {'Category': 'LCA', 'Metric': 'A4 Transport CO₂', 'Value': f"{results['lca_results']['a4_transport_co2_tons']:.1f}", 'Unit': 'tons CO₂e'},
                 {'Category': 'Module D', 'Metric': 'Recycling credit (separate)', 'Value': f"-{results['lca_results']['module_d_carbon_credit_tons']:.1f}", 'Unit': 'tons CO₂e'},
@@ -1385,18 +1407,18 @@ Carbon factors: ICE Database Educational V4.1 (Oct 2025). Module D (recycling) r
             with pd.ExcelWriter(excel_buf, engine='openpyxl') as writer:
                 pd.DataFrame({
                     'Metric': [
-                        'Total lifecycle CO₂',
-                        'CO₂ intensity',
-                        'Embodied CO₂',
+                        f"Total lifecycle CO₂ (B6 {results['active_b6_mode']})",
+                        f"CO₂ intensity (B6 {results['active_b6_mode']})",
+                        'Embodied CO₂ A1-A3 (gross)',
                         'A4 Transport CO₂',
-                        'Lifetime operational CO₂',
+                        'Lifetime operational CO₂ (static)',
                         'Embodied Energy',
                         'LCC NPV Cost',
                         'Dashboard Display Score'
                     ],
                     'Value': [
-                        results['total_lifecycle_co2'],
-                        results['co2_kg_per_pkm'],
+                        results['active_total_lifecycle_co2_tons'],
+                        results['active_co2_kg_per_pkm'],
                         results['lca_results']['embodied_co2_tons'],
                         results['lca_results']['a4_transport_co2_tons'],
                         results['lca_results']['lifetime_operational_co2_tons'],
@@ -1603,7 +1625,7 @@ with tabs[3]:
 
         fig = go.Figure(data=go.Parcoords(
             line=dict(color=df['Composite_Display_Score'], colorscale='RdYlGn', showscale=True, cmin=0, cmax=100,
-                     colorbar=dict(title="Overall<br>Score", thickness=20)),
+                     colorbar=dict(title="Composite<br>Display Score", thickness=20)),
             dimensions=dimensions
         ))
         fig.update_layout(title='12 Illustrative Dashboard Elements Across Scenarios', height=700, paper_bgcolor='white')
@@ -1628,7 +1650,7 @@ with tabs[4]:
     st.warning(
         "⚠️ **Illustrative only — NOT publication-grade uncertainty.** The current simulation scales the "
         "*total* CO₂ by concrete and grid-carbon factors, although embodied and operational emissions have "
-        "different uncertainty drivers. Component-based propagation (separating A1-A3 vs B6) is pending Phase 2; "
+        "different uncertainty drivers. Component-based propagation (separating A1-A3 vs B6) is pending Phase 4; "
         "until then these intervals must not be reported as scientific uncertainty. CV values are scenario assumptions."
     )
 
@@ -1706,6 +1728,8 @@ with tabs[4]:
 # ═══════════════════════════════════════════════════════════════
 with tabs[5]:
     st.markdown("### 📐 3D Sensitivity Surface: Carbon Intensity × Renewable Energy")
+    st.warning("⚠️ Illustrative dashboard-only surface. Renewable share is NOT used in the core LCA "
+               "(grid carbon intensity already reflects the grid mix); this view is for visualization only.")
 
     if st.button("📈 Generate 3D Surface", key="surface_btn"):
         carbon_range = np.linspace(0.2, 0.8, 30)
