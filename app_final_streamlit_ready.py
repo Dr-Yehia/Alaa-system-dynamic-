@@ -814,8 +814,91 @@ def calculate_lcc_npv_activity_based(construction_cost_m, annual_energy_cost_m, 
             'pv_replacement_m': pv_replacement}
 
 
+# ═══════════════════════════════════════════════════════════════
+# PHASE 3C — C1-C4 END-OF-LIFE + MODULE-D-FROM-EOL
+# ───────────────────────────────────────────────────────────────
+# Uses remaining_masses_for_c1_c4 (after B4/B5) — NOT initial masses — so
+# material removed during replacement is never re-counted at end of life.
+# Per-material treatment shares must satisfy: s_reuse + s_recycle + s_disposal = 1.
+# C3 processing is an EMISSION (not a credit); recovery credits go to Module D only.
+# Module D is reported SEPARATELY and never enters gross. All factors are scenario inputs.
+# ═══════════════════════════════════════════════════════════════
+MATERIALS_LIST = list(MATERIAL_KEY_MAP.keys())
+
+
+def validate_eol_treatment_shares(params, materials=MATERIALS_LIST):
+    """Per material: reuse + recycle + disposal = 1 (disposal computed = 1 - reuse - recycle).
+    Invalid when reuse+recycle > 1 (disposal would be negative)."""
+    errors, table, valid = [], [], True
+    for m in materials:
+        reuse = params.get(f'eol_reuse_{m}', 0.0)
+        recycle = params.get(f'eol_recycle_{m}', 0.0)
+        disposal = 1.0 - reuse - recycle
+        ok = (reuse >= 0.0 and recycle >= 0.0 and (reuse + recycle) <= 1.0 + 1e-9)
+        if not ok:
+            valid = False
+            errors.append(f"{m}: reuse+recycle = {reuse + recycle:.3f} > 1 (disposal would be negative)")
+        table.append({'material': m, 'reuse': reuse, 'recycle': recycle,
+                      'disposal': max(disposal, 0.0), 'sum': reuse + recycle + max(disposal, 0.0)})
+    return {'valid': valid, 'errors': errors, 'share_table': table}
+
+
+def calculate_c1_c4_end_of_life(remaining_masses, params, CI_T, diesel_ef, truck_ef, materials=MATERIALS_LIST):
+    """C1 deconstruction + C2 transport + C3 processing + C4 disposal (tCO2e)."""
+    if not params.get('include_c1c4', False):
+        return {'included': False, 'c1_tons': 0.0, 'c2_tons': 0.0, 'c3_tons': 0.0,
+                'c4_tons': 0.0, 'c1_c4_total_tons': 0.0, 'eol_by_material': []}
+    c1 = (params.get('c1_diesel_l', 0.0) * diesel_ef + params.get('c1_elec_kwh', 0.0) * CI_T) / 1000.0
+    km = params.get('eol_transport_km', 50.0)
+    reuse_ef = params.get('eol_reuse_ef', 0.0)
+    recycle_ef = params.get('eol_recycle_ef', 0.0)
+    disposal_ef = params.get('eol_disposal_ef', 0.0)
+    c2 = c3 = c4 = 0.0
+    rows = []
+    for m in materials:
+        M = remaining_masses.get(m, 0.0)
+        reuse = params.get(f'eol_reuse_{m}', 0.0)
+        recycle = params.get(f'eol_recycle_{m}', 0.0)
+        disposal = max(1.0 - reuse - recycle, 0.0)
+        c2_m = (M / 1000.0) * km * truck_ef / 1000.0
+        c3_m = M * (reuse * reuse_ef + recycle * recycle_ef) / 1000.0
+        c4_m = M * disposal * disposal_ef / 1000.0
+        c2 += c2_m; c3 += c3_m; c4 += c4_m
+        rows.append({'material': m, 'remaining_kg': M, 'reuse': reuse, 'recycle': recycle,
+                     'disposal': disposal, 'C2_tCO2e': c2_m, 'C3_tCO2e': c3_m, 'C4_tCO2e': c4_m})
+    return {'included': True, 'c1_tons': c1, 'c2_tons': c2, 'c3_tons': c3, 'c4_tons': c4,
+            'c1_c4_total_tons': c1 + c2 + c3 + c4, 'eol_by_material': rows}
+
+
+def calculate_module_d_from_eol(remaining_masses, params, materials=MATERIALS_LIST):
+    """Module D credit from recovered EOL material: Σ M_recovered·η·(EF_virgin − EF_secondary)/1000.
+    If a recovered material has no secondary EF supplied (<=0), its credit is skipped and the
+    quality flag is set False (the reported net would otherwise be overstated)."""
+    if not params.get('include_c1c4', False):
+        return {'module_d_tons': 0.0, 'module_d_by_material': [], 'module_d_quality_ok': True}
+    eta = params.get('eol_recovery_eta', 1.0)
+    total, rows, quality_ok = 0.0, [], True
+    for m in materials:
+        M = remaining_masses.get(m, 0.0)
+        reuse = params.get(f'eol_reuse_{m}', 0.0)
+        recycle = params.get(f'eol_recycle_{m}', 0.0)
+        recovered = M * (reuse + recycle)
+        ef_virgin = MATERIAL_FACTORS[MATERIAL_KEY_MAP[m]]['gwp_kgco2e_per_kg']
+        ef_secondary = params.get(f'eol_secondary_ef_{m}', 0.0)
+        if recovered > 0 and ef_secondary <= 0.0:
+            quality_ok = False
+            rows.append({'material': m, 'recovered_kg': recovered, 'module_d_tons': 0.0,
+                         'note': 'secondary EF missing → skipped'})
+            continue
+        credit = recovered * eta * (ef_virgin - ef_secondary) / 1000.0
+        total += credit
+        rows.append({'material': m, 'recovered_kg': recovered, 'module_d_tons': credit, 'note': ''})
+    return {'module_d_tons': total, 'module_d_by_material': rows, 'module_d_quality_ok': quality_ok}
+
+
 def update_lca_summary_full(I_A1_A3, I_A4, I_A5, I_B2_B5, I_B6_active, I_C1_C4,
-                            module_d_tons, total_pkm, b6_mode, b2b5_included=False):
+                            module_d_tons, total_pkm, b6_mode, b2b5_included=False,
+                            c1c4_included=False):
     """Combine modules into a GROSS A1-C4 result. Module D stays separate.
     Functional unit (GWP/pkm) uses GROSS, never net."""
     i_a5_val = I_A5['a5_total_tons'] if isinstance(I_A5, dict) else I_A5
@@ -829,7 +912,7 @@ def update_lca_summary_full(I_A1_A3, I_A4, I_A5, I_B2_B5, I_B6_active, I_C1_C4,
         ('A5 construction', i_a5_val, 'included' if a5_included else 'not included'),
         ('B2-B5 use stage', I_B2_B5, 'included — activity-based scenario' if b2b5_included else 'not included'),
         (f'B6 operation ({b6_mode})', I_B6_active, 'included'),
-        ('C1-C4 end-of-life', I_C1_C4, 'not included (Phase 3C)'),
+        ('C1-C4 end-of-life', I_C1_C4, 'included — EOL scenario' if c1c4_included else 'not included'),
     ]
     contribution = []
     for name, val, status in stages:
@@ -1001,15 +1084,37 @@ def calculate_core_lca_lcc(params):
     mass_balance = update_material_mass_balance(
         material_masses_kg, b2b5['material_added_kg'], b2b5['material_removed_kg'])
     I_B2_B5 = b2b5['b2_b5_total_tons']
-    I_C1_C4 = 0.0   # Phase 3C
+    remaining_masses = mass_balance['remaining_masses_for_c1_c4']
+
+    # ── PHASE 3C: C1-C4 end-of-life + Module-D-from-EOL ──
+    include_c1c4 = params.get('include_c1c4', False)
+    eol_validation = validate_eol_treatment_shares(params, MATERIALS_LIST)
+    shares_ok = (not include_c1c4) or eol_validation['valid']
+    truck_ef = TRANSPORT_EMISSION_FACTORS['truck']
+    if include_c1c4 and eol_validation['valid']:
+        c1c4 = calculate_c1_c4_end_of_life(
+            remaining_masses, params, effective_carbon_intensity, diesel_ef_val, truck_ef, MATERIALS_LIST)
+        md_eol = calculate_module_d_from_eol(remaining_masses, params, MATERIALS_LIST)
+        I_C1_C4 = c1c4['c1_c4_total_tons']
+        module_d_used_tons = md_eol['module_d_tons']
+        module_d_ok = md_eol['module_d_quality_ok']
+    else:
+        c1c4 = {'included': False, 'c1_tons': 0.0, 'c2_tons': 0.0, 'c3_tons': 0.0,
+                'c4_tons': 0.0, 'c1_c4_total_tons': 0.0, 'eol_by_material': []}
+        md_eol = {'module_d_tons': module_d_carbon_credit_tons, 'module_d_by_material': [],
+                  'module_d_quality_ok': True}
+        I_C1_C4 = 0.0
+        module_d_used_tons = module_d_carbon_credit_tons   # legacy slider-based when C1-C4 off
+        module_d_ok = True
 
     full_lca = update_lca_summary_full(
         I_A1_A3=total_embodied_co2, I_A4=a4_transport_co2_tons, I_A5=a5,
         I_B2_B5=I_B2_B5, I_B6_active=active_b6_tons, I_C1_C4=I_C1_C4,
-        module_d_tons=module_d_carbon_credit_tons, total_pkm=active_total_pkm,
-        b6_mode=active_b6_mode, b2b5_included=b2b5['included'])
-    # Publication-grade for the FULL LCA: gated by the FRP/EPD rule (extended in 3C).
-    publication_grade_full_lca = publication_grade
+        module_d_tons=module_d_used_tons, total_pkm=active_total_pkm,
+        b6_mode=active_b6_mode, b2b5_included=b2b5['included'], c1c4_included=c1c4['included'])
+    # publication_grade_full_lca: False if FRP lacks EPD, shares don't sum to 1, or
+    # Module D is reported with a missing secondary factor.
+    publication_grade_full_lca = bool(publication_grade and shares_ok and module_d_ok)
 
     # Economic (LCCA)
     construction_cost = params['construction_cost']
@@ -1028,6 +1133,8 @@ def calculate_core_lca_lcc(params):
                                  for row in b2b5_schedule if row['B4_count'] and b4_cost_per_event}
     b2b3b5_costs_by_year = {row['year']: row['B2_count'] * b2_cost_per_event
                             for row in b2b5_schedule if row['B2_count'] and b2_cost_per_event}
+    # EOL cost enters the LCCA exactly once (only when C1-C4 is included).
+    eol_cost_m = params.get('eol_cost_m', 0.0) if include_c1c4 else 0.0
     if b2b5['included']:
         lcc_results = calculate_lcc_npv_activity_based(
             construction_cost_m=construction_cost,
@@ -1036,6 +1143,7 @@ def calculate_core_lca_lcc(params):
             annual_maintenance_m=annual_maintenance,
             b2b3b5_costs_by_year=b2b3b5_costs_by_year,
             replacement_costs_by_year=replacement_costs_by_year,
+            end_of_life_cost_m=eol_cost_m,
             residual_value_m=params.get("residual_value", 0.0),
             discount_rate_pct=params.get("discount_rate", 5.0),
             lifetime_years=ASSESSMENT_LIFETIME_YEARS)
@@ -1044,6 +1152,7 @@ def calculate_core_lca_lcc(params):
             construction_cost_m=construction_cost,
             annual_maintenance_m=annual_maintenance,
             annual_energy_cost_m=params.get("annual_energy_cost", 0.0),
+            end_of_life_cost_m=eol_cost_m,
             residual_value_m=params.get("residual_value", 0.0),
             discount_rate_pct=params.get("discount_rate", 5.0),
             lifetime_years=ASSESSMENT_LIFETIME_YEARS)
@@ -1119,6 +1228,12 @@ def calculate_core_lca_lcc(params):
         'b2b5_schedule': b2b5_schedule,
         'mass_balance': mass_balance,
         'lcca_maint_mode': lcca_maint_mode,
+        # ── PHASE 3C: C1-C4 end-of-life + Module-D-from-EOL ──
+        'c1c4': c1c4,
+        'i_c1c4_tons': I_C1_C4,
+        'eol_validation': eol_validation,
+        'module_d_eol': md_eol,
+        'module_d_quality_ok': module_d_ok,
         'gross_a1_c4_tons': full_lca['gross_a1_c4_tons'],
         'gwp_pkm_gross': full_lca['gwp_pkm_gross'],
         'net_with_module_d_tons': full_lca['net_with_module_d_tons'],
@@ -1442,6 +1557,28 @@ with st.sidebar:
                                        help="simple_annual: uses annual maintenance only. activity_based: uses B2/B3/B5 activity costs only. "
                                             "B4 replacement cost is added in BOTH modes (prevents double counting).")
 
+        st.markdown("### ♻️ C1–C4 End-of-Life (Phase 3C)")
+        st.caption("⚠️ EOL scenario / project data. Per-material treatment shares must sum to 1. "
+                   "Uses remaining masses after B4/B5 (no double counting).")
+        include_c1c4 = st.checkbox("Include C1–C4", value=False, key="include_c1c4")
+        c1_diesel_l = st.number_input("C1 demolition diesel (L)", value=0.0, min_value=0.0, step=1000.0, key="c1_diesel_l")
+        c1_elec_kwh = st.number_input("C1 demolition electricity (kWh)", value=0.0, min_value=0.0, step=1000.0, key="c1_elec_kwh")
+        eol_transport_km = st.number_input("EOL transport distance (km)", value=50.0, min_value=0.0, step=10.0, key="eol_transport_km")
+        eol_reuse_ef = st.number_input("Reuse processing EF (kgCO₂e/kg)", value=0.0, min_value=0.0, step=0.01, format="%.3f", key="eol_reuse_ef")
+        eol_recycle_ef = st.number_input("Recycling processing EF (kgCO₂e/kg)", value=0.0, min_value=0.0, step=0.01, format="%.3f", key="eol_recycle_ef")
+        eol_disposal_ef = st.number_input("Disposal EF (kgCO₂e/kg)", value=0.0, min_value=0.0, step=0.01, format="%.3f", key="eol_disposal_ef")
+        eol_recovery_eta = st.number_input("Module D recovery efficiency η (0–1)", value=1.0, min_value=0.0, max_value=1.0, step=0.05, format="%.2f", key="eol_eta")
+        eol_cost_m = st.number_input("EOL cost ($M)", value=0.0, min_value=0.0, step=10.0, key="eol_cost_m")
+        _eol_default_recycle = {'concrete': 0.0, 'steel': 0.0, 'aluminum': 0.0, 'wood': 0.0, 'frp': 0.0, 'glass': 0.0}
+        eol_shares = {}
+        for _m in ['concrete', 'steel', 'aluminum', 'wood', 'frp', 'glass']:
+            with st.expander(f"EOL shares/factors — {_m}", expanded=False):
+                _reuse = st.number_input(f"{_m} reuse share", value=0.0, min_value=0.0, max_value=1.0, step=0.05, format="%.2f", key=f"eol_reuse_{_m}")
+                _recycle = st.number_input(f"{_m} recycle share", value=_eol_default_recycle[_m], min_value=0.0, max_value=1.0, step=0.05, format="%.2f", key=f"eol_recycle_{_m}")
+                _sec = st.number_input(f"{_m} secondary EF (kgCO₂e/kg, 0=none → no Module D)", value=0.0, min_value=0.0, step=0.01, format="%.3f", key=f"eol_secondary_ef_{_m}")
+                st.caption(f"disposal share = {max(1.0 - _reuse - _recycle, 0.0):.2f}")
+                eol_shares[_m] = {'reuse': _reuse, 'recycle': _recycle, 'secondary_ef': _sec}
+
         st.markdown("---")
         run_btn = st.form_submit_button("🚀 RUN ASSESSMENT", type="primary", use_container_width=True)
 
@@ -1471,6 +1608,12 @@ current_params = {
     'enable_b4': enable_b4, 'b4_years': b4_years, 'b4_frac_steel': b4_frac_steel,
     'b4_frac_concrete': b4_frac_concrete, 'b4_cost_per_event_m': b4_cost_per_event_m,
     'b4_waste_ef': b4_waste_ef, 'b4_transport_km': b4_transport_km, 'lcca_maint_mode': lcca_maint_mode,
+    'include_c1c4': include_c1c4, 'c1_diesel_l': c1_diesel_l, 'c1_elec_kwh': c1_elec_kwh,
+    'eol_transport_km': eol_transport_km, 'eol_reuse_ef': eol_reuse_ef, 'eol_recycle_ef': eol_recycle_ef,
+    'eol_disposal_ef': eol_disposal_ef, 'eol_recovery_eta': eol_recovery_eta, 'eol_cost_m': eol_cost_m,
+    **{f'eol_reuse_{_m}': eol_shares[_m]['reuse'] for _m in eol_shares},
+    **{f'eol_recycle_{_m}': eol_shares[_m]['recycle'] for _m in eol_shares},
+    **{f'eol_secondary_ef_{_m}': eol_shares[_m]['secondary_ef'] for _m in eol_shares},
 }
 
 @st.cache_data
@@ -1542,7 +1685,7 @@ with tabs[0]:
         st.markdown(f"""
         <div class="metric-card">
             <div class="metric-value">{results['gross_a1_c4_tons']:,.0f}</div>
-            <div class="metric-label">Gross modular LCA (B2-B5/C1-C4 pending)</div>
+            <div class="metric-label">Gross A1-C4 LCA CO₂ (tons)</div>
             <div class="metric-delta">A5: {results['a5']['a5_total_tons']:,.0f}t · Module D separate</div>
         </div>""", unsafe_allow_html=True)
     with m3:
@@ -1577,13 +1720,13 @@ with tabs[0]:
             f"({results['co2_kg_per_pkm_dynamic']:.5f} kg/pkm). See the System Dynamics (B6) tab."
         )
 
-    with st.expander("🧱 Stage Contribution (gross modular LCA — C1-C4 pending)", expanded=True):
+    with st.expander("🧱 Stage Contribution (gross modular A1-C4 LCA)", expanded=True):
         sc_df = pd.DataFrame(results['stage_contribution'])
         sc_df['tCO2e'] = sc_df['tCO2e'].map(lambda v: f"{v:,.1f}")
         sc_df['% of gross'] = sc_df['% of gross'].map(lambda v: f"{v:.1f}%")
         st.dataframe(sc_df, use_container_width=True, hide_index=True)
         st.caption(
-            f"Gross modular LCA total (A1-A3+A4+A5+B2-B5+B6; C1-C4 pending) = {results['gross_a1_c4_tons']:,.1f} t CO₂e · "
+            f"Gross modular A1-C4 LCA total = {results['gross_a1_c4_tons']:,.1f} t CO₂e · "
             f"GWP = {results['gwp_pkm_gross']:.5f} kg/pkm (gross, never net) · "
             f"Module D (separate) = −{results['module_d_tons']:,.1f} t · "
             f"Net incl. Module D (supplementary) = {results['net_with_module_d_tons']:,.1f} t. "
@@ -1610,6 +1753,56 @@ with tabs[0]:
                          use_container_width=True, hide_index=True)
             st.info("B2–B5 is an **activity-based scenario** and is not 'validated' unless project "
                     "maintenance/replacement records are supplied. Module D is unchanged by B2–B5 (deferred to Phase 3C).")
+
+    if params.get('include_c1c4') and not results['eol_validation']['valid']:
+        st.error("🚫 **C1–C4 not computed:** treatment shares do not sum to 1 for: "
+                 + "; ".join(results['eol_validation']['errors'])
+                 + ". Fix reuse/recycle shares (disposal = 1 − reuse − recycle). "
+                 "publication_grade_full_lca is False.")
+
+    if results['c1c4']['included']:
+        with st.expander("♻️ C1–C4 End-of-Life & Module D (Phase 3C)", expanded=False):
+            cc = results['c1c4']
+            e1, e2, e3, e4, e5 = st.columns(5)
+            with e1: st.metric("C1 deconstruction", f"{cc['c1_tons']:,.1f}")
+            with e2: st.metric("C2 transport", f"{cc['c2_tons']:,.1f}")
+            with e3: st.metric("C3 processing", f"{cc['c3_tons']:,.1f}")
+            with e4: st.metric("C4 disposal", f"{cc['c4_tons']:,.1f}")
+            with e5: st.metric("C1–C4 total", f"{cc['c1_c4_total_tons']:,.1f}")
+            g1, g2, g3 = st.columns(3)
+            with g1: st.metric("Gross A1–C4", f"{results['gross_a1_c4_tons']:,.1f} t")
+            with g2: st.metric("Module D (separate)", f"−{results['module_d_tons']:,.1f} t")
+            with g3: st.metric("Net incl. Module D", f"{results['net_with_module_d_tons']:,.1f} t")
+            st.markdown("**End-of-life by material** (on remaining masses after B4/B5)")
+            st.dataframe(pd.DataFrame(cc['eol_by_material']), use_container_width=True, hide_index=True)
+            st.markdown("**Module D by material** (recovery credit — separate, never in gross)")
+            st.dataframe(pd.DataFrame(results['module_d_eol']['module_d_by_material']),
+                         use_container_width=True, hide_index=True)
+            if not results['module_d_quality_ok']:
+                st.warning("⚠️ Module D is incomplete (a recovered material has no secondary EF). "
+                           "Net incl. Module D is understated and is NOT publication-grade.")
+
+    with st.expander("🏷️ Data Quality / Publication Readiness", expanded=False):
+        dq = pd.DataFrame([
+            {'Stage': 'A1–A3 materials', 'source': 'ICE V4.1 / EPD', 'quality': 'medium–high',
+             'publication-grade': 'yes' if results.get('publication_grade', True) else 'NO (FRP w/o EPD)'},
+            {'Stage': 'A4 transport', 'source': 'scenario / user input', 'quality': 'low–medium', 'publication-grade': 'conditional'},
+            {'Stage': 'A5 construction', 'source': 'scenario / user input', 'quality': 'low–medium',
+             'publication-grade': 'conditional' if results['a5']['included'] else 'n/a (off)'},
+            {'Stage': 'B2–B5 use stage', 'source': 'activity schedule / scenario', 'quality': 'low–medium',
+             'publication-grade': 'conditional' if results['b2b5']['included'] else 'n/a (off)'},
+            {'Stage': 'B6 operation', 'source': f"{results['active_b6_mode']} scenario", 'quality': 'conditional',
+             'publication-grade': 'not validated unless calibrated'},
+            {'Stage': 'C1–C4 end-of-life', 'source': 'EOL scenario / project data', 'quality': 'low–medium',
+             'publication-grade': 'conditional' if results['c1c4']['included'] else 'n/a (off)'},
+            {'Stage': 'Module D', 'source': 'EOL recovery + secondary EF', 'quality': 'conditional',
+             'publication-grade': 'only if secondary factors supplied'},
+        ])
+        st.dataframe(dq, use_container_width=True, hide_index=True)
+        flag = results.get('publication_grade_full_lca', True)
+        (st.success if flag else st.error)(
+            f"publication_grade_full_lca = {flag} "
+            + ("" if flag else "(FRP without EPD, invalid treatment shares, or incomplete Module D)."))
 
     st.markdown("---")
 
@@ -1739,10 +1932,13 @@ with tabs[0]:
    • Embodied CO₂ A1-A3 (GROSS): {results['total_embodied_co2']:.1f} tons
    • A4 Transport CO₂: {results['lca_results']['a4_transport_co2_tons']:.1f} tons
    • A5 Construction CO₂: {results['a5']['a5_total_tons']:.1f} tons ({'included' if results['a5']['included'] else 'not included'})
+   • B2-B5 Use Stage CO₂: {results['i_b2b5_tons']:.1f} tons ({'included' if results['b2b5']['included'] else 'not included'})
    • B6 Operation ({results['active_b6_mode']}): {results['active_b6_tons']:.1f} tons
-   • Gross modular LCA total (A1-A3 + A4 + A5 + active B6; B2-B5/C1-C4 pending): {results['gross_a1_c4_tons']:.1f} tons
+   • C1-C4 End-of-Life CO₂: {results['i_c1c4_tons']:.1f} tons ({'included' if results['c1c4']['included'] else 'not included'})
+   • Gross modular A1-C4 LCA total (A1-A3 + A4 + A5 + B2-B5 + active B6 + C1-C4): {results['gross_a1_c4_tons']:.1f} tons
    • GWP per pkm (gross): {results['gwp_pkm_gross']:.6f} kg CO₂e/pkm
    • Module D recycling credit (separate, NOT in gross): -{results['module_d_tons']:.1f} tons
+   • Net incl. Module D (supplementary): {results['net_with_module_d_tons']:.1f} tons
    • Grid Carbon Intensity (applied to core B6): {results['effective_carbon_intensity']:.3f} kg CO₂/kWh
    • Total Embodied Energy: {results['total_ee']:.0f} MJ
    • Renewable Share (dashboard-only, NOT applied to core LCA in Phase 1b): {params['renewable_share']:.1f}%
@@ -1787,12 +1983,14 @@ Carbon factors: ICE Database Educational V4.1 (Oct 2025). Module D (recycling) r
                               mime="text/plain")
         with exp2:
             csv_data = pd.DataFrame([
-                {'Category': 'LCA', 'Metric': f"Gross modular LCA total (A1-A3+A4+A5+B6 {results['active_b6_mode']}; B2-B5/C1-C4 pending)", 'Value': f"{results['gross_a1_c4_tons']:.1f}", 'Unit': 'tons CO₂e'},
+                {'Category': 'LCA', 'Metric': f"Gross modular A1-C4 LCA total (B6 {results['active_b6_mode']})", 'Value': f"{results['gross_a1_c4_tons']:.1f}", 'Unit': 'tons CO₂e'},
                 {'Category': 'LCA', 'Metric': 'GWP per pkm (gross)', 'Value': f"{results['gwp_pkm_gross']:.6f}", 'Unit': 'kg CO₂e/pkm'},
                 {'Category': 'LCA', 'Metric': 'Embodied CO₂ A1-A3 (gross)', 'Value': f"{results['lca_results']['embodied_co2_tons']:.1f}", 'Unit': 'tons CO₂e'},
                 {'Category': 'LCA', 'Metric': 'A4 Transport CO₂', 'Value': f"{results['lca_results']['a4_transport_co2_tons']:.1f}", 'Unit': 'tons CO₂e'},
                 {'Category': 'LCA', 'Metric': 'A5 Construction CO₂', 'Value': f"{results['a5']['a5_total_tons']:.1f}", 'Unit': 'tons CO₂e'},
-                {'Category': 'Module D', 'Metric': 'Recycling credit (separate)', 'Value': f"-{results['module_d_tons']:.1f}", 'Unit': 'tons CO₂e'},
+                {'Category': 'LCA', 'Metric': 'B2-B5 Use Stage CO₂', 'Value': f"{results['i_b2b5_tons']:.1f}", 'Unit': 'tons CO₂e'},
+                {'Category': 'LCA', 'Metric': 'C1-C4 End-of-Life CO₂', 'Value': f"{results['i_c1c4_tons']:.1f}", 'Unit': 'tons CO₂e'},
+                {'Category': 'Module D', 'Metric': 'Recovery credit (separate)', 'Value': f"-{results['module_d_tons']:.1f}", 'Unit': 'tons CO₂e'},
                 {'Category': 'LCA', 'Metric': 'Lifetime operational CO₂', 'Value': f"{results['lca_results']['lifetime_operational_co2_tons']:.1f}", 'Unit': 'tons CO₂e'},
                 {'Category': 'LCA', 'Metric': 'Embodied Energy', 'Value': f"{results['total_ee']:.0f}", 'Unit': 'MJ'},
                 {'Category': 'LCCA', 'Metric': 'LCC NPV Cost', 'Value': f"{results['npv_lcc_m']:.0f}", 'Unit': '$M'},
@@ -1805,12 +2003,14 @@ Carbon factors: ICE Database Educational V4.1 (Oct 2025). Module D (recycling) r
             with pd.ExcelWriter(excel_buf, engine='openpyxl') as writer:
                 pd.DataFrame({
                     'Metric': [
-                        f"Gross modular LCA total (B6 {results['active_b6_mode']}; B2-B5/C1-C4 pending)",
+                        f"Gross modular A1-C4 LCA total (B6 {results['active_b6_mode']})",
                         'GWP per pkm (gross)',
                         'Embodied CO₂ A1-A3 (gross)',
                         'A4 Transport CO₂',
                         'A5 Construction CO₂',
+                        'B2-B5 Use Stage CO₂',
                         'B6 operation (active)',
+                        'C1-C4 End-of-Life CO₂',
                         'Module D (separate)',
                         'Net incl. Module D (supplementary)',
                         'Embodied Energy',
@@ -1823,7 +2023,9 @@ Carbon factors: ICE Database Educational V4.1 (Oct 2025). Module D (recycling) r
                         results['lca_results']['embodied_co2_tons'],
                         results['lca_results']['a4_transport_co2_tons'],
                         results['a5']['a5_total_tons'],
+                        results['i_b2b5_tons'],
                         results['active_b6_tons'],
+                        results['i_c1c4_tons'],
                         -results['module_d_tons'],
                         results['net_with_module_d_tons'],
                         results['total_ee'],
@@ -1833,6 +2035,8 @@ Carbon factors: ICE Database Educational V4.1 (Oct 2025). Module D (recycling) r
                     'Unit': [
                         'tons CO₂e',
                         'kg CO₂e/pkm',
+                        'tons CO₂e',
+                        'tons CO₂e',
                         'tons CO₂e',
                         'tons CO₂e',
                         'tons CO₂e',
@@ -2363,7 +2567,7 @@ with tabs[9]:
 - **ISO 14040:2006** — Environmental Management Framework
 - **ISO 14044:2006** — LCA Requirements and Guidelines
 - **Functional Unit:** 1 passenger-kilometer over 50-year lifecycle
-- **System Boundary (currently implemented):** A1-A3 materials + A4 transport + **optional A5 construction** + active B6 operation. B2-B5 maintenance/replacement and C1-C4 end-of-life remain **pending (Phase 3B/3C)**. Module D is reported separately.
+- **System Boundary (currently implemented):** A1-A3 materials + A4 transport + **optional A5 construction** + **activity-based B2-B5** + active B6 operation + **optional C1-C4 end-of-life**. Module D is reported separately (supplementary).
 
 #### 2. LIFE CYCLE COST ANALYSIS (LCCA)
 - **ASTM E917** — Standard Practice for Measuring Life-Cycle Costs
@@ -2400,34 +2604,40 @@ B6_dyn = Σ_t  EI_t · PKM_t · CI_t / 1000      (CI_t = grid only, no renewable
 
 تضيف المرحلة الثانية طبقة ديناميكية قائمة على السيناريوهات لحساب انبعاثات التشغيل B6. تمثل حالة الأصل C(t) مخزونًا يتدهور سنويًا ويتحسن بفعل الصيانة بعد فترة تأخير. تؤثر حالة الأصل على كثافة استهلاك الطاقة، ومن ثم على انبعاثات التشغيل السنوية. تُعامل معاملات النظام الديناميكي كافتراضات سيناريو ما لم تتم معايرتها ببيانات فحص أو صيانة أو قياسات تشغيلية.
 
-#### 3c. MODULAR LCA BACKBONE (Phase 3A — A5 added)
-The model reports a **gross modular LCA total** built from separate modules. The A1–C4
-backbone is in place, but **only A1–A3 + A4 + optional A5 + active B6 are currently
-populated**; B2–B5 and C1–C4 are zero/pending (Phase 3B/3C):
-`gross = A1–A3 + A4 + A5 + B2–B5(pending) + B6_active + C1–C4(pending)`. A5 is reported
-**separately from A4**. The functional unit (kg CO₂e/pkm) uses the **gross** figure (never net).
-Module D (recycling credit) remains **separate** and is shown only as supplementary
-information. A BOQ-mode switch (installed vs purchased) prevents double-counting of
-material-production waste.
+#### 3c. MODULAR GROSS A1–C4 LCA (Phase 3A–3C)
+The model reports a **gross modular A1–C4 LCA** built from separate modules:
+`gross = A1–A3 + A4 + A5 + B2–B5 + B6_active + C1–C4`. Each stage is independently
+toggleable; the **functional unit (kg CO₂e/pkm) uses the gross figure (never net)**.
+Module D (recycling credit) is **always reported separately** as supplementary
+information (`net = gross − Module D`) and is never merged into gross.
 
-- **A5 implemented (Phase 3A):** construction diesel + site electricity + material-waste
-  production (installed mode) + waste transport + waste treatment. All A5 factors/quantities
-  are user inputs / scenario parameters (e.g. diesel EF default 2.68 — replace before publication).
-- **B2–B5 implemented (Phase 3B):** activity-based maintenance/replacement. B2 is linked to the
-  SD maintenance schedule (no 'free maintenance'); B4 replacement uses a mass balance so removed
-  material is handled in B4 and is **not re-counted** in C1–C4. LCCA has a maintenance mode
-  (simple_annual vs activity_based) that prevents double counting; B4 replacement cost is added
-  in both modes.
+- **A5 (Phase 3A):** construction diesel + site electricity + material-waste production
+  (BOQ installed/purchased mode prevents double counting) + waste transport + treatment.
+- **B2–B5 (Phase 3B):** activity-based maintenance/replacement. B2 is linked to the SD
+  maintenance schedule (no 'free maintenance'); B4 replacement uses a mass balance so removed
+  material is handled in B4 and is **not re-counted** in C1–C4. LCCA maintenance mode
+  (simple_annual vs activity_based) prevents double counting; B4 cost is added in both modes.
+- **C1–C4 + Module D (Phase 3C):** end-of-life on the **remaining** masses (after B4/B5),
+  with per-material treatment shares that must sum to 1. C3 processing is an **emission**
+  (not a credit); recovery credits go to **Module D only**.
 
 ```
-I_(a,t) = n_(a,t)·[ Σ M_j EF_j + Σ F_f EF_f + E_a CI_t + Σ (M_j/1000) D EF_tr + Σ Rwaste EF_waste ] / 1000
-I_B2-B5 = Σ_t Σ_a I_(a,t)                      a ∈ {B2,B3,B4,B5}
-M_remaining_j = M_initial_j + Σ A_(j,t) − Σ R_(j,t)
-LCC_activity = CAPEX + Σ_t [EnergyCost_t + Cost_B2..B5,t]/(1+r)^t + EOL/(1+r)^T − RV/(1+r)^T
+treatment shares:  s_reuse + s_recycle + s_disposal = 1   (per material)
+I_C1 = [ Σ F_(f,C1) EF_f + E_C1 · CI_T ] / 1000
+I_C2 = Σ_j [ (M_(j,EOL)/1000) · D · EF_tr ] / 1000
+I_C3 = [ Σ_j M_(j,EOL) ( s_reuse·EF_reuse + s_recycle·EF_recycle ) ] / 1000
+I_C4 = [ Σ_j M_(j,EOL) · s_disposal · EF_disposal ] / 1000
+I_C1-C4 = I_C1 + I_C2 + I_C3 + I_C4
+Module D = Σ_j [ M_(j,EOL)(s_reuse+s_recycle) · η_j · (EF_virgin − EF_secondary) ] / 1000   (separate)
 ```
 
-- **Still pending:** C1–C4 end-of-life and Module-D-from-EOL (Phase 3C),
-  component-based Monte Carlo (Phase 4), sustainability index / CRITIC–Entropy (Phase 5).
+All A5/B2–B5/C1–C4/Module-D factors and quantities are **scenario / user inputs**;
+results are not 'validated' unless calibrated with project data. `publication_grade_full_lca`
+is False if FRP lacks an EPD, if any material's treatment shares do not sum to 1, or if
+Module D is reported with a missing secondary factor.
+
+- **Still pending:** component-based Monte Carlo (Phase 4), sustainability index /
+  CRITIC–Entropy (Phase 5).
 
 #### 4. ILLUSTRATIVE INTERACTION VISUALIZATION
 - The interaction network is used only for dashboard visualization.
