@@ -590,9 +590,107 @@ def calculate_dynamic_b6(condition_start, EI0, daily_pkm, CI,
     }
 
 
+# ═══════════════════════════════════════════════════════════════
+# PHASE 3 — MODULAR GROSS A1-C4 LCA (3A: A5 + full-LCA backbone)
+# ───────────────────────────────────────────────────────────────
+# SYMBOL TABLE (Phase 3)
+#   I_A5      construction/installation emissions (tCO2e)
+#   I_B2_B5   maintenance/repair/replacement/refurbishment (tCO2e) [Phase 3B]
+#   I_C1_C4   end-of-life (tCO2e) [Phase 3C]
+#   F_f,p     fuel of type f in stage p (L or kg);  EF_f fuel factor (kgCO2e/unit)
+#   E_p       electricity in stage p (kWh);         CI_t grid carbon (kgCO2e/kWh)
+#   M_j       mass of material j (kg);              EF_j material factor (kgCO2e/kg)
+#   w_j       waste rate (waste / purchased, 0..1)
+#   D_x       transport distance (km);              EF_tr transport factor (kgCO2e/ton-km)
+#   gross A1-C4 = A1-A3 + A4 + A5 + B2-B5 + B6_active + C1-C4
+#   GWP/pkm   uses GROSS (never net). Module D is reported SEPARATELY (supplementary).
+# All Phase 3 factors/quantities are user inputs / scenario parameters (not validated).
+# ═══════════════════════════════════════════════════════════════
+
+# Map core mass keys -> MATERIAL_FACTORS keys (for reusing A1-A3 carbon factors)
+MATERIAL_KEY_MAP = {
+    'concrete': 'concrete_32_40', 'steel': 'steel_section', 'aluminum': 'aluminum_general',
+    'wood': 'wood_general', 'frp': 'frp_general', 'glass': 'glass_primary',
+}
+
+
+def calculate_a5_construction(masses_kg, params, CI0):
+    """A5 construction/installation emissions (tCO2e), reported SEPARATELY from A4.
+    BOQ mode prevents double counting of material-production waste:
+      - 'installed'  : core masses are installed quantities; extra purchased waste
+                       (mass*w/(1-w)) is produced and its A1-A3 production IS added here.
+      - 'purchased'  : core masses are purchased quantities; production already in A1-A3,
+                       so NO production term is added (only transport + treatment of waste)."""
+    if not params.get('include_a5', False):
+        return {'included': False, 'a5_total_tons': 0.0, 'a5_fuel_tons': 0.0,
+                'a5_electricity_tons': 0.0, 'a5_material_waste_tons': 0.0,
+                'a5_waste_transport_tons': 0.0, 'a5_waste_treatment_tons': 0.0,
+                'waste_mass_total_kg': 0.0}
+
+    mode = params.get('a5_boq_mode', 'installed')
+    w = float(params.get('a5_waste_rate', 0.0))
+    truck_ef = TRANSPORT_EMISSION_FACTORS['truck']
+
+    diesel_t = params.get('a5_diesel_l', 0.0) * params.get('a5_diesel_ef', 2.68) / 1000.0
+    elec_t = params.get('a5_elec_kwh', 0.0) * CI0 / 1000.0
+
+    waste_prod_kg = 0.0
+    waste_mass_total_kg = 0.0
+    for mat, M in masses_kg.items():
+        if mode == 'installed':
+            waste_mass = M * (w / (1.0 - w)) if 0.0 <= w < 1.0 else 0.0
+            # Production of the EXTRA waste is NOT yet in A1-A3 (which used installed mass)
+            waste_prod_kg += waste_mass * MATERIAL_FACTORS[MATERIAL_KEY_MAP[mat]]['gwp_kgco2e_per_kg']
+        else:  # purchased: production already counted in A1-A3 -> no production term
+            waste_mass = M * w
+        waste_mass_total_kg += waste_mass
+
+    waste_prod_t = waste_prod_kg / 1000.0
+    waste_transport_t = (waste_mass_total_kg / 1000.0) * params.get('a5_waste_transport_km', 0.0) * truck_ef / 1000.0
+    waste_treatment_t = waste_mass_total_kg * params.get('a5_waste_treatment_ef', 0.0) / 1000.0
+
+    a5_total = diesel_t + elec_t + waste_prod_t + waste_transport_t + waste_treatment_t
+    return {'included': True, 'a5_total_tons': a5_total, 'a5_fuel_tons': diesel_t,
+            'a5_electricity_tons': elec_t, 'a5_material_waste_tons': waste_prod_t,
+            'a5_waste_transport_tons': waste_transport_t, 'a5_waste_treatment_tons': waste_treatment_t,
+            'waste_mass_total_kg': waste_mass_total_kg}
+
+
+def update_lca_summary_full(I_A1_A3, I_A4, I_A5, I_B2_B5, I_B6_active, I_C1_C4,
+                            module_d_tons, total_pkm, b6_mode):
+    """Combine modules into a GROSS A1-C4 result. Module D stays separate.
+    Functional unit (GWP/pkm) uses GROSS, never net."""
+    i_a5_val = I_A5['a5_total_tons'] if isinstance(I_A5, dict) else I_A5
+    a5_included = (isinstance(I_A5, dict) and I_A5.get('included'))
+    gross = I_A1_A3 + I_A4 + i_a5_val + I_B2_B5 + I_B6_active + I_C1_C4
+    net = gross - module_d_tons
+    gwp_pkm_gross = (gross * 1000.0 / total_pkm) if total_pkm > 0 else np.nan
+    stages = [
+        ('A1-A3 materials', I_A1_A3, 'included'),
+        ('A4 transport', I_A4, 'included' if I_A4 > 0 else 'not included'),
+        ('A5 construction', i_a5_val, 'included' if a5_included else 'not included'),
+        ('B2-B5 use stage', I_B2_B5, 'not included (Phase 3B)'),
+        (f'B6 operation ({b6_mode})', I_B6_active, 'included'),
+        ('C1-C4 end-of-life', I_C1_C4, 'not included (Phase 3C)'),
+    ]
+    contribution = []
+    for name, val, status in stages:
+        contribution.append({'Stage': name, 'tCO2e': val,
+                             '% of gross': (val / gross * 100.0) if gross else 0.0,
+                             'status': status})
+    return {
+        'gross_a1_c4_tons': gross,
+        'module_d_tons': module_d_tons,
+        'net_with_module_d_tons': net,
+        'gwp_pkm_gross': gwp_pkm_gross,
+        'i_a5_tons': i_a5_val,
+        'stage_contribution': contribution,
+    }
+
+
 def calculate_core_lca_lcc(params):
-    """SCIENTIFIC CORE — partial LCA (A1-A3 gross + A4 + B6) + NPV-LCCA.
-    Contains ONLY publication-grade quantities. No dashboard/heuristic scores."""
+    """SCIENTIFIC CORE — modular gross A1-C4 LCA (A1-A3 + A4 + A5 + B6; B2-B5/C1-C4
+    in later sub-phases) + NPV-LCCA. ONLY publication-grade quantities."""
     # Material masses (unit harmonisation)
     concrete_m3 = params['concrete'] * 1000
     concrete_kg = concrete_m3 * DENSITIES['concrete']
@@ -733,6 +831,19 @@ def calculate_core_lca_lcc(params):
         active_total_lifecycle_co2_tons = lca_results['total_lifecycle_co2_tons']
     active_co2_kg_per_pkm = (active_total_lifecycle_co2_tons * 1000 / active_total_pkm) if active_total_pkm > 0 else np.nan
 
+    # ── PHASE 3A: modular gross A1-C4 backbone (A5 now; B2-B5/C1-C4 later) ──
+    a5 = calculate_a5_construction(material_masses_kg, params, effective_carbon_intensity)
+    I_B2_B5 = 0.0   # Phase 3B
+    I_C1_C4 = 0.0   # Phase 3C
+    full_lca = update_lca_summary_full(
+        I_A1_A3=total_embodied_co2, I_A4=a4_transport_co2_tons, I_A5=a5,
+        I_B2_B5=I_B2_B5, I_B6_active=active_b6_tons, I_C1_C4=I_C1_C4,
+        module_d_tons=module_d_carbon_credit_tons, total_pkm=active_total_pkm,
+        b6_mode=active_b6_mode)
+    # Publication-grade for the FULL LCA: currently gated by the FRP/EPD rule.
+    # (Extended in 3B/3C: treatment shares summing to 1, EOL data present, etc.)
+    publication_grade_full_lca = publication_grade
+
     # Economic (LCCA)
     construction_cost = params['construction_cost']
     annual_maintenance = params['maintenance_cost']
@@ -813,6 +924,14 @@ def calculate_core_lca_lcc(params):
         'active_total_pkm': active_total_pkm,
         'active_total_lifecycle_co2_tons': active_total_lifecycle_co2_tons,
         'active_co2_kg_per_pkm': active_co2_kg_per_pkm,
+        # ── PHASE 3A: A5 + gross A1-C4 backbone ──
+        'a5': a5,
+        'gross_a1_c4_tons': full_lca['gross_a1_c4_tons'],
+        'gwp_pkm_gross': full_lca['gwp_pkm_gross'],
+        'net_with_module_d_tons': full_lca['net_with_module_d_tons'],
+        'module_d_tons': full_lca['module_d_tons'],
+        'stage_contribution': full_lca['stage_contribution'],
+        'publication_grade_full_lca': publication_grade_full_lca,
     }
 
 
@@ -1091,6 +1210,20 @@ with st.sidebar:
         sd_alpha = st.number_input("Energy penalty α", value=0.10, min_value=0.0, step=0.05, format="%.2f", key="sd_alpha")
         sd_growth_pct = st.number_input("Annual demand growth g (%)", value=0.0, min_value=0.0, step=0.5, key="sd_growth")
 
+        st.markdown("### 🏗️ A5 Construction (Phase 3A)")
+        st.caption("⚠️ Scenario / user inputs. A5 is reported separately from A4.")
+        include_a5 = st.checkbox("Include A5 construction", value=False, key="include_a5")
+        a5_boq_mode = st.selectbox("BOQ quantity basis", ["installed", "purchased"], index=0, key="a5_boq_mode",
+                                   help="'installed': core masses are installed → extra waste production is added here. "
+                                        "'purchased': production already in A1-A3 → only waste transport/treatment here.")
+        a5_diesel_l = st.number_input("Construction diesel (L)", value=0.0, min_value=0.0, step=1000.0, key="a5_diesel_l")
+        a5_diesel_ef = st.number_input("Diesel EF (kgCO₂e/L)", value=2.68, min_value=0.0, step=0.01, format="%.2f", key="a5_diesel_ef",
+                                       help="Default 2.68 (DEFRA) — scenario value; replace with a verified factor before publication.")
+        a5_elec_kwh = st.number_input("Construction electricity (kWh)", value=0.0, min_value=0.0, step=1000.0, key="a5_elec_kwh")
+        a5_waste_rate = st.number_input("Material waste rate w (0–1)", value=0.0, min_value=0.0, max_value=0.95, step=0.01, format="%.2f", key="a5_waste_rate")
+        a5_waste_transport_km = st.number_input("Waste transport distance (km)", value=0.0, min_value=0.0, step=10.0, key="a5_waste_km")
+        a5_waste_treatment_ef = st.number_input("Waste treatment EF (kgCO₂e/kg)", value=0.0, min_value=0.0, step=0.01, format="%.3f", key="a5_waste_ef")
+
         st.markdown("---")
         run_btn = st.form_submit_button("🚀 RUN ASSESSMENT", type="primary", use_container_width=True)
 
@@ -1111,6 +1244,9 @@ current_params = {
     'sd_enable': sd_enable, 'sd_C0': sd_C0, 'sd_delta': sd_delta,
     'sd_maint_interval': sd_maint_interval, 'sd_rho': sd_rho, 'sd_tau': sd_tau,
     'sd_alpha': sd_alpha, 'sd_growth_pct': sd_growth_pct,
+    'include_a5': include_a5, 'a5_boq_mode': a5_boq_mode, 'a5_diesel_l': a5_diesel_l,
+    'a5_diesel_ef': a5_diesel_ef, 'a5_elec_kwh': a5_elec_kwh, 'a5_waste_rate': a5_waste_rate,
+    'a5_waste_transport_km': a5_waste_transport_km, 'a5_waste_treatment_ef': a5_waste_treatment_ef,
 }
 
 @st.cache_data
@@ -1171,19 +1307,19 @@ with tabs[0]:
     # Key metrics row
     m1, m2, m3, m4, m5 = st.columns(5)
     with m1:
-        co2_pkm = results['active_co2_kg_per_pkm']
+        co2_pkm = results['gwp_pkm_gross']
         st.markdown(f"""
         <div class="metric-card">
             <div class="metric-value">{co2_pkm:.4f}</div>
-            <div class="metric-label">kg CO₂e / passenger-km</div>
-            <div class="metric-delta">LCA indicator · B6 {results['active_b6_mode']}</div>
+            <div class="metric-label">kg CO₂e / passenger-km (gross)</div>
+            <div class="metric-delta">A1-C4 gross · B6 {results['active_b6_mode']}</div>
         </div>""", unsafe_allow_html=True)
     with m2:
         st.markdown(f"""
         <div class="metric-card">
-            <div class="metric-value">{results['active_total_lifecycle_co2_tons']:,.0f}</div>
-            <div class="metric-label">Total CO₂ (tons) · {results['active_b6_mode']}</div>
-            <div class="metric-delta">Embodied: {results['lca_results']['embodied_co2_tons']:,.0f}t</div>
+            <div class="metric-value">{results['gross_a1_c4_tons']:,.0f}</div>
+            <div class="metric-label">Gross A1-C4 CO₂ (tons)</div>
+            <div class="metric-delta">A5: {results['a5']['a5_total_tons']:,.0f}t · Module D separate</div>
         </div>""", unsafe_allow_html=True)
     with m3:
         st.markdown(f"""
@@ -1216,6 +1352,21 @@ with tabs[0]:
             f"Dynamic total LCA = {results['total_lifecycle_co2_dynamic']:,.0f} t "
             f"({results['co2_kg_per_pkm_dynamic']:.5f} kg/pkm). See the System Dynamics (B6) tab."
         )
+
+    with st.expander("🧱 Stage Contribution (gross A1–C4)", expanded=True):
+        sc_df = pd.DataFrame(results['stage_contribution'])
+        sc_df['tCO2e'] = sc_df['tCO2e'].map(lambda v: f"{v:,.1f}")
+        sc_df['% of gross'] = sc_df['% of gross'].map(lambda v: f"{v:.1f}%")
+        st.dataframe(sc_df, use_container_width=True, hide_index=True)
+        st.caption(
+            f"GROSS A1–C4 = {results['gross_a1_c4_tons']:,.1f} t CO₂e · "
+            f"GWP = {results['gwp_pkm_gross']:.5f} kg/pkm (gross, never net) · "
+            f"Module D (separate) = −{results['module_d_tons']:,.1f} t · "
+            f"Net incl. Module D (supplementary) = {results['net_with_module_d_tons']:,.1f} t. "
+            "B2–B5 and C1–C4 are not yet included (Phase 3B/3C)."
+        )
+        if not results.get('publication_grade_full_lca', True):
+            st.error("🚫 Full-LCA result is NOT publication-grade (see FRP/EPD warning above).")
 
     st.markdown("---")
 
@@ -1344,8 +1495,11 @@ with tabs[0]:
    • Annual Operational CO₂: {results['annual_co2_operational']:.1f} tons
    • Embodied CO₂ A1-A3 (GROSS): {results['total_embodied_co2']:.1f} tons
    • A4 Transport CO₂: {results['lca_results']['a4_transport_co2_tons']:.1f} tons
-   • Total Lifecycle CO₂ (A1-A3 gross + A4 + B6 {results['active_b6_mode']}): {results['active_total_lifecycle_co2_tons']:.1f} tons
-   • Module D recycling credit (separate, NOT in total): -{results['lca_results']['module_d_carbon_credit_tons']:.1f} tons
+   • A5 Construction CO₂: {results['a5']['a5_total_tons']:.1f} tons ({'included' if results['a5']['included'] else 'not included'})
+   • B6 Operation ({results['active_b6_mode']}): {results['active_b6_tons']:.1f} tons
+   • GROSS A1-C4 CO₂ (A1-A3 + A4 + A5 + B6; B2-B5/C1-C4 pending): {results['gross_a1_c4_tons']:.1f} tons
+   • GWP per pkm (gross): {results['gwp_pkm_gross']:.6f} kg CO₂e/pkm
+   • Module D recycling credit (separate, NOT in gross): -{results['module_d_tons']:.1f} tons
    • Grid Carbon Intensity (applied to core B6): {results['effective_carbon_intensity']:.3f} kg CO₂/kWh
    • Total Embodied Energy: {results['total_ee']:.0f} MJ
    • Renewable Share (dashboard-only, NOT applied to core LCA in Phase 1b): {params['renewable_share']:.1f}%
@@ -1390,11 +1544,12 @@ Carbon factors: ICE Database Educational V4.1 (Oct 2025). Module D (recycling) r
                               mime="text/plain")
         with exp2:
             csv_data = pd.DataFrame([
-                {'Category': 'LCA', 'Metric': f"Total lifecycle CO₂ (B6 {results['active_b6_mode']})", 'Value': f"{results['active_total_lifecycle_co2_tons']:.1f}", 'Unit': 'tons CO₂e'},
-                {'Category': 'LCA', 'Metric': f"CO₂ intensity (B6 {results['active_b6_mode']})", 'Value': f"{results['active_co2_kg_per_pkm']:.6f}", 'Unit': 'kg CO₂e/pkm'},
+                {'Category': 'LCA', 'Metric': f"GROSS A1-C4 CO₂ (B6 {results['active_b6_mode']})", 'Value': f"{results['gross_a1_c4_tons']:.1f}", 'Unit': 'tons CO₂e'},
+                {'Category': 'LCA', 'Metric': 'GWP per pkm (gross)', 'Value': f"{results['gwp_pkm_gross']:.6f}", 'Unit': 'kg CO₂e/pkm'},
                 {'Category': 'LCA', 'Metric': 'Embodied CO₂ A1-A3 (gross)', 'Value': f"{results['lca_results']['embodied_co2_tons']:.1f}", 'Unit': 'tons CO₂e'},
                 {'Category': 'LCA', 'Metric': 'A4 Transport CO₂', 'Value': f"{results['lca_results']['a4_transport_co2_tons']:.1f}", 'Unit': 'tons CO₂e'},
-                {'Category': 'Module D', 'Metric': 'Recycling credit (separate)', 'Value': f"-{results['lca_results']['module_d_carbon_credit_tons']:.1f}", 'Unit': 'tons CO₂e'},
+                {'Category': 'LCA', 'Metric': 'A5 Construction CO₂', 'Value': f"{results['a5']['a5_total_tons']:.1f}", 'Unit': 'tons CO₂e'},
+                {'Category': 'Module D', 'Metric': 'Recycling credit (separate)', 'Value': f"-{results['module_d_tons']:.1f}", 'Unit': 'tons CO₂e'},
                 {'Category': 'LCA', 'Metric': 'Lifetime operational CO₂', 'Value': f"{results['lca_results']['lifetime_operational_co2_tons']:.1f}", 'Unit': 'tons CO₂e'},
                 {'Category': 'LCA', 'Metric': 'Embodied Energy', 'Value': f"{results['total_ee']:.0f}", 'Unit': 'MJ'},
                 {'Category': 'LCCA', 'Metric': 'LCC NPV Cost', 'Value': f"{results['npv_lcc_m']:.0f}", 'Unit': '$M'},
@@ -1993,7 +2148,20 @@ B6_dyn = Σ_t  EI_t · PKM_t · CI_t / 1000      (CI_t = grid only, no renewable
 
 تضيف المرحلة الثانية طبقة ديناميكية قائمة على السيناريوهات لحساب انبعاثات التشغيل B6. تمثل حالة الأصل C(t) مخزونًا يتدهور سنويًا ويتحسن بفعل الصيانة بعد فترة تأخير. تؤثر حالة الأصل على كثافة استهلاك الطاقة، ومن ثم على انبعاثات التشغيل السنوية. تُعامل معاملات النظام الديناميكي كافتراضات سيناريو ما لم تتم معايرتها ببيانات فحص أو صيانة أو قياسات تشغيلية.
 
-- **Not yet included (Phase 3+):** A5 construction, B2–B5 maintenance/replacement emissions, C1–C4 end-of-life, sustainability index, CRITIC–Entropy.
+#### 3c. MODULAR GROSS A1–C4 LCA (Phase 3A — A5 added)
+The model now reports a **gross A1–C4** result built from separate modules:
+`gross = A1–A3 + A4 + A5 + B2–B5 + B6_active + C1–C4`. A5 is reported **separately
+from A4**. The functional unit (kg CO₂e/pkm) uses the **gross** figure (never net).
+Module D (recycling credit) remains **separate** and is shown only as supplementary
+information. A BOQ-mode switch (installed vs purchased) prevents double-counting of
+material-production waste.
+
+- **A5 implemented (Phase 3A):** construction diesel + site electricity + material-waste
+  production (installed mode) + waste transport + waste treatment. All A5 factors/quantities
+  are user inputs / scenario parameters (e.g. diesel EF default 2.68 — replace before publication).
+- **Still pending:** B2–B5 maintenance/replacement (Phase 3B, mass balance + activity-based,
+  linked to the SD maintenance schedule), C1–C4 end-of-life and Module-D-from-EOL (Phase 3C),
+  component-based Monte Carlo (Phase 4), sustainability index / CRITIC–Entropy (Phase 5).
 
 #### 4. ILLUSTRATIVE INTERACTION VISUALIZATION
 - The interaction network is used only for dashboard visualization.
