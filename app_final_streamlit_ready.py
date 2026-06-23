@@ -499,6 +499,96 @@ def calculate_lcc_npv(construction_cost_m, annual_maintenance_m, annual_energy_c
 
     return {"npv_lcc_m": npv_lcc, "discount_rate_pct": discount_rate_pct, "lifetime_years": n}
 
+# ═══════════════════════════════════════════════════════════════
+# PHASE 2 — SYSTEM DYNAMICS LAYER FOR B6 (asset condition -> energy)
+# ───────────────────────────────────────────────────────────────
+# SYMBOL TABLE (scenario-based; NOT validated unless calibrated)
+#   t      operating year (annual step), 1..T
+#   T      assessment lifetime (years) = ASSESSMENT_LIFETIME_YEARS
+#   C_t    asset condition at START of year t (dimensionless 0..1) — STOCK
+#   C0     initial condition (default 1.0)
+#   DR_t   degradation outflow (condition/year)
+#   MR_t   maintenance recovery inflow (condition/year)
+#   delta  annual degradation coefficient (condition/year) — scenario
+#   rho    maintenance recovery efficiency (condition/action) — scenario
+#   m_t    maintenance action (0/1), 1 on maintenance years
+#   tau    maintenance effect delay (years)
+#   alpha  energy penalty coefficient for degradation (dimensionless) — sensitivity
+#   EI0    base energy intensity (kWh/pkm) = params['energy_per_pax']
+#   EI_t   dynamic energy intensity (kWh/pkm)
+#   PKM_t  annual passenger-km
+#   g      annual demand growth (fraction)
+#   CI_t   grid carbon intensity (kgCO2/kWh) — NO renewable multiplier in Phase 2
+#
+# Stock-flow (continuous):   dC/dt = MR(t) - DR(t)
+#   DR_t = min(delta, C_t/dt)        constant annual loss, capped so C >= 0
+#   MR_t = rho * m_(t-tau)           delayed recovery, capped so C <= 1
+# Euler annual step (dt=1), degradation applied BEFORE recovery.
+# Coupling:  EI_t = EI0 * [1 + alpha*(1 - C_t)]  ->  dynamic B6 emissions.
+# SD parameters are SCENARIO ASSUMPTIONS unless calibrated with inspection,
+# maintenance, or measured operational-energy data. The model is NOT validated.
+# ═══════════════════════════════════════════════════════════════
+
+def simulate_asset_condition(C0=1.0, delta=0.005, maintenance_interval=5,
+                             rho=0.05, tau=1, lifetime_years=ASSESSMENT_LIFETIME_YEARS, dt=1.0):
+    """Stock-flow simulation of asset condition C(t).
+    Returns (rows, condition_start) where condition_start[t-1] = C at start of year t.
+    Degradation is applied first, then delayed maintenance recovery, each capped."""
+    def is_maint_year(yr):
+        return bool(maintenance_interval) and maintenance_interval > 0 and yr >= 1 and (yr % maintenance_interval == 0)
+
+    rows, condition_start = [], []
+    C = float(np.clip(C0, 0.0, 1.0))
+    for t in range(1, int(lifetime_years) + 1):
+        C_start = C
+        condition_start.append(C_start)
+        # Outflow: degradation (constant annual loss, capped so condition stays >= 0)
+        DR = min(delta, C_start / dt) if dt > 0 else 0.0
+        C_pre = max(0.0, C_start - dt * DR)
+        # Inflow: delayed maintenance recovery (capped so condition stays <= 1)
+        m_action = 1 if is_maint_year(t) else 0
+        src_year = t - tau
+        delayed = 1 if (src_year >= 1 and is_maint_year(src_year)) else 0
+        MR_request = rho * delayed
+        MR_actual = max(0.0, min(MR_request, (1.0 - C_pre) / dt)) if dt > 0 else 0.0
+        C_end = float(np.clip(C_pre + dt * MR_actual, 0.0, 1.0))
+        rows.append({
+            'year': t, 'C_start': C_start,
+            'maintenance_action': m_action, 'delayed_maintenance': delayed,
+            'degradation_flow': dt * DR, 'maintenance_recovery_flow': dt * MR_actual,
+            'C_end': C_end,
+        })
+        C = C_end
+    return rows, condition_start
+
+
+def calculate_dynamic_b6(condition_start, EI0, daily_pkm, CI,
+                         lifetime_years=ASSESSMENT_LIFETIME_YEARS, alpha=0.10, g=0.0):
+    """Condition-dependent dynamic B6 operational carbon vs static baseline.
+    EI_t = EI0*(1+alpha*(1-C_t)); PKM_t = daily_pkm*365*(1+g)^t; CI_t = CI (no renewable)."""
+    yearly, b6_dyn, b6_static, ei_sum, pkm_sum = [], 0.0, 0.0, 0.0, 0.0
+    for idx, t in enumerate(range(1, int(lifetime_years) + 1)):
+        C_t = condition_start[idx]
+        EI_t = EI0 * (1.0 + alpha * (1.0 - C_t))
+        PKM_t = daily_pkm * 365.0 * ((1.0 + g) ** t)
+        co2_dyn = EI_t * PKM_t * CI / 1000.0
+        co2_static = EI0 * PKM_t * CI / 1000.0
+        b6_dyn += co2_dyn
+        b6_static += co2_static
+        ei_sum += EI_t
+        pkm_sum += PKM_t
+        yearly.append({'year': t, 'C_t': C_t, 'EI_t': EI_t, 'PKM_t': PKM_t, 'B6_co2_tons': co2_dyn})
+    n = int(lifetime_years) if lifetime_years else 1
+    return {
+        'yearly': yearly,
+        'b6_dynamic_tons': b6_dyn,
+        'b6_static_tons': b6_static,
+        'delta_b6_tons': b6_dyn - b6_static,
+        'average_EI': ei_sum / n,
+        'total_pkm': pkm_sum,
+    }
+
+
 def calculate_core_lca_lcc(params):
     """SCIENTIFIC CORE — partial LCA (A1-A3 gross + A4 + B6) + NPV-LCCA.
     Contains ONLY publication-grade quantities. No dashboard/heuristic scores."""
@@ -603,6 +693,30 @@ def calculate_core_lca_lcc(params):
     )
     total_co2 = lca_results["total_lifecycle_co2_tons"]
 
+    # ── PHASE 2: System Dynamics layer for B6 (asset condition -> energy) ──
+    # Always simulated (cheap); 'sd_enable' controls whether it is the active
+    # headline result. Renewable share is NOT used here (CI_t = grid only).
+    sd_enabled = bool(params.get('sd_enable', False))
+    sd_C0 = params.get('sd_C0', 1.0)
+    sd_delta = params.get('sd_delta', 0.005)
+    sd_interval = int(params.get('sd_maint_interval', 5))
+    sd_rho = params.get('sd_rho', 0.05)
+    sd_tau = int(params.get('sd_tau', 1))
+    sd_alpha = params.get('sd_alpha', 0.10)
+    sd_g = params.get('sd_growth_pct', 0.0) / 100.0
+
+    sd_rows, sd_condition_start = simulate_asset_condition(
+        C0=sd_C0, delta=sd_delta, maintenance_interval=sd_interval,
+        rho=sd_rho, tau=sd_tau, lifetime_years=ASSESSMENT_LIFETIME_YEARS)
+    b6 = calculate_dynamic_b6(
+        sd_condition_start, EI0=energy_per_pax_km, daily_pkm=daily_pax_km,
+        CI=effective_carbon_intensity, lifetime_years=ASSESSMENT_LIFETIME_YEARS,
+        alpha=sd_alpha, g=sd_g)
+    sd_final_condition = sd_rows[-1]['C_end'] if sd_rows else sd_C0
+    sd_min_condition = min([r['C_end'] for r in sd_rows] + [sd_C0]) if sd_rows else sd_C0
+    total_lifecycle_co2_dynamic = total_embodied_co2 + a4_transport_co2_tons + b6['b6_dynamic_tons']
+    co2_kg_per_pkm_dynamic = (total_lifecycle_co2_dynamic * 1000 / b6['total_pkm']) if b6['total_pkm'] > 0 else np.nan
+
     # Economic (LCCA)
     construction_cost = params['construction_cost']
     annual_maintenance = params['maintenance_cost']
@@ -663,6 +777,20 @@ def calculate_core_lca_lcc(params):
         'carbon_concrete': carbon_concrete, 'carbon_steel': carbon_steel,
         'carbon_aluminum': carbon_aluminum, 'carbon_wood': carbon_wood,
         'carbon_frp': carbon_frp, 'carbon_glass': carbon_glass,
+        # ── Phase 2 System Dynamics (B6) ──
+        'sd_enabled': sd_enabled,
+        'sd_rows': sd_rows,
+        'sd_b6': b6,
+        'b6_static_tons': b6['b6_static_tons'],
+        'b6_dynamic_tons': b6['b6_dynamic_tons'],
+        'delta_b6_tons': b6['delta_b6_tons'],
+        'sd_average_EI': b6['average_EI'],
+        'sd_min_condition': sd_min_condition,
+        'sd_final_condition': sd_final_condition,
+        'total_lifecycle_co2_dynamic': total_lifecycle_co2_dynamic,
+        'co2_kg_per_pkm_dynamic': co2_kg_per_pkm_dynamic,
+        'sd_params': {'C0': sd_C0, 'delta': sd_delta, 'interval': sd_interval,
+                      'rho': sd_rho, 'tau': sd_tau, 'alpha': sd_alpha, 'g_pct': sd_g * 100},
     }
 
 
@@ -929,6 +1057,18 @@ with st.sidebar:
         annual_energy_cost = st.number_input("Annual Energy Cost ($M/yr)", value=0.0, min_value=0.0, step=1.0, key="energy_cost")
         residual_value = st.number_input("Residual / Salvage Value at End of Life ($M)", value=0.0, min_value=0.0, step=10.0, key="residual_value")
 
+        st.markdown("### 🔧 System Dynamics — Asset Condition (B6)")
+        st.caption("⚠️ Scenario assumptions — NOT validated unless calibrated with inspection, maintenance, or measured energy data.")
+        sd_enable = st.checkbox("Enable dynamic B6", value=False, key="sd_enable",
+                                help="When on, the headline B6/total uses the condition-dependent dynamic result.")
+        sd_C0 = st.number_input("Initial asset condition C₀ (0–1)", value=1.0, min_value=0.0, max_value=1.0, step=0.05, key="sd_C0")
+        sd_delta = st.number_input("Annual degradation δ (condition/yr)", value=0.005, min_value=0.0, step=0.005, format="%.3f", key="sd_delta")
+        sd_maint_interval = st.number_input("Maintenance interval (years)", value=5, min_value=0, step=1, key="sd_maint_interval")
+        sd_rho = st.number_input("Maintenance recovery ρ (condition/action)", value=0.05, min_value=0.0, step=0.01, format="%.3f", key="sd_rho")
+        sd_tau = st.number_input("Maintenance delay τ (years)", value=1, min_value=0, step=1, key="sd_tau")
+        sd_alpha = st.number_input("Energy penalty α", value=0.10, min_value=0.0, step=0.05, format="%.2f", key="sd_alpha")
+        sd_growth_pct = st.number_input("Annual demand growth g (%)", value=0.0, min_value=0.0, step=0.5, key="sd_growth")
+
         st.markdown("---")
         run_btn = st.form_submit_button("🚀 RUN ASSESSMENT", type="primary", use_container_width=True)
 
@@ -945,7 +1085,10 @@ current_params = {
     'construction_cost': construction_cost, 'maintenance_cost': maintenance_cost,
     'jobs_created': jobs_created, 'economic_multiplier': economic_multiplier,
     'discount_rate': discount_rate, 'annual_energy_cost': annual_energy_cost,
-    'residual_value': residual_value
+    'residual_value': residual_value,
+    'sd_enable': sd_enable, 'sd_C0': sd_C0, 'sd_delta': sd_delta,
+    'sd_maint_interval': sd_maint_interval, 'sd_rho': sd_rho, 'sd_tau': sd_tau,
+    'sd_alpha': sd_alpha, 'sd_growth_pct': sd_growth_pct,
 }
 
 @st.cache_data
@@ -995,7 +1138,8 @@ tabs = st.tabs([
     "📊 Sensitivity Analysis",
     "🗺️ Urban Analytics",
     "🔄 Interaction Network",
-    "📖 About & Methodology"
+    "📖 About & Methodology",
+    "🔧 System Dynamics (B6)"
 ])
 
 # ═══════════════════════════════════════════════════════════════
@@ -1040,6 +1184,16 @@ with tabs[0]:
             <div class="metric-label">Renewable (dashboard-only)</div>
             <div class="metric-delta">Grid carbon: {results['effective_carbon_intensity']:.3f} kg/kWh</div>
         </div>""", unsafe_allow_html=True)
+
+    if results.get('sd_enabled'):
+        st.info(
+            f"🔧 **Dynamic B6 active (scenario-based SD).** "
+            f"Static B6 = {results['b6_static_tons']:,.0f} t · "
+            f"Dynamic B6 = {results['b6_dynamic_tons']:,.0f} t · "
+            f"ΔB6 = {results['delta_b6_tons']:+,.0f} t · "
+            f"Dynamic total LCA = {results['total_lifecycle_co2_dynamic']:,.0f} t "
+            f"({results['co2_kg_per_pkm_dynamic']:.5f} kg/pkm). See the System Dynamics (B6) tab."
+        )
 
     st.markdown("---")
 
@@ -1798,6 +1952,25 @@ with tabs[9]:
 | Operational | 25% | Time savings, availability, energy efficiency |
 | Economic | 20% | Jobs, lifecycle cost, economic multiplier |
 
+#### 3b. SYSTEM DYNAMICS LAYER (Phase 2 — B6 only)
+Phase 2 introduces a scenario-based system dynamics layer for B6 operational emissions.
+The model represents asset condition as a stock **C(t)**, degraded by annual deterioration and
+improved by delayed maintenance recovery. The condition stock feeds back into operational energy
+intensity **EI(t)** and therefore annual B6 emissions. The SD parameters are scenario assumptions
+unless calibrated using asset inspection, maintenance, or measured energy data.
+
+```
+dC/dt = MR(t) − DR(t)
+DR_t  = min(δ, C_t)                 (constant annual degradation, capped)
+MR_t  = ρ · m_(t−τ)                 (delayed maintenance recovery, capped to C ≤ 1)
+EI_t  = EI₀ · [1 + α·(1 − C_t)]     (condition → energy intensity)
+B6_dyn = Σ_t  EI_t · PKM_t · CI_t / 1000      (CI_t = grid only, no renewable)
+```
+
+تضيف المرحلة الثانية طبقة ديناميكية قائمة على السيناريوهات لحساب انبعاثات التشغيل B6. تمثل حالة الأصل C(t) مخزونًا يتدهور سنويًا ويتحسن بفعل الصيانة بعد فترة تأخير. تؤثر حالة الأصل على كثافة استهلاك الطاقة، ومن ثم على انبعاثات التشغيل السنوية. تُعامل معاملات النظام الديناميكي كافتراضات سيناريو ما لم تتم معايرتها ببيانات فحص أو صيانة أو قياسات تشغيلية.
+
+- **Not yet included (Phase 3+):** A5 construction, B2–B5 maintenance/replacement emissions, C1–C4 end-of-life, sustainability index, CRITIC–Entropy.
+
 #### 4. ILLUSTRATIVE INTERACTION VISUALIZATION
 - The interaction network is used only for dashboard visualization.
 - The coefficients are heuristic display parameters.
@@ -1858,6 +2031,89 @@ Cairo University. Software version 2.0.
 }
 ```
     """)
+
+
+# ═══════════════════════════════════════════════════════════════
+# TAB 11: SYSTEM DYNAMICS (B6) — Phase 2
+# ═══════════════════════════════════════════════════════════════
+with tabs[10]:
+    st.markdown("### 🔧 System Dynamics — Asset Condition C(t) → Dynamic B6")
+    st.warning(
+        "Scenario-based system dynamics layer. Parameters (δ, ρ, τ, α, C₀, g) are "
+        "**scenario assumptions — NOT validated** unless calibrated with asset inspection, "
+        "maintenance, or measured operational-energy data. Renewable share is NOT used here."
+    )
+    if not results.get('sd_enabled'):
+        st.info("ℹ️ Dynamic B6 is **previewed below but not applied to the headline result**. "
+                "Tick *Enable dynamic B6* in the sidebar to activate it as the active result.")
+
+    sp = results['sd_params']
+    st.caption(f"Parameters — C₀={sp['C0']}, δ={sp['delta']}, interval={sp['interval']} yr, "
+               f"ρ={sp['rho']}, τ={sp['tau']} yr, α={sp['alpha']}, g={sp['g_pct']:.1f}%/yr, "
+               f"T={ASSESSMENT_LIFETIME_YEARS} yr (dC/dt = MR − DR).")
+
+    sdm1, sdm2, sdm3, sdm4 = st.columns(4)
+    with sdm1: st.metric("Final condition C(T)", f"{results['sd_final_condition']:.3f}")
+    with sdm2: st.metric("Minimum condition", f"{results['sd_min_condition']:.3f}")
+    with sdm3: st.metric("Average EI", f"{results['sd_average_EI']:.4f} kWh/pkm")
+    with sdm4: st.metric("Base EI₀", f"{results['energy_per_pax_km']:.4f} kWh/pkm")
+
+    sdb1, sdb2, sdb3, sdb4 = st.columns(4)
+    with sdb1: st.metric("Static B6 (t CO₂e)", f"{results['b6_static_tons']:,.0f}")
+    with sdb2: st.metric("Dynamic B6 (t CO₂e)", f"{results['b6_dynamic_tons']:,.0f}",
+                         delta=f"{results['delta_b6_tons']:+,.0f}")
+    with sdb3: st.metric("Dynamic total LCA (t)", f"{results['total_lifecycle_co2_dynamic']:,.0f}")
+    with sdb4: st.metric("Dynamic kg CO₂e/pkm", f"{results['co2_kg_per_pkm_dynamic']:.5f}")
+
+    sd_df = pd.DataFrame(results['sd_rows'])
+    b6_df = pd.DataFrame(results['sd_b6']['yearly'])
+
+    c_left, c_right = st.columns(2)
+    with c_left:
+        fig_c = go.Figure()
+        fig_c.add_trace(go.Scatter(x=sd_df['year'], y=sd_df['C_end'], mode='lines+markers',
+                                   line=dict(color='#64ffda', width=2), name='C(t)'))
+        fig_c.update_layout(title='Asset Condition C(t)', height=360,
+                            plot_bgcolor='rgba(10,25,47,0.8)', paper_bgcolor='rgba(0,0,0,0)',
+                            font_color='#ccd6f6', yaxis_range=[0, 1.05],
+                            xaxis_title='Year', yaxis_title='Condition (0–1)', margin=dict(t=40, b=30))
+        st.plotly_chart(fig_c, use_container_width=True)
+    with c_right:
+        fig_ei = go.Figure()
+        fig_ei.add_trace(go.Scatter(x=b6_df['year'], y=b6_df['EI_t'], mode='lines+markers',
+                                    line=dict(color='#f7971e', width=2), name='EI(t)'))
+        fig_ei.add_hline(y=results['energy_per_pax_km'], line_dash="dash", line_color="#6495ed")
+        fig_ei.update_layout(title='Dynamic Energy Intensity EI(t)', height=360,
+                             plot_bgcolor='rgba(10,25,47,0.8)', paper_bgcolor='rgba(0,0,0,0)',
+                             font_color='#ccd6f6', xaxis_title='Year', yaxis_title='kWh/pkm',
+                             margin=dict(t=40, b=30))
+        st.plotly_chart(fig_ei, use_container_width=True)
+
+    d_left, d_right = st.columns(2)
+    with d_left:
+        fig_b6 = go.Figure()
+        fig_b6.add_trace(go.Bar(x=b6_df['year'], y=b6_df['B6_co2_tons'],
+                                marker_color='rgba(235,51,73,0.6)', name='Annual B6'))
+        fig_b6.update_layout(title='Annual Dynamic B6 (t CO₂e/yr)', height=360,
+                             plot_bgcolor='rgba(10,25,47,0.8)', paper_bgcolor='rgba(0,0,0,0)',
+                             font_color='#ccd6f6', xaxis_title='Year', yaxis_title='t CO₂e/yr',
+                             margin=dict(t=40, b=30))
+        st.plotly_chart(fig_b6, use_container_width=True)
+    with d_right:
+        fig_cmp = go.Figure(go.Bar(
+            x=['Static B6', 'Dynamic B6'],
+            y=[results['b6_static_tons'], results['b6_dynamic_tons']],
+            marker_color=['#6495ed', '#64ffda'],
+            text=[f"{results['b6_static_tons']:,.0f}", f"{results['b6_dynamic_tons']:,.0f}"],
+            textposition='outside'))
+        fig_cmp.update_layout(title='Static vs Dynamic B6 (lifetime)', height=360,
+                              plot_bgcolor='rgba(10,25,47,0.8)', paper_bgcolor='rgba(0,0,0,0)',
+                              font_color='#ccd6f6', yaxis_title='t CO₂e', margin=dict(t=40, b=40))
+        st.plotly_chart(fig_cmp, use_container_width=True)
+
+    with st.expander("📋 Yearly System Dynamics table", expanded=False):
+        st.dataframe(sd_df, use_container_width=True, hide_index=True)
+
 
 # ═══════════════════════════════════════════════════════════════
 # FOOTER
