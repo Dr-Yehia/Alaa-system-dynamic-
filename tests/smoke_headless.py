@@ -17,7 +17,7 @@ st.session_state = _SS()
 
 def _noop(*a, **k): return None
 def number_input(label, value=0.0, **k): return value
-def slider(label, min_value=0, max_value=100, value=0, **k): return value
+def slider(label, min_value=0, max_value=100, value=0, *a, **k): return value
 def selectbox(label, options, index=0, **k): return options[index]
 def button(*a, **k): return False
 def checkbox(label, value=False, **k): return value

@@ -1572,6 +1572,277 @@ def build_uncertainty_quality_table(registry):
 
 
 # ═══════════════════════════════════════════════════════════════
+# PHASE 5 — SCIENTIFIC SUSTAINABILITY INDEX (hybrid CRITIC-Entropy)
+# ───────────────────────────────────────────────────────────────
+# A decision-support composite index over a scenario-year matrix. It does NOT
+# replace the reported LCA/LCCA/uncertainty outputs and is NOT the legacy
+# Dashboard Display Score. Indicators are NON-OVERLAPPING (no gross + its own
+# sub-stages); net-with-Module-D is NEVER an environmental indicator (Module D
+# enters only as a separate circularity ratio). Target-based normalization,
+# hybrid weights w = λ·wE + (1-λ)·wC, additive hierarchical aggregation.
+#   z_ij = f(x_ij) ∈ [0,1];  SI_i = Σ_g W_g Σ_{j∈g} (w_j|g) z_ij ∈ [0,1]
+# ═══════════════════════════════════════════════════════════════
+
+def build_indicator_metadata():
+    """One row per indicator: pillar, direction, target/worst, group, include flag."""
+    rows = [
+        # Environmental
+        ('gwp_pkm_gross', 'Environmental', 'lower', 'kgCO2e/pkm', 0.05, 0.20, 'model', True, 'carbon_primary'),
+        ('energy_per_pax_km', 'Environmental', 'lower', 'kWh/pkm', 0.05, 0.20, 'model', True, 'energy'),
+        ('module_d_recovery_ratio', 'Environmental', 'higher', 'ratio', 0.30, 0.0, 'model (circularity)', True, 'circularity'),
+        ('gross_uncertainty_CV', 'Environmental', 'lower', 'CV', 0.05, 0.30, 'Phase 4 MC', True, 'robustness'),
+        # Economic
+        ('npv_lcc_per_pkm', 'Economic', 'lower', '$/pkm', 0.05, 0.50, 'model', True, 'cost'),
+        ('jobs_per_million_usd', 'Economic', 'higher', 'jobs/$M', 3.0, 0.0, 'model', True, 'econ_benefit'),
+        ('lcca_uncertainty_CV', 'Economic', 'lower', 'CV', 0.05, 0.30, 'Phase 4 MC', True, 'cost_robustness'),
+        # Operational
+        ('availability', 'Operational', 'higher', 'fraction', 0.99, 0.85, 'input', True, 'operational'),
+        ('time_savings', 'Operational', 'higher', '1000h', 5.0, 0.0, 'input', True, 'operational_time'),
+        ('land_use_efficiency', 'Operational', 'higher', 'pass/ha', 6000.0, 1000.0, 'input', True, 'land'),
+        # Social / urban
+        ('noise_reduction', 'Social', 'higher', 'dB', 15.0, 0.0, 'input', True, 'social'),
+    ]
+    return pd.DataFrame(rows, columns=['indicator', 'pillar', 'direction', 'unit', 'target',
+                                       'worst', 'source', 'include_in_si', 'double_count_group'])
+
+
+def _scenario_indicator_row(params, uncertainty_n=0, seed=42):
+    r = run_full_assessment(params)
+    pkm = r['active_total_pkm'] if r['active_total_pkm'] > 0 else np.nan
+    row = {
+        'gwp_pkm_gross': r['gwp_pkm_gross'],
+        'energy_per_pax_km': r['energy_per_pax_km'],
+        'module_d_recovery_ratio': (r['module_d_tons'] / r['gross_a1_c4_tons']) if r['gross_a1_c4_tons'] else 0.0,
+        'npv_lcc_per_pkm': (r['npv_lcc_m'] * 1e6 / pkm) if pkm and np.isfinite(pkm) else np.nan,
+        'jobs_per_million_usd': (r['total_jobs'] / r['construction_cost']) if r['construction_cost'] else 0.0,
+        'availability': params.get('availability', 0.0) / 100.0,
+        'time_savings': params.get('time_savings', 0.0),
+        'land_use_efficiency': params.get('land_use', 0.0),
+        'noise_reduction': params.get('noise_reduction', 0.0),
+        'gross_uncertainty_CV': np.nan,
+        'lcca_uncertainty_CV': np.nan,
+        'publication_grade_full_lca': r.get('publication_grade_full_lca', False),
+    }
+    if uncertainty_n and uncertainty_n > 0:
+        mc = run_component_monte_carlo(params, n=int(uncertainty_n), seed=seed)
+        sm = mc['summary'].set_index('metric')
+        if 'gross_a1_c4_tons' in sm.index:
+            row['gross_uncertainty_CV'] = float(sm.loc['gross_a1_c4_tons', 'CV'])
+        if 'npv_lcc_m' in sm.index:
+            row['lcca_uncertainty_CV'] = float(sm.loc['npv_lcc_m', 'CV'])
+    return row
+
+
+def generate_default_scenarios(base_params, n=36, seed=42):
+    """LHS-spread scenario-year set (deterministic) for the SI matrix."""
+    ranges = {'carbon_intensity': (0.2, 0.7), 'energy_per_pax': (0.08, 0.20),
+              'daily_pax_km': (300.0, 800.0), 'maintenance_cost': (20.0, 100.0),
+              'construction_cost': (1500.0, 3500.0), 'availability': (88.0, 99.0),
+              'land_use': (2000.0, 6000.0), 'noise_reduction': (5.0, 15.0),
+              'jobs_created': (3000.0, 8000.0)}
+    keys = list(ranges.keys())
+    u = lhs_unit_samples(n, len(keys), seed)
+    scenarios = []
+    for i in range(n):
+        ov = {}
+        for j, k in enumerate(keys):
+            lo, hi = ranges[k]
+            ov[k] = lo + u[i, j] * (hi - lo)
+        scenarios.append({'scenario_id': f'S{i+1:02d}', 'year': 2030 + 10 * (i % 2),
+                          'description': f'LHS scenario {i+1}', 'overrides': ov})
+    return scenarios
+
+
+def build_scenario_year_matrix(scenarios, base_params, uncertainty_n=0, seed=42):
+    """One row per scenario: id/year + indicator raw values + flags."""
+    rows = []
+    for sc in scenarios:
+        p = dict(base_params); p.update(sc.get('overrides', {}))
+        ind = _scenario_indicator_row(p, uncertainty_n=uncertainty_n, seed=seed)
+        ind.update({'scenario_id': sc['scenario_id'], 'year': sc.get('year', 0),
+                    'description': sc.get('description', '')})
+        rows.append(ind)
+    cols = ['scenario_id', 'year', 'description']
+    df = pd.DataFrame(rows)
+    return df[cols + [c for c in df.columns if c not in cols]]
+
+
+def validate_indicator_matrix(meta, raw_df):
+    """Direction/target presence, double-counting, net-as-environmental, data availability."""
+    errors, warnings, valid = [], [], True
+    for _, m in meta.iterrows():
+        if m['direction'] not in ('higher', 'lower'):
+            valid = False; errors.append(f"{m['indicator']}: missing/invalid direction")
+        if pd.isna(m['target']) or pd.isna(m['worst']):
+            valid = False; errors.append(f"{m['indicator']}: missing target/worst")
+    # No gross + its own sub-stages in the SI indicator set
+    names = set(meta['indicator'])
+    substages = {'A1_A3_tons', 'A4_tons', 'A5_tons', 'B2_B5_tons', 'B6_tons', 'C1_C4_tons'}
+    if 'gross_a1_c4_tons' in names and (names & substages):
+        valid = False; errors.append("double counting: gross + its sub-stages in SI")
+    if 'net_with_module_d_tons' in names:
+        valid = False; errors.append("net_with_module_d must not be an SI environmental indicator")
+    # Availability of data
+    for _, m in meta[meta['include_in_si']].iterrows():
+        ind = m['indicator']
+        if ind not in raw_df.columns or raw_df[ind].isna().all():
+            warnings.append(f"{ind}: no data → excluded from SI")
+    return {'valid': valid, 'errors': errors, 'warnings': warnings}
+
+
+def _active_indicators(meta, raw_df):
+    act = []
+    for _, m in meta[meta['include_in_si']].iterrows():
+        ind = m['indicator']
+        if ind in raw_df.columns and not raw_df[ind].isna().all():
+            act.append(m['indicator'])
+    return meta[meta['indicator'].isin(act)].reset_index(drop=True)
+
+
+def normalize_indicators_target_based(raw_df, meta):
+    """z ∈ [0,1] via target-based functions (clipped)."""
+    Z = pd.DataFrame(index=raw_df.index)
+    for _, m in meta.iterrows():
+        ind = m['indicator']; x = raw_df[ind].astype(float)
+        T, W = float(m['target']), float(m['worst'])
+        if m['direction'] == 'higher':
+            z = (x - W) / (T - W) if T != W else 0.0 * x
+        else:
+            z = (W - x) / (W - T) if W != T else 0.0 * x
+        Z[ind] = np.clip(z, 0.0, 1.0)
+    return Z
+
+
+def compute_entropy_weights(Z):
+    A = Z.to_numpy(dtype=float); n = A.shape[0]; eps = 1e-12
+    P = (A + eps) / (A + eps).sum(axis=0, keepdims=True)
+    e = -(P * np.log(P)).sum(axis=0) / np.log(n) if n > 1 else np.zeros(A.shape[1])
+    d = 1.0 - e
+    w = d / d.sum() if d.sum() > 0 else np.full(A.shape[1], 1.0 / A.shape[1])
+    return pd.Series(w, index=Z.columns)
+
+
+def compute_critic_weights(Z, method='pearson'):
+    A = Z.to_numpy(dtype=float); m = A.shape[1]
+    sigma = A.std(axis=0, ddof=0)
+    if method == 'spearman':
+        A2 = np.apply_along_axis(lambda c: np.argsort(np.argsort(c)).astype(float), 0, A)
+    else:
+        A2 = A
+    with np.errstate(invalid='ignore', divide='ignore'):
+        R = np.corrcoef(A2, rowvar=False)
+    R = np.atleast_2d(R)
+    R = np.nan_to_num(R, nan=0.0)
+    np.fill_diagonal(R, 1.0)
+    C = sigma * (1.0 - R).sum(axis=1)
+    w = C / C.sum() if C.sum() > 0 else np.full(m, 1.0 / m)
+    return pd.Series(w, index=Z.columns)
+
+
+def combine_entropy_critic_weights(wE, wC, lam=0.5):
+    w = lam * wE + (1.0 - lam) * wC
+    w = w / w.sum() if w.sum() > 0 else wE
+    return w
+
+
+def compute_pillar_scores(Z, meta, weights, pillar_weights):
+    """Within-pillar weights = w_j / Σ_{j∈g} w_j; pillar score S_{i,g} = Σ w_(j|g) z_ij."""
+    pillars = list(pillar_weights.keys())
+    S = pd.DataFrame(index=Z.index)
+    for g in pillars:
+        inds = meta[meta['pillar'] == g]['indicator'].tolist()
+        inds = [i for i in inds if i in Z.columns]
+        if not inds:
+            S[g] = 0.0; continue
+        wg = weights[inds]
+        wg = wg / wg.sum() if wg.sum() > 0 else pd.Series(1.0 / len(inds), index=inds)
+        S[g] = (Z[inds] * wg).sum(axis=1)
+    return S
+
+
+def compute_sustainability_index(Z, meta, weights, pillar_weights):
+    pw = pd.Series(pillar_weights, dtype=float)
+    pw = pw / pw.sum() if pw.sum() > 0 else pw
+    S = compute_pillar_scores(Z, meta, weights, pw.to_dict())
+    present = [g for g in pw.index if g in S.columns]
+    pwp = pw[present] / pw[present].sum()
+    si = (S[present] * pwp).sum(axis=1)
+    si = np.clip(si, 0.0, 1.0)
+    flat = (Z[weights.index] * weights).sum(axis=1)
+    return pd.DataFrame({'SI': si, 'SI_100': si * 100.0, 'SI_flat': np.clip(flat, 0, 1)}), S
+
+
+def rank_scenarios_by_si(raw_df, si_df):
+    out = pd.concat([raw_df[['scenario_id', 'year', 'description']].reset_index(drop=True),
+                     si_df.reset_index(drop=True)], axis=1)
+    out = out.sort_values('SI', ascending=False).reset_index(drop=True)
+    out.insert(0, 'rank', np.arange(1, len(out) + 1))
+    return out
+
+
+def run_si_lambda_sensitivity(Z, meta, wE, wC, pillar_weights, lambdas=(0.0, 0.25, 0.5, 0.75, 1.0)):
+    rankings = {}
+    si_by_lambda = {}
+    for lam in lambdas:
+        w = combine_entropy_critic_weights(wE, wC, lam)
+        si_df, _ = compute_sustainability_index(Z, meta, w, pillar_weights)
+        si_by_lambda[lam] = si_df['SI'].to_numpy()
+        rankings[lam] = np.argsort(np.argsort(-si_df['SI'].to_numpy()))
+    # rank stability = Spearman between λ=0 and λ=1 SI
+    keys = list(si_by_lambda.keys())
+    stability = _spearman(si_by_lambda[keys[0]], si_by_lambda[keys[-1]])
+    tab = pd.DataFrame({f'SI(λ={lam})': si_by_lambda[lam] for lam in lambdas})
+    return {'table': tab, 'rank_stability_spearman': stability, 'rankings': rankings}
+
+
+def build_si_audit_table(meta, active_meta, validation, weights):
+    rows = []
+    for _, m in meta.iterrows():
+        ind = m['indicator']
+        included = ind in set(active_meta['indicator'])
+        rows.append({'indicator': ind, 'pillar': m['pillar'], 'direction': m['direction'],
+                     'target': m['target'], 'worst': m['worst'], 'group': m['double_count_group'],
+                     'included': included, 'weight': float(weights.get(ind, 0.0)),
+                     'target_source': m['source']})
+    return pd.DataFrame(rows)
+
+
+def run_phase5_si(scenarios, base_params, lam=0.5, pillar_weights=None, critic_method='pearson',
+                  uncertainty_n=0, publication_grade_uncertainty=False, seed=42):
+    if pillar_weights is None:
+        pillar_weights = {'Environmental': 0.35, 'Economic': 0.25, 'Operational': 0.25, 'Social': 0.15}
+    warnings = []
+    meta = build_indicator_metadata()
+    raw = build_scenario_year_matrix(scenarios, base_params, uncertainty_n=uncertainty_n, seed=seed)
+    validation = validate_indicator_matrix(meta, raw)
+    warnings += validation['warnings']
+    active = _active_indicators(meta, raw)
+    Z = normalize_indicators_target_based(raw, active)
+    wE = compute_entropy_weights(Z)
+    wC = compute_critic_weights(Z, method=critic_method)
+    weights = combine_entropy_critic_weights(wE, wC, lam)
+    si_df, pillar_df = compute_sustainability_index(Z, active, weights, pillar_weights)
+    ranked = rank_scenarios_by_si(raw, si_df)
+    lambda_sens = run_si_lambda_sensitivity(Z, active, wE, wC, pillar_weights)
+    audit = build_si_audit_table(meta, active, validation, weights)
+    n_scen = len(raw)
+    base_full = run_full_assessment(base_params).get('publication_grade_full_lca', False)
+    pw_sum_ok = abs(sum(pillar_weights.values()) - 1.0) < 1e-9
+    w_sum_ok = abs(float(weights.sum()) - 1.0) < 1e-9
+    pgs = bool(base_full and publication_grade_uncertainty and n_scen >= 30 and validation['valid']
+               and pw_sum_ok and w_sum_ok and len(active) >= 3)
+    weights_df = pd.DataFrame({'indicator': weights.index, 'entropy': wE.values,
+                               'critic': wC.values, 'hybrid': weights.values})
+    return {'raw_matrix': raw, 'normalized_matrix': Z, 'indicator_metadata': meta,
+            'active_indicators': active, 'entropy_weights': wE, 'critic_weights': wC,
+            'combined_weights': weights, 'weights_table': weights_df, 'pillar_scores': pillar_df,
+            'si_scores': si_df, 'ranked_scenarios': ranked, 'lambda_sensitivity': lambda_sens,
+            'audit': audit, 'validation': validation, 'n_scenarios': n_scen,
+            'pillar_weights': pillar_weights, 'lambda': lam,
+            'publication_grade_si': pgs, 'warnings': warnings}
+
+
+# ═══════════════════════════════════════════════════════════════
 # CUSTOM CSS STYLING
 # ═══════════════════════════════════════════════════════════════
 st.markdown("""
@@ -1894,7 +2165,7 @@ if not results.get('publication_grade', True):
         "Set FRP = 0, or supply a product-specific EPD, before reporting."
     )
 
-with st.sidebar.expander("📊 Dashboard Display Score (non-scientific)", expanded=False):
+with st.sidebar.expander("📊 Dashboard Display Score (legacy / illustrative / interface-only)", expanded=False):
     st.info("This score is for interface visualization only and is not used as an ISO LCA/LCCA result.")
     st.metric("Dashboard Display Score", f"{results['dashboard_display_score']:.1f}/100")
 
@@ -1919,7 +2190,8 @@ tabs = st.tabs([
     "🗺️ Urban Analytics",
     "🔄 Interaction Network",
     "📖 About & Methodology",
-    "🔧 System Dynamics (B6)"
+    "🔧 System Dynamics (B6)",
+    "🏁 Sustainability Index (Phase 5)"
 ])
 
 # ═══════════════════════════════════════════════════════════════
@@ -3013,7 +3285,30 @@ legacy total-scaling MC is retained as **illustrative only** and is never public
 Reported ranges are **scenario-based uncertainty intervals**, not measured statistical
 confidence intervals.
 
-- **Still pending:** sustainability index / CRITIC–Entropy (Phase 5).
+#### 3e. SUSTAINABILITY INDEX (Phase 5 — hybrid CRITIC–Entropy)
+The Sustainability Index is a **decision-support composite index** derived from a scenario-year
+matrix (n ≥ 30 for publication-grade). It **does not replace** the reported LCA/LCCA/uncertainty
+outputs, and is **not** the legacy Dashboard Display Score. Indicators are non-overlapping (no gross
+together with its own sub-stages); `net_with_module_d` is **never** an environmental indicator
+(Module D enters only as a separate circularity ratio). Indicators are normalized with **target-based**
+functions, weighted with a **hybrid Entropy–CRITIC** method, and aggregated additively (hierarchical
+by pillar). Core LCA/LCCA results remain reported separately.
+
+```
+z_ij = f(x_ij) ∈ [0,1]            (target-based; higher- or lower-better)
+wE  = entropy weights;  wC = CRITIC weights
+w_j = λ·wE_j + (1−λ)·wC_j         (default λ = 0.5; λ-sensitivity reported)
+S_(i,g) = Σ_{j∈g} (w_j|g) z_ij    (pillar score)
+SI_i = Σ_g W_g · S_(i,g) ∈ [0,1]  (W: Environmental .35, Economic .25, Operational .25, Social .15)
+```
+
+`publication_grade_si` is True only if the full LCA AND Phase 4 uncertainty are publication-grade,
+n_scenarios ≥ 30, indicator metadata/targets are complete, weights sum to 1, and λ-sensitivity is
+computed. Reported as decision support — **not** a validation claim.
+
+The methodology is now complete: **Gross modular A1–C4 LCA + NPV-LCCA + component-based uncertainty
++ scientific decision-support SI (CRITIC–Entropy)**. The model is **not** described as a *validated*
+cradle-to-grave model unless external project calibration/verification data are later added.
 
 #### 4. ILLUSTRATIVE INTERACTION VISUALIZATION
 - The interaction network is used only for dashboard visualization.
@@ -3157,6 +3452,119 @@ with tabs[10]:
 
     with st.expander("📋 Yearly System Dynamics table", expanded=False):
         st.dataframe(sd_df, use_container_width=True, hide_index=True)
+
+
+# ═══════════════════════════════════════════════════════════════
+# TAB 12: SUSTAINABILITY INDEX (Phase 5)
+# ═══════════════════════════════════════════════════════════════
+with tabs[11]:
+    st.markdown("### 🏁 Scientific Sustainability Index — hybrid CRITIC–Entropy")
+    st.caption("A **decision-support composite index** over a scenario-year matrix. It does NOT replace the "
+               "reported gross A1–C4 LCA, GWP/pkm, Module D, LCCA or Monte Carlo uncertainty, and is NOT the "
+               "legacy Dashboard Display Score. Indicators are non-overlapping; net-with-Module-D is never an "
+               "environmental indicator (Module D enters only as a separate circularity ratio).")
+
+    sic1, sic2, sic3 = st.columns(3)
+    with sic1:
+        si_enable = st.checkbox("Enable Phase 5 SI", value=False, key="si_enable")
+        si_n = st.number_input("n scenarios", value=36, min_value=5, max_value=200, step=2, key="si_n")
+    with sic2:
+        si_lambda = st.slider("λ (Entropy ↔ CRITIC)", 0.0, 1.0, 0.5, 0.05, key="si_lambda")
+        si_critic = st.selectbox("CRITIC correlation", ["pearson", "spearman"], index=0, key="si_critic")
+    with sic3:
+        si_unc_n = st.number_input("Per-scenario MC (0=skip robustness)", value=0, min_value=0, max_value=2000, step=100, key="si_unc_n")
+        si_pgu = st.checkbox("Phase 4 uncertainty publication-grade", value=False, key="si_pgu",
+                             help="Set only if you have run the Phase 4 MC at n≥5000 with convergence.")
+
+    if si_enable:
+        @st.cache_data(show_spinner=True)
+        def _run_si(params_tuple, n, lam, method, unc_n, pgu, seed):
+            bp = dict(params_tuple)
+            scs = generate_default_scenarios(bp, n=int(n), seed=int(seed))
+            return run_phase5_si(scs, bp, lam=float(lam), critic_method=method,
+                                 uncertainty_n=int(unc_n), publication_grade_uncertainty=bool(pgu), seed=int(seed))
+        si = _run_si(tuple(sorted(params.items())), si_n, si_lambda, si_critic, si_unc_n, si_pgu, 42)
+
+        st.warning("SI is a **decision-support composite index**, not a validation claim. "
+                   "Targets are scenario/literature values; intervals/weights are data-driven on the chosen matrix.")
+        if si['validation']['errors']:
+            st.error("Indicator matrix invalid: " + "; ".join(si['validation']['errors']))
+        for w in si['warnings']:
+            st.caption("ℹ️ " + w)
+        flag = si['publication_grade_si']
+        (st.success if flag else st.warning)(
+            f"publication_grade_si = {flag} · n_scenarios = {si['n_scenarios']} · λ = {si['lambda']} · "
+            f"λ-rank stability (Spearman) = {si['lambda_sensitivity']['rank_stability_spearman']:.3f}"
+            + ("" if flag else " — requires full-LCA + Phase 4 publication-grade + n≥30."))
+
+        st.markdown("#### 🏆 Ranked scenarios")
+        rk = si['ranked_scenarios'][['rank', 'scenario_id', 'year', 'SI', 'SI_100']].copy()
+        rk['SI'] = rk['SI'].map(lambda v: f"{v:.3f}"); rk['SI_100'] = rk['SI_100'].map(lambda v: f"{v:.1f}")
+        st.dataframe(rk, use_container_width=True, hide_index=True)
+
+        cA, cB = st.columns(2)
+        with cA:
+            top = si['ranked_scenarios'].head(15)
+            figr = go.Figure(go.Bar(x=top['SI'], y=top['scenario_id'], orientation='h',
+                                    marker_color='rgba(100,255,218,0.7)'))
+            figr.update_layout(title='Top scenarios by SI', height=460, paper_bgcolor='rgba(0,0,0,0)',
+                               plot_bgcolor='rgba(10,25,47,0.8)', font_color='#ccd6f6',
+                               yaxis=dict(autorange='reversed'), margin=dict(t=40, b=30))
+            st.plotly_chart(figr, use_container_width=True)
+        with cB:
+            pillars = list(si['pillar_weights'].keys())
+            ps = si['pillar_scores']
+            present = [p for p in pillars if p in ps.columns]
+            figrad = go.Figure()
+            for _, rr in si['ranked_scenarios'].head(3).iterrows():
+                idx = rr['rank'] - 1
+                vals = [ps.iloc[si['raw_matrix'].index[si['raw_matrix']['scenario_id'] == rr['scenario_id']][0]][p] for p in present]
+                figrad.add_trace(go.Scatterpolar(r=vals + [vals[0]], theta=present + [present[0]],
+                                                 fill='toself', name=rr['scenario_id']))
+            figrad.update_layout(title='Pillar radar — top 3', height=460, paper_bgcolor='rgba(0,0,0,0)',
+                                 polar=dict(radialaxis=dict(range=[0, 1])), font_color='#ccd6f6', margin=dict(t=40, b=30))
+            st.plotly_chart(figrad, use_container_width=True)
+
+        st.markdown("#### ⚖️ Weights (Entropy / CRITIC / Hybrid)")
+        st.dataframe(si['weights_table'].round(4), use_container_width=True, hide_index=True)
+
+        cC, cD = st.columns(2)
+        with cC:
+            figh = go.Figure(data=go.Heatmap(z=si['normalized_matrix'].to_numpy(),
+                                             x=list(si['normalized_matrix'].columns),
+                                             y=si['raw_matrix']['scenario_id'].tolist(),
+                                             colorscale='Viridis'))
+            figh.update_layout(title='Normalized indicators (0–1)', height=520, paper_bgcolor='rgba(0,0,0,0)',
+                               font_color='#ccd6f6', margin=dict(t=40, b=30))
+            st.plotly_chart(figh, use_container_width=True)
+        with cD:
+            lam_tab = si['lambda_sensitivity']['table']
+            figl = go.Figure()
+            for col in lam_tab.columns:
+                figl.add_trace(go.Scatter(y=lam_tab[col].to_numpy(), mode='lines', name=col, opacity=0.5))
+            figl.update_layout(title='λ sensitivity (SI per scenario)', height=520, paper_bgcolor='rgba(0,0,0,0)',
+                               plot_bgcolor='rgba(10,25,47,0.8)', font_color='#ccd6f6',
+                               xaxis_title='scenario index', yaxis_title='SI', margin=dict(t=40, b=30))
+            st.plotly_chart(figl, use_container_width=True)
+
+        with st.expander("🔎 SI audit table (inclusion / groups / targets)", expanded=False):
+            st.dataframe(si['audit'].round(4), use_container_width=True, hide_index=True)
+
+        d1, d2 = st.columns(2)
+        with d1:
+            st.download_button("📥 Download SI ranking (CSV)", si['ranked_scenarios'].to_csv(index=False),
+                               file_name=f"si_ranking_{datetime.now().strftime('%Y%m%d')}.csv")
+        with d2:
+            si_xl = io.BytesIO()
+            with pd.ExcelWriter(si_xl, engine='openpyxl') as wr:
+                si['raw_matrix'].to_excel(wr, sheet_name='raw_matrix', index=False)
+                si['normalized_matrix'].to_excel(wr, sheet_name='normalized', index=False)
+                si['weights_table'].to_excel(wr, sheet_name='weights', index=False)
+                si['ranked_scenarios'].to_excel(wr, sheet_name='SI_ranking', index=False)
+                si['audit'].to_excel(wr, sheet_name='audit', index=False)
+            st.download_button("📥 Download SI workbook (Excel)", si_xl.getvalue(),
+                               file_name=f"si_workbook_{datetime.now().strftime('%Y%m%d')}.xlsx",
+                               mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
 
 # ═══════════════════════════════════════════════════════════════
