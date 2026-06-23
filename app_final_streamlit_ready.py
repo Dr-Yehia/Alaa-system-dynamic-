@@ -466,7 +466,7 @@ def calculate_lca_summary(embodied_co2_tons, annual_operational_co2_tons, embodi
     co2_kg_per_pkm = (total_lifecycle_co2_tons * 1000 / lifetime_pax_km) if lifetime_pax_km > 0 else np.nan
 
     return {
-        "scope": "Partial process-based LCA: A1-A3 (gross) materials + optional A4 transport + B6 operation. Module D reported separately.",
+        "scope": "Gross modular A1-C4 LCA: A1-A3 + A4 + optional A5 + activity-based B2-B5 + active B6 + optional C1-C4. Module D reported separately.",
         "embodied_co2_tons": embodied_co2_tons,
         "a4_transport_co2_tons": a4_transport_co2_tons,
         "annual_operational_co2_tons": annual_operational_co2_tons,
@@ -655,7 +655,7 @@ def calculate_a5_construction(masses_kg, params, CI0):
         if mode == 'installed':
             waste_mass = M * (w / (1.0 - w)) if 0.0 <= w < 1.0 else 0.0
             # Production of the EXTRA waste is NOT yet in A1-A3 (which used installed mass)
-            waste_prod_kg += waste_mass * MATERIAL_FACTORS[MATERIAL_KEY_MAP[mat]]['gwp_kgco2e_per_kg']
+            waste_prod_kg += waste_mass * MATERIAL_FACTORS[MATERIAL_KEY_MAP[mat]]['gwp_kgco2e_per_kg'] * params.get(f'unc_ef_mult_{mat}', 1.0)
         else:  # purchased: production already counted in A1-A3 -> no production term
             waste_mass = M * w
         waste_mass_total_kg += waste_mass
@@ -729,8 +729,8 @@ def calculate_b2_b5_use_stage(schedule, masses_kg, total_embodied_carbon_kg, tot
                 'material_added_kg': {k: 0.0 for k in masses_kg},
                 'material_removed_kg': {k: 0.0 for k in masses_kg}}
 
-    ef_steel = MATERIAL_FACTORS['steel_section']['gwp_kgco2e_per_kg']
-    ef_concrete = MATERIAL_FACTORS['concrete_32_40']['gwp_kgco2e_per_kg']
+    ef_steel = MATERIAL_FACTORS['steel_section']['gwp_kgco2e_per_kg'] * params.get('unc_ef_mult_steel', 1.0)
+    ef_concrete = MATERIAL_FACTORS['concrete_32_40']['gwp_kgco2e_per_kg'] * params.get('unc_ef_mult_concrete', 1.0)
     b2_mat_frac = params.get('b2_material_pct', 0.0) / 100.0
     added = {k: 0.0 for k in masses_kg}
     removed = {k: 0.0 for k in masses_kg}
@@ -883,7 +883,7 @@ def calculate_module_d_from_eol(remaining_masses, params, materials=MATERIALS_LI
         reuse = params.get(f'eol_reuse_{m}', 0.0)
         recycle = params.get(f'eol_recycle_{m}', 0.0)
         recovered = M * (reuse + recycle)
-        ef_virgin = MATERIAL_FACTORS[MATERIAL_KEY_MAP[m]]['gwp_kgco2e_per_kg']
+        ef_virgin = MATERIAL_FACTORS[MATERIAL_KEY_MAP[m]]['gwp_kgco2e_per_kg'] * params.get(f'unc_ef_mult_{m}', 1.0)
         ef_secondary = params.get(f'eol_secondary_ef_{m}', 0.0)
         if recovered > 0 and ef_secondary <= 0.0:
             quality_ok = False
@@ -988,12 +988,16 @@ def calculate_core_lca_lcc(params):
                 ee_wood + ee_frp + ee_glass)
 
     # Embodied Carbon (A1-A3, GROSS — ICE V4.1 carbon factors, primary indicator)
-    carbon_concrete = concrete_kg * MATERIAL_FACTORS['concrete_32_40']['gwp_kgco2e_per_kg']
-    carbon_steel = steel_kg * MATERIAL_FACTORS['steel_section']['gwp_kgco2e_per_kg']
-    carbon_aluminum = aluminum_kg * MATERIAL_FACTORS['aluminum_general']['gwp_kgco2e_per_kg']
-    carbon_wood = wood_kg * MATERIAL_FACTORS['wood_general']['gwp_kgco2e_per_kg']
-    carbon_frp = frp_kg * MATERIAL_FACTORS['frp_general']['gwp_kgco2e_per_kg']
-    carbon_glass = glass_kg * MATERIAL_FACTORS['glass_primary']['gwp_kgco2e_per_kg']
+    # unc_ef_mult_<m> (default 1.0) lets Phase 4 propagate per-material EF uncertainty
+    # consistently across A1-A3, A5, B2-B5 and Module D.
+    ef_mult = {m: params.get(f'unc_ef_mult_{m}', 1.0)
+               for m in ('concrete', 'steel', 'aluminum', 'wood', 'frp', 'glass')}
+    carbon_concrete = concrete_kg * MATERIAL_FACTORS['concrete_32_40']['gwp_kgco2e_per_kg'] * ef_mult['concrete']
+    carbon_steel = steel_kg * MATERIAL_FACTORS['steel_section']['gwp_kgco2e_per_kg'] * ef_mult['steel']
+    carbon_aluminum = aluminum_kg * MATERIAL_FACTORS['aluminum_general']['gwp_kgco2e_per_kg'] * ef_mult['aluminum']
+    carbon_wood = wood_kg * MATERIAL_FACTORS['wood_general']['gwp_kgco2e_per_kg'] * ef_mult['wood']
+    carbon_frp = frp_kg * MATERIAL_FACTORS['frp_general']['gwp_kgco2e_per_kg'] * ef_mult['frp']
+    carbon_glass = glass_kg * MATERIAL_FACTORS['glass_primary']['gwp_kgco2e_per_kg'] * ef_mult['glass']
 
     # A1-A3 GROSS embodied carbon (kg) — Module D credit is reported SEPARATELY below
     total_carbon_raw = (carbon_concrete + carbon_steel + carbon_aluminum +
@@ -1317,6 +1321,257 @@ def run_full_assessment(params):
 
 
 # ═══════════════════════════════════════════════════════════════
+# PHASE 4 — COMPONENT-BASED MONTE CARLO UNCERTAINTY PROPAGATION
+# ───────────────────────────────────────────────────────────────
+# A statistical layer ON TOP of the A1-C4 model. It does NOT change any LCA
+# equation. Each uncertain input is sampled from its own distribution and the
+# full model is re-run, so uncertainty propagates per component while the model
+# identities hold in EVERY draw:
+#   gross = A1-A3 + A4 + A5 + B2-B5 + B6 + C1-C4
+#   net   = gross - Module D            (Module D never enters gross)
+#   GWP/pkm = gross * 1000 / PKM        (uses GROSS, never net)
+# NO total-scaling. NO SI / CRITIC-Entropy. Treatment shares are sampled jointly
+# (Dirichlet) so reuse+recycle+disposal = 1 in every draw.
+# ═══════════════════════════════════════════════════════════════
+
+def _norm_ppf(p):
+    """Inverse standard-normal CDF (Acklam), numpy-only, vectorised."""
+    p = np.asarray(p, dtype=float)
+    a = [-3.969683028665376e+01, 2.209460984245205e+02, -2.759285104469687e+02,
+         1.383577518672690e+02, -3.066479806614716e+01, 2.506628277459239e+00]
+    b = [-5.447609879822406e+01, 1.615858368580409e+02, -1.556989798598866e+02,
+         6.680131188771972e+01, -1.328068155288572e+01]
+    c = [-7.784894002430293e-03, -3.223964580411365e-01, -2.400758277161838e+00,
+         -2.549732539343734e+00, 4.374664141464968e+00, 2.938163982698783e+00]
+    d = [7.784695709041462e-03, 3.224671290700398e-01, 2.445134137142996e+00,
+         3.754408661907416e+00]
+    plow, phigh = 0.02425, 1 - 0.02425
+    p = np.clip(p, 1e-12, 1 - 1e-12)
+    x = np.zeros_like(p)
+    lo = p < plow; hi = p > phigh; mid = (~lo) & (~hi)
+    if np.any(lo):
+        q = np.sqrt(-2 * np.log(p[lo]))
+        x[lo] = (((((c[0]*q+c[1])*q+c[2])*q+c[3])*q+c[4])*q+c[5]) / ((((d[0]*q+d[1])*q+d[2])*q+d[3])*q+1)
+    if np.any(hi):
+        q = np.sqrt(-2 * np.log(1 - p[hi]))
+        x[hi] = -(((((c[0]*q+c[1])*q+c[2])*q+c[3])*q+c[4])*q+c[5]) / ((((d[0]*q+d[1])*q+d[2])*q+d[3])*q+1)
+    if np.any(mid):
+        q = p[mid] - 0.5; r = q * q
+        x[mid] = (((((a[0]*r+a[1])*r+a[2])*r+a[3])*r+a[4])*r+a[5]) * q / (((((b[0]*r+b[1])*r+b[2])*r+b[3])*r+b[4])*r+1)
+    return x
+
+
+def lhs_unit_samples(n, k, seed=42):
+    """Latin Hypercube unit samples in [0,1]^(n x k)."""
+    rng = np.random.default_rng(seed)
+    u = np.zeros((n, k))
+    for j in range(k):
+        u[:, j] = (rng.permutation(n) + rng.random(n)) / n
+    return u
+
+
+def sample_from_distribution(u, spec):
+    """Transform uniform u -> distribution. Positive quantities are clipped >= 0."""
+    base = spec['base_value']; cv = spec.get('cv', 0.0); dist = spec['distribution']
+    lo = spec.get('min', None); hi = spec.get('max', None)
+    if dist == 'fixed' or cv <= 0 or base == 0:
+        x = np.full_like(np.asarray(u, dtype=float), base)
+    elif dist == 'lognormal':
+        sigma = np.sqrt(np.log(1 + cv * cv)); mu = np.log(abs(base)) - 0.5 * sigma * sigma
+        x = np.sign(base) * np.exp(mu + sigma * _norm_ppf(u))
+    elif dist == 'normal':
+        x = base + (cv * base) * _norm_ppf(u)
+    elif dist == 'triangular':
+        spread = min(2.0 * cv, 0.95)
+        a = base * (1 - spread); cc = base; bb = base * (1 + spread)
+        u = np.asarray(u, dtype=float); x = np.empty_like(u)
+        fc = (cc - a) / (bb - a) if bb > a else 0.0
+        left = u <= fc
+        x[left] = a + np.sqrt(u[left] * (bb - a) * (cc - a))
+        x[~left] = bb - np.sqrt((1 - u[~left]) * (bb - a) * (bb - cc))
+    else:
+        x = np.full_like(np.asarray(u, dtype=float), base)
+    if lo is not None and np.isfinite(lo):
+        x = np.maximum(x, lo)
+    if hi is not None and np.isfinite(hi):
+        x = np.minimum(x, hi)
+    return x
+
+
+def build_uncertainty_registry(params, results):
+    """One row per uncertain input. Stage tags, distributions, CVs, bounds, quality."""
+    reg = []
+    def add(parameter, stage, base, dist, cv, mn, mx, unit, quality, active=True, group=None):
+        reg.append({'parameter': parameter, 'stage': stage, 'base_value': base,
+                    'distribution': dist, 'cv': cv, 'min': mn, 'max': mx, 'unit': unit,
+                    'source_quality': quality, 'active_when': bool(active), 'correlation_group': group})
+    mats = ['concrete', 'steel', 'aluminum', 'wood', 'frp', 'glass']
+    ef_cv = {'concrete': 0.10, 'steel': 0.08, 'aluminum': 0.12, 'wood': 0.15, 'frp': 0.30, 'glass': 0.12}
+    for m in mats:
+        add(f'unc_ef_mult_{m}', 'A1-A3', 1.0, 'lognormal', ef_cv[m], 0.0, None, 'multiplier', 'ICE/EPD', True, 'material_EF')
+        add(m, 'A1-A3', params.get(m, 0.0), 'normal', 0.05, 0.0, None, 'BOQ unit', 'project/BOQ', True, 'material_qty')
+    add('carbon_intensity', 'B6/electricity', params.get('carbon_intensity', 0.5), 'lognormal', 0.12, 0.0, None, 'kgCO2e/kWh', 'database', True, 'grid')
+    add('energy_per_pax', 'B6', params.get('energy_per_pax', 0.15), 'lognormal', 0.15, 0.0, None, 'kWh/pkm', 'scenario', True, 'B6')
+    add('transport_distance_km', 'A4', params.get('transport_distance_km', 0.0), 'triangular', 0.20, 0.0, None, 'km', 'scenario', True, 'A4')
+    a5_on = bool(params.get('include_a5', False))
+    add('a5_diesel_l', 'A5', params.get('a5_diesel_l', 0.0), 'lognormal', 0.20, 0.0, None, 'L', 'scenario', a5_on, 'A5')
+    add('a5_elec_kwh', 'A5', params.get('a5_elec_kwh', 0.0), 'lognormal', 0.20, 0.0, None, 'kWh', 'scenario', a5_on, 'A5')
+    add('a5_diesel_ef', 'A5', params.get('a5_diesel_ef', FUEL_FACTORS['diesel']['ef_kgco2e_per_l']), 'lognormal', 0.08, 0.0, None, 'kgCO2e/L', 'database', a5_on, 'fuel')
+    b_on = bool(params.get('include_b2b5', False))
+    add('b2_material_pct', 'B2-B5', params.get('b2_material_pct', 0.0), 'triangular', 0.25, 0.0, None, '% A1-A3', 'scenario', b_on, 'B2B5')
+    add('b4_frac_steel', 'B2-B5', params.get('b4_frac_steel', 0.0), 'triangular', 0.25, 0.0, 1.0, 'fraction', 'scenario', b_on, 'B2B5')
+    add('b4_frac_concrete', 'B2-B5', params.get('b4_frac_concrete', 0.0), 'triangular', 0.25, 0.0, 1.0, 'fraction', 'scenario', b_on, 'B2B5')
+    c_on = bool(params.get('include_c1c4', False))
+    add('c1_diesel_l', 'C1-C4', params.get('c1_diesel_l', 0.0), 'lognormal', 0.20, 0.0, None, 'L', 'scenario', c_on, 'C1C4')
+    add('eol_transport_km', 'C1-C4', params.get('eol_transport_km', 50.0), 'triangular', 0.20, 0.0, None, 'km', 'scenario', c_on, 'C1C4')
+    add('eol_recycle_ef', 'C1-C4', params.get('eol_recycle_ef', 0.0), 'lognormal', 0.20, 0.0, None, 'kgCO2e/kg', 'scenario', c_on, 'C1C4')
+    add('eol_disposal_ef', 'C1-C4', params.get('eol_disposal_ef', 0.0), 'lognormal', 0.20, 0.0, None, 'kgCO2e/kg', 'scenario', c_on, 'C1C4')
+    add('eol_recovery_eta', 'Module D', params.get('eol_recovery_eta', 1.0), 'triangular', 0.10, 0.0, 1.0, 'fraction', 'scenario', c_on, 'moduleD')
+    add('construction_cost', 'LCCA', params.get('construction_cost', 0.0), 'lognormal', 0.10, 0.0, None, '$M', 'project', True, 'cost')
+    add('maintenance_cost', 'LCCA', params.get('maintenance_cost', 0.0), 'lognormal', 0.15, 0.0, None, '$M/yr', 'scenario', True, 'cost')
+    return pd.DataFrame(reg)
+
+
+def sample_uncertain_parameters(registry, n, seed=42, params=None):
+    """LHS-sample active scalar parameters; sample EOL treatment shares jointly (Dirichlet)."""
+    active = registry[registry['active_when']].reset_index(drop=True)
+    k = len(active)
+    u = lhs_unit_samples(n, k, seed) if k else np.zeros((n, 0))
+    cols = {}
+    for j, row in active.iterrows():
+        cols[row['parameter']] = sample_from_distribution(u[:, j], row.to_dict())
+    samples = pd.DataFrame(cols)
+    # Treatment shares via Dirichlet (preserves reuse+recycle+disposal = 1)
+    if params is not None and params.get('include_c1c4', False):
+        rng = np.random.default_rng(seed + 1)
+        conc = 50.0
+        for m in ['concrete', 'steel', 'aluminum', 'wood', 'frp', 'glass']:
+            reuse0 = params.get(f'eol_reuse_{m}', 0.0); recycle0 = params.get(f'eol_recycle_{m}', 0.0)
+            disp0 = max(1.0 - reuse0 - recycle0, 0.0)
+            alpha = np.array([reuse0, recycle0, disp0]) * conc + 1e-3
+            draw = rng.dirichlet(alpha, size=n)
+            samples[f'eol_reuse_{m}'] = draw[:, 0]
+            samples[f'eol_recycle_{m}'] = draw[:, 1]
+    return samples
+
+
+def apply_uncertainty_sample(base_params, sample_row):
+    """Return a NEW params dict with sampled overrides (base_params untouched)."""
+    p = dict(base_params)
+    for kk, vv in sample_row.items():
+        p[kk] = float(vv)
+    return p
+
+
+def run_component_monte_carlo(base_params, n=5000, seed=42):
+    """Component-based propagation. Returns samples/outputs/summary/drivers/convergence/quality."""
+    baseline = run_full_assessment(base_params)
+    registry = build_uncertainty_registry(base_params, baseline)
+    samples = sample_uncertain_parameters(registry, n, seed, params=base_params)
+    rows = []
+    for i in range(n):
+        sp = apply_uncertainty_sample(base_params, samples.iloc[i].to_dict())
+        try:
+            r = run_full_assessment(sp)
+            gross = r['gross_a1_c4_tons']
+            stage_sum = (r['total_embodied_co2'] + r['lca_results']['a4_transport_co2_tons']
+                         + r['a5']['a5_total_tons'] + r['i_b2b5_tons'] + r['active_b6_tons'] + r['i_c1c4_tons'])
+            failed = abs(stage_sum - gross) > 1e-6 or not np.isfinite(gross)
+            rows.append({'run_id': i, 'A1_A3_tons': r['total_embodied_co2'],
+                         'A4_tons': r['lca_results']['a4_transport_co2_tons'],
+                         'A5_tons': r['a5']['a5_total_tons'], 'B2_B5_tons': r['i_b2b5_tons'],
+                         'B6_tons': r['active_b6_tons'], 'C1_C4_tons': r['i_c1c4_tons'],
+                         'gross_a1_c4_tons': gross, 'module_d_tons': r['module_d_tons'],
+                         'net_with_module_d_tons': r['net_with_module_d_tons'],
+                         'gwp_pkm_gross': r['gwp_pkm_gross'], 'npv_lcc_m': r['npv_lcc_m'],
+                         'failed': bool(failed), 'failure_reason': 'identity' if failed else ''})
+        except Exception as e:  # noqa
+            rows.append({'run_id': i, 'A1_A3_tons': np.nan, 'A4_tons': np.nan, 'A5_tons': np.nan,
+                         'B2_B5_tons': np.nan, 'B6_tons': np.nan, 'C1_C4_tons': np.nan,
+                         'gross_a1_c4_tons': np.nan, 'module_d_tons': np.nan,
+                         'net_with_module_d_tons': np.nan, 'gwp_pkm_gross': np.nan,
+                         'npv_lcc_m': np.nan, 'failed': True, 'failure_reason': str(e)[:60]})
+    outputs = pd.DataFrame(rows)
+    summary = summarise_mc_outputs(outputs)
+    drivers = compute_uncertainty_drivers(samples, outputs, 'gross_a1_c4_tons')
+    convergence = compute_mc_convergence(outputs, 'gross_a1_c4_tons')
+    quality = build_uncertainty_quality_table(registry)
+    n_ok = int((~outputs['failed']).sum())
+    registry_complete = len(registry[registry['active_when']]) > 0
+    pgu = bool(baseline.get('publication_grade_full_lca', False) and registry_complete
+               and n_ok >= 5000 and convergence['convergence_ok'])
+    return {'samples': samples, 'outputs': outputs, 'summary': summary, 'drivers': drivers,
+            'convergence': convergence, 'quality': quality, 'n': n, 'n_ok': n_ok,
+            'component_mc_used': True, 'publication_grade_uncertainty': pgu, 'baseline': baseline}
+
+
+def summarise_mc_outputs(outputs_df):
+    """Per-output mean/median/std/CV and percentiles (P2.5..P97.5)."""
+    cols = ['A1_A3_tons', 'A4_tons', 'A5_tons', 'B2_B5_tons', 'B6_tons', 'C1_C4_tons',
+            'gross_a1_c4_tons', 'module_d_tons', 'net_with_module_d_tons', 'gwp_pkm_gross', 'npv_lcc_m']
+    ok = outputs_df[~outputs_df['failed']]
+    out = []
+    for c in cols:
+        v = ok[c].to_numpy(dtype=float); v = v[np.isfinite(v)]
+        if v.size == 0:
+            continue
+        mean = float(np.mean(v))
+        out.append({'metric': c, 'mean': mean, 'median': float(np.median(v)), 'std': float(np.std(v)),
+                    'CV': float(np.std(v) / mean) if mean else np.nan,
+                    'P2.5': float(np.percentile(v, 2.5)), 'P5': float(np.percentile(v, 5)),
+                    'P50': float(np.percentile(v, 50)), 'P95': float(np.percentile(v, 95)),
+                    'P97.5': float(np.percentile(v, 97.5)), 'min': float(v.min()), 'max': float(v.max())})
+    return pd.DataFrame(out)
+
+
+def _spearman(x, y):
+    x = np.asarray(x, dtype=float); y = np.asarray(y, dtype=float)
+    mask = np.isfinite(x) & np.isfinite(y)
+    x, y = x[mask], y[mask]
+    if x.size < 3 or np.all(x == x[0]):
+        return 0.0
+    rx = np.argsort(np.argsort(x)).astype(float); ry = np.argsort(np.argsort(y)).astype(float)
+    rx -= rx.mean(); ry -= ry.mean()
+    denom = np.sqrt((rx * rx).sum() * (ry * ry).sum())
+    return float((rx * ry).sum() / denom) if denom > 0 else 0.0
+
+
+def compute_uncertainty_drivers(samples_df, outputs_df, target='gross_a1_c4_tons'):
+    """Spearman rank correlation of each sampled input with the target output (tornado)."""
+    ok = ~outputs_df['failed'].to_numpy()
+    y = outputs_df[target].to_numpy(dtype=float)
+    rows = []
+    for col in samples_df.columns:
+        rho = _spearman(samples_df[col].to_numpy()[ok], y[ok])
+        rows.append({'parameter': col, 'spearman_rho': rho, 'abs_rho': abs(rho),
+                     'direction': 'increases' if rho > 0 else ('decreases' if rho < 0 else 'none')})
+    return pd.DataFrame(rows).sort_values('abs_rho', ascending=False).reset_index(drop=True)
+
+
+def compute_mc_convergence(outputs_df, target='gross_a1_c4_tons'):
+    """Running mean / P95 / CV; convergence_ok if the last 20% move <1% (mean) and <2% (P95)."""
+    ok = outputs_df[~outputs_df['failed']]
+    v = ok[target].to_numpy(dtype=float); v = v[np.isfinite(v)]
+    n = v.size
+    run_mean = np.array([v[:i + 1].mean() for i in range(n)]) if n else np.array([])
+    run_p95 = np.array([np.percentile(v[:i + 1], 95) for i in range(n)]) if n else np.array([])
+    mean_stable = p95_stable = False
+    if n >= 50:
+        cut = int(0.8 * n)
+        m_final = run_mean[-1]; p_final = run_p95[-1]
+        mean_stable = abs(run_mean[cut:].max() - run_mean[cut:].min()) / abs(m_final) < 0.01 if m_final else False
+        p95_stable = abs(run_p95[cut:].max() - run_p95[cut:].min()) / abs(p_final) < 0.02 if p_final else False
+    return {'running_mean': run_mean, 'running_p95': run_p95,
+            'mean_stable': bool(mean_stable), 'p95_stable': bool(p95_stable),
+            'convergence_ok': bool(mean_stable and p95_stable)}
+
+
+def build_uncertainty_quality_table(registry):
+    act = registry[registry['active_when']].copy()
+    return act[['parameter', 'stage', 'distribution', 'cv', 'source_quality', 'correlation_group']].reset_index(drop=True)
+
+
+# ═══════════════════════════════════════════════════════════════
 # CUSTOM CSS STYLING
 # ═══════════════════════════════════════════════════════════════
 st.markdown("""
@@ -1453,7 +1708,7 @@ st.markdown("""
 st.markdown("""
 <div class="main-header">
     <h1>🚝 Enhanced Monorail LCA/LCCA Assessment Tool</h1>
-    <p>Process-based Partial LCA + NPV-based LCCA Framework | ISO 14040/14044 + ASTM E917 | Cairo University</p>
+    <p>Gross modular A1-C4 LCA + NPV-based LCCA Framework | ISO 14040/14044 + ASTM E917 | Cairo University</p>
 </div>
 """, unsafe_allow_html=True)
 
@@ -1730,7 +1985,7 @@ with tabs[0]:
             f"GWP = {results['gwp_pkm_gross']:.5f} kg/pkm (gross, never net) · "
             f"Module D (separate) = −{results['module_d_tons']:,.1f} t · "
             f"Net incl. Module D (supplementary) = {results['net_with_module_d_tons']:,.1f} t. "
-            "C1–C4 is not yet included (Phase 3C)."
+            "Each stage is independently toggleable; statuses are shown above."
         )
         if not results.get('publication_grade_full_lca', True):
             st.error("🚫 Full-LCA result is NOT publication-grade (see FRP/EPD warning above).")
@@ -1970,7 +2225,7 @@ ORIGINAL → ADJUSTED SCORES:
 Synergy-to-Trade-off Ratio: {results['synergy_ratio']:.2f}
 
 Assessment Date: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
-Methodology: Partial process-based LCA (A1-A3 gross materials + optional A4 transport + B6 operation) + NPV-based LCCA.
+Methodology: Gross modular A1-C4 LCA (A1-A3 + A4 + optional A5 + activity-based B2-B5 + active B6 + optional C1-C4) + NPV-based LCCA.
 Carbon factors: ICE Database Educational V4.1 (Oct 2025). Module D (recycling) reported separately per EN 15804. Li and Zhu (2022) is benchmark-only.
 """
         st.code(report, language=None)
@@ -2257,15 +2512,115 @@ with tabs[3]:
 # TAB 5: UNCERTAINTY ANALYSIS (Monte Carlo)
 # ═══════════════════════════════════════════════════════════════
 with tabs[4]:
-    st.markdown("### 🎲 Scenario-based Monte Carlo Uncertainty")
-    st.warning(
-        "⚠️ **Illustrative only — NOT publication-grade uncertainty.** The current simulation scales the "
-        "*total* CO₂ by concrete and grid-carbon factors, although embodied and operational emissions have "
-        "different uncertainty drivers. Component-based propagation (separating A1-A3 vs B6) is pending Phase 4; "
-        "until then these intervals must not be reported as scientific uncertainty. CV values are scenario assumptions."
-    )
+    st.markdown("### 🎲 Phase 4 — Component-based Monte Carlo Uncertainty")
+    st.caption("Each uncertain input is sampled from its own distribution and the full A1–C4 model is "
+               "re-run, so uncertainty propagates per component while gross = Σ stages, net = gross − Module D, "
+               "and GWP/pkm = gross/pkm hold in every draw. No total-scaling.")
 
-    if st.button("🎲 Run Monte Carlo Analysis", key="mc_btn"):
+    cmc1, cmc2, cmc3 = st.columns(3)
+    with cmc1:
+        mc_enable = st.checkbox("Enable Phase 4 MC", value=False, key="mc_enable")
+        mc_n = st.number_input("n simulations", value=5000, min_value=100, max_value=20000, step=500, key="mc_n")
+    with cmc2:
+        mc_seed = st.number_input("random seed", value=42, min_value=0, step=1, key="mc_seed")
+        st.caption("Sampling: Latin Hypercube + Dirichlet (shares).")
+    with cmc3:
+        st.caption("Publication-grade uncertainty requires n ≥ 5000 and convergence_ok.")
+
+    if mc_enable:
+        @st.cache_data(show_spinner=True)
+        def _run_mc(params_tuple, n, seed):
+            return run_component_monte_carlo(dict(params_tuple), n=int(n), seed=int(seed))
+        mcres = _run_mc(tuple(sorted(params.items())), mc_n, mc_seed)
+        sm = mcres['summary'].set_index('metric')
+        g = sm.loc['gross_a1_c4_tons']
+        st.success(f"Gross A1–C4: mean {g['mean']:,.0f} t · 95% uncertainty interval "
+                   f"[{g['P2.5']:,.0f}, {g['P97.5']:,.0f}] t · CV {g['CV']*100:.1f}% "
+                   f"({mcres['n_ok']}/{mcres['n']} valid runs).")
+        flag = mcres['publication_grade_uncertainty']
+        (st.success if flag else st.warning)(
+            f"publication_grade_uncertainty = {flag}. "
+            + ("" if flag else "Requires publication-grade full LCA, n ≥ 5000, and convergence_ok."))
+        st.warning("Intervals are **scenario-based uncertainty intervals**, not measured statistical "
+                   "confidence intervals (most distributions are scenario assumptions).")
+
+        st.markdown("#### Stage & metric uncertainty (95% interval)")
+        disp = mcres['summary'].copy()
+        for c in ['mean', 'median', 'std', 'P2.5', 'P50', 'P97.5', 'min', 'max']:
+            disp[c] = disp[c].map(lambda v: f"{v:,.3f}" if abs(v) < 10 else f"{v:,.0f}")
+        disp['CV'] = mcres['summary']['CV'].map(lambda v: f"{v*100:.1f}%")
+        st.dataframe(disp[['metric', 'mean', 'P2.5', 'P50', 'P97.5', 'CV']], use_container_width=True, hide_index=True)
+
+        h1, h2 = st.columns(2)
+        okrows = mcres['outputs'][~mcres['outputs']['failed']]
+        with h1:
+            fig = go.Figure(go.Histogram(x=okrows['gross_a1_c4_tons'] / 1000.0, nbinsx=50,
+                                         marker=dict(color='rgba(100,255,218,0.6)')))
+            fig.add_vline(x=g['P2.5']/1000, line_dash="dash", line_color="#ff6b6b")
+            fig.add_vline(x=g['P97.5']/1000, line_dash="dash", line_color="#ff6b6b")
+            fig.update_layout(title='Gross A1–C4 (k tCO₂e)', height=340, paper_bgcolor='rgba(0,0,0,0)',
+                              plot_bgcolor='rgba(10,25,47,0.8)', font_color='#ccd6f6', margin=dict(t=40, b=30))
+            st.plotly_chart(fig, use_container_width=True)
+        with h2:
+            fig = go.Figure(go.Histogram(x=okrows['gwp_pkm_gross'], nbinsx=50,
+                                         marker=dict(color='rgba(100,149,237,0.6)')))
+            fig.update_layout(title='GWP per pkm (gross)', height=340, paper_bgcolor='rgba(0,0,0,0)',
+                              plot_bgcolor='rgba(10,25,47,0.8)', font_color='#ccd6f6', margin=dict(t=40, b=30))
+            st.plotly_chart(fig, use_container_width=True)
+
+        h3, h4 = st.columns(2)
+        with h3:
+            fig = go.Figure(go.Histogram(x=okrows['net_with_module_d_tons'] / 1000.0, nbinsx=50,
+                                         marker=dict(color='rgba(247,151,30,0.6)')))
+            fig.update_layout(title='Net incl. Module D (k tCO₂e, supplementary)', height=340,
+                              paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(10,25,47,0.8)',
+                              font_color='#ccd6f6', margin=dict(t=40, b=30))
+            st.plotly_chart(fig, use_container_width=True)
+        with h4:
+            fig = go.Figure(go.Histogram(x=okrows['npv_lcc_m'], nbinsx=50,
+                                         marker=dict(color='rgba(150,201,61,0.6)')))
+            fig.update_layout(title='LCC NPV ($M)', height=340, paper_bgcolor='rgba(0,0,0,0)',
+                              plot_bgcolor='rgba(10,25,47,0.8)', font_color='#ccd6f6', margin=dict(t=40, b=30))
+            st.plotly_chart(fig, use_container_width=True)
+
+        st.markdown("#### Uncertainty drivers (Spearman tornado, target = gross A1–C4)")
+        drv = mcres['drivers'].head(12)
+        figd = go.Figure(go.Bar(x=drv['spearman_rho'], y=drv['parameter'], orientation='h',
+                                marker_color=['#ff6b6b' if v > 0 else '#64ffda' for v in drv['spearman_rho']]))
+        figd.update_layout(title='Top drivers (Spearman ρ)', height=420, paper_bgcolor='rgba(0,0,0,0)',
+                           plot_bgcolor='rgba(10,25,47,0.8)', font_color='#ccd6f6',
+                           yaxis=dict(autorange='reversed'), margin=dict(t=40, b=30))
+        st.plotly_chart(figd, use_container_width=True)
+
+        cv = mcres['convergence']
+        if len(cv['running_mean']):
+            figc = go.Figure(go.Scatter(y=cv['running_mean'] / 1000.0, mode='lines', line=dict(color='#64ffda')))
+            figc.update_layout(title=f"Convergence — running mean (ok={cv['convergence_ok']})", height=320,
+                               paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(10,25,47,0.8)',
+                               font_color='#ccd6f6', xaxis_title='run', yaxis_title='mean gross (k t)', margin=dict(t=40, b=30))
+            st.plotly_chart(figc, use_container_width=True)
+
+        dl1, dl2 = st.columns(2)
+        with dl1:
+            st.download_button("📥 Download MC samples (CSV)", mcres['samples'].to_csv(index=False),
+                               file_name=f"mc_samples_{datetime.now().strftime('%Y%m%d')}.csv")
+        with dl2:
+            mc_xl = io.BytesIO()
+            with pd.ExcelWriter(mc_xl, engine='openpyxl') as wr:
+                mcres['summary'].to_excel(wr, sheet_name='summary', index=False)
+                mcres['drivers'].to_excel(wr, sheet_name='drivers', index=False)
+                mcres['quality'].to_excel(wr, sheet_name='registry', index=False)
+            st.download_button("📥 Download MC summary (Excel)", mc_xl.getvalue(),
+                               file_name=f"mc_summary_{datetime.now().strftime('%Y%m%d')}.xlsx",
+                               mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+
+    st.markdown("---")
+    st.markdown("#### 🗄️ Legacy illustrative MC (display-only, NOT publication-grade)")
+    st.warning("⚠️ **Legacy total-scaling Monte Carlo — illustrative only.** It scales the *total* CO₂ by "
+               "concrete and grid factors and must NOT be used as scientific uncertainty. Superseded by the "
+               "Phase 4 component-based engine above.")
+
+    if st.button("🎲 Run legacy illustrative MC", key="mc_btn"):
         n_simulations = 1000
         np.random.seed(42)
 
@@ -2636,8 +2991,29 @@ results are not 'validated' unless calibrated with project data. `publication_gr
 is False if FRP lacks an EPD, if any material's treatment shares do not sum to 1, or if
 Module D is reported with a missing secondary factor.
 
-- **Still pending:** component-based Monte Carlo (Phase 4), sustainability index /
-  CRITIC–Entropy (Phase 5).
+#### 3d. COMPONENT-BASED MONTE CARLO (Phase 4)
+A statistical layer on top of the A1–C4 model — it changes **no** LCA equation. Each
+uncertain input is sampled from its own distribution (lognormal for EFs/positive
+quantities, triangular for distances, Dirichlet for treatment shares, etc.) via Latin
+Hypercube sampling, and the full model is re-run, so uncertainty propagates **per
+component**. The model identities hold in **every** draw:
+
+```
+θ_k ~ P(θ)
+I_gross,k = I_A1-A3,k + I_A4,k + I_A5,k + I_B2-B5,k + I_B6,k + I_C1-C4,k
+GWP_pkm,k = 1000 · I_gross,k / PKM_k
+I_net,k   = I_gross,k − I_D,k        (Module D propagated separately, never in gross)
+95% uncertainty interval = [P2.5(Y), P97.5(Y)]
+```
+
+Outputs: per-stage and metric percentiles, Spearman tornado (drivers), and convergence
+diagnostics. `publication_grade_uncertainty` is True only if the full LCA is
+publication-grade, the registry is complete, n ≥ 5000, and convergence is reached. The
+legacy total-scaling MC is retained as **illustrative only** and is never publication-grade.
+Reported ranges are **scenario-based uncertainty intervals**, not measured statistical
+confidence intervals.
+
+- **Still pending:** sustainability index / CRITIC–Entropy (Phase 5).
 
 #### 4. ILLUSTRATIVE INTERACTION VISUALIZATION
 - The interaction network is used only for dashboard visualization.
@@ -2685,14 +3061,14 @@ Module D is reported with a missing secondary factor.
 
 ```
 [Your Name]. (2025). Enhanced Monorail LCA/LCCA Assessment Tool:
-Process-based Partial LCA and NPV-based LCCA Framework with Scenario-based Sensitivity Analysis.
+Gross modular A1-C4 LCA and NPV-based LCCA Framework with Scenario-based Sensitivity Analysis.
 Cairo University. Software version 2.0.
 ```
 
 ```bibtex
 @software{monorail_lca_2025,
   author = {[Your Name]},
-  title = {Enhanced Monorail LCA/LCCA Assessment Tool: Process-based Partial LCA and NPV-based LCCA Framework},
+  title = {Enhanced Monorail LCA/LCCA Assessment Tool: Gross modular A1-C4 LCA and NPV-based LCCA Framework},
   year = {2025},
   institution = {Cairo University},
   version = {2.0}
