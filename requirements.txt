@@ -1,0 +1,7 @@
+# Enhanced Monorail LCA/LCCA Assessment Tool — runtime dependencies
+# Pinned with lower bounds for reproducibility (Q1 submission).
+streamlit>=1.36
+numpy>=1.26
+pandas>=2.2
+plotly>=5.22
+openpyxl>=3.1

@@ -71,79 +71,110 @@ REF_GLASS = 500
 REF_LENGTH = 96
 
 # ═══════════════════════════════════════════════════════════════
-# MATERIAL EMBODIED ENERGY AND CARBON FACTORS
-# Energy factors (MJ/kg): Hammond & Jones (2008) / ICE v2.0,
-# used only where embodied energy is reported in legacy ICE tables.
-# Carbon factors (kgCO2e/kg): ICE Database / EPD / selected dataset
-# at A1-A3 cradle-to-gate boundary.
-# Every factor includes: source, version, material category, boundary, status.
+# MATERIAL EMBODIED CARBON FACTORS — A1-A3 (cradle-to-gate)
+# ───────────────────────────────────────────────────────────────
+# SOURCE HIERARCHY (applied per material, most-specific first):
+#   1) Project BOQ quantities (user input)
+#   2) Local / product-specific EPD  (highest evidence — use if available)
+#   3) ICE Database Educational V4.1 (Oct 2025), "ICE Summary" sheet
+#   4) Chen et al. (2022)  → BENCHMARK COMPARISON ONLY, never a factor source
+#
+# CARBON (gwp_kgco2e_per_kg): taken EXACTLY from ICE Database Educational
+#   V4.1 (Oct 2025), ICE Summary sheet, Embodied Carbon column (A1-A3).
+#   Each factor records: ice_name (exact ICE row), dqi_score (data quality),
+#   boundary, declared unit, and status.
+#
+# ENERGY (ee_mj_per_kg): LEGACY values (Hammond & Jones 2008 / ICE v2.0).
+#   These are NOT from ICE V4.1 and are reported as a secondary indicator
+#   only. Carbon (kgCO2e) is the PRIMARY LCA indicator of this study.
+#
+# Module D (end-of-life recycling credit) is NOT netted into A1-A3 here;
+#   it is reported separately downstream per EN 15804.
 # ═══════════════════════════════════════════════════════════════
 MATERIAL_FACTORS = {
-    "concrete_rc25_30": {
+    "concrete_32_40": {
         "ee_mj_per_kg": 0.91,
-        "gwp_kgco2e_per_kg": 0.131,
-        "source": "Hammond & Jones (2008), ICE v2.0 summary tables",
-        "version": "ICE v2.0 (energy) + selected carbon dataset",
-        "material_category": "Concrete RC25/30",
+        "gwp_kgco2e_per_kg": 0.1342,
+        "ice_name": "Concrete 32/40 MPa",
+        "source": "ICE Database Educational V4.1 (Oct 2025), ICE Summary sheet, Embodied Carbon (A1-A3)",
+        "ee_source": "Legacy Hammond & Jones (2008) / ICE v2.0 — NOT from ICE V4.1 (secondary indicator)",
+        "dqi_score": 0.7133,
+        "version": "ICE V4.1 (carbon) + ICE v2.0 (energy, legacy)",
+        "material_category": "Concrete RC 32/40 MPa (structural)",
         "boundary": "A1-A3 / cradle-to-gate",
-        "source_id": "S1-CONC-001",
+        "source_id": "ICE-CONC-3240",
         "declared_unit": "1 kg",
-        "status": "verified_if_S1_is_attached"
+        "status": "verified_ICE_V4.1_carbon"
     },
-    "steel_structural": {
+    "steel_section": {
         "ee_mj_per_kg": 20.10,
-        "gwp_kgco2e_per_kg": 1.55,
-        "source": "ICE Database v4.1 (Oct 2025), structural steel section, dataset documented in supplementary material",
-        "version": "ICE-aligned project dataset",
-        "material_category": "Structural steel section",
+        "gwp_kgco2e_per_kg": 1.61,
+        "ice_name": "Steel, Section",
+        "source": "ICE Database Educational V4.1 (Oct 2025), ICE Summary sheet, Embodied Carbon (A1-A3)",
+        "ee_source": "Legacy Hammond & Jones (2008) / ICE v2.0 — NOT from ICE V4.1 (secondary indicator)",
+        "dqi_score": 0.80,
+        "version": "ICE V4.1 (carbon) + ICE v2.0 (energy, legacy)",
+        "material_category": "Structural steel section (use Steel, Rebar = 1.72 if reinforcement)",
         "boundary": "A1-A3 / cradle-to-gate",
-        "source_id": "S1-STEEL-001",
+        "source_id": "ICE-STEEL-SECTION",
         "declared_unit": "1 kg",
-        "status": "verified_if_S1_is_attached"
+        "status": "verified_ICE_V4.1_carbon"
     },
     "aluminum_general": {
         "ee_mj_per_kg": 155.0,
-        "gwp_kgco2e_per_kg": 9.16,
-        "source": "ICE Database v4.1 (Oct 2025), primary aluminum category, dataset documented in supplementary material",
-        "version": "ICE-aligned project dataset",
-        "material_category": "Primary aluminum",
+        "gwp_kgco2e_per_kg": 13.0555,
+        "ice_name": "Aluminium General, Worldwide",
+        "source": "ICE Database Educational V4.1 (Oct 2025), ICE Summary sheet, Embodied Carbon (A1-A3)",
+        "ee_source": "Legacy Hammond & Jones (2008) / ICE v2.0 — NOT from ICE V4.1 (secondary indicator)",
+        "dqi_score": 0.64,
+        "version": "ICE V4.1 (carbon) + ICE v2.0 (energy, legacy)",
+        "material_category": "Primary aluminium, worldwide mix (most conservative; sensitivity: ME=10.81, EU=6.67)",
         "boundary": "A1-A3 / cradle-to-gate",
-        "source_id": "S1-AL-001",
+        "source_id": "ICE-AL-WORLDWIDE",
         "declared_unit": "1 kg",
-        "status": "verified_if_S1_is_attached"
+        "status": "verified_ICE_V4.1_carbon"
     },
     "wood_general": {
         "ee_mj_per_kg": 10.0,
-        "gwp_kgco2e_per_kg": 0.40,
-        "source": "EPD International library, timber generic declaration (documented in supplementary material)",
-        "version": "Supplementary dataset S1 (material-factor audit table)",
-        "material_category": "Timber generic",
+        "gwp_kgco2e_per_kg": 0.4928,
+        "ice_name": "Timber - Average of all data - No Carbon Storage",
+        "source": "ICE Database Educational V4.1 (Oct 2025), ICE Summary sheet, Embodied Carbon (A1-A3)",
+        "ee_source": "Legacy Hammond & Jones (2008) / ICE v2.0 — NOT from ICE V4.1 (secondary indicator)",
+        "dqi_score": 0.7103,
+        "version": "ICE V4.1 (carbon) + ICE v2.0 (energy, legacy)",
+        "material_category": "Timber, average — NO carbon storage (EoL C1-C4 not yet closed)",
         "boundary": "A1-A3 / cradle-to-gate",
-        "source_id": "S1-WOOD-001",
+        "source_id": "ICE-TIMBER-NOSTORAGE",
         "declared_unit": "1 kg",
-        "status": "verified_if_S1_is_attached"
+        "status": "verified_ICE_V4.1_carbon"
     },
     "frp_general": {
         "ee_mj_per_kg": 95.0,
         "gwp_kgco2e_per_kg": 6.50,
-        "source": "EPD-based FRP composite generic declaration (documented in supplementary material)",
-        "version": "Supplementary dataset S1 (material-factor audit table)",
-        "material_category": "FRP composite",
+        "ice_name": "n/a — ICE V4.1 GRP has no published A1-A3 carbon value",
+        "source": "PLACEHOLDER — not from ICE V4.1; requires product-specific EPD before publication",
+        "ee_source": "Legacy estimate — NOT verified",
+        "dqi_score": None,
+        "version": "UNVERIFIED placeholder",
+        "material_category": "FRP / GRP composite",
         "boundary": "A1-A3 / cradle-to-gate",
-        "source_id": "S1-FRP-001",
+        "source_id": "FRP-UNVERIFIED",
         "declared_unit": "1 kg",
-        "status": "verified_if_S1_is_attached"
+        "status": "UNVERIFIED — requires product-specific EPD (do NOT use ICE/guess)"
     },
     "glass_primary": {
         "ee_mj_per_kg": 15.0,
-        "gwp_kgco2e_per_kg": 0.91,
-        "source": "ICE Database v4.1 (Oct 2025), flat glass category, dataset documented in supplementary material",
-        "version": "ICE-aligned project dataset",
-        "material_category": "Flat glass",
+        "gwp_kgco2e_per_kg": 1.4370,
+        "ice_name": "Glass, General, per kg",
+        "source": "ICE Database Educational V4.1 (Oct 2025), ICE Summary sheet, Embodied Carbon (A1-A3)",
+        "ee_source": "Legacy Hammond & Jones (2008) / ICE v2.0 — NOT from ICE V4.1 (secondary indicator)",
+        "dqi_score": 0.6363,
+        "version": "ICE V4.1 (carbon) + ICE v2.0 (energy, legacy)",
+        "material_category": "Flat glass, general (sensitivity: double=1.6256, toughened=1.6672)",
         "boundary": "A1-A3 / cradle-to-gate",
-        "source_id": "S1-GLASS-001",
+        "source_id": "ICE-GLASS-GENERAL",
         "declared_unit": "1 kg",
-        "status": "verified_if_S1_is_attached"
+        "status": "verified_ICE_V4.1_carbon"
     }
 }
 
@@ -152,9 +183,12 @@ MATERIAL_FACTORS = {
 MATERIAL_FACTOR_AUDIT = pd.DataFrame([
     {
         "material": key,
-        "ee_mj_per_kg": val["ee_mj_per_kg"],
+        "ice_name": val.get("ice_name", "n/a"),
         "gwp_kgco2e_per_kg": val["gwp_kgco2e_per_kg"],
-        "source": val["source"],
+        "dqi_score": val.get("dqi_score", None),
+        "ee_mj_per_kg (legacy)": val["ee_mj_per_kg"],
+        "carbon_source": val["source"],
+        "energy_source": val.get("ee_source", "n/a"),
         "source_id": val.get("source_id", "not specified"),
         "declared_unit": val.get("declared_unit", "1 kg"),
         "version": val["version"],
@@ -407,31 +441,36 @@ def calculate_a4_transport_co2(material_masses_kg, distance_km, mode):
 
 def calculate_lca_summary(embodied_co2_tons, annual_operational_co2_tons, embodied_energy_mj,
                           annual_operational_energy_kwh, daily_pax_km, lifetime_years,
-                          a4_transport_co2_tons=0.0):
+                          a4_transport_co2_tons=0.0,
+                          module_d_carbon_credit_tons=0.0, module_d_energy_credit_mj=0.0):
     lifetime_operational_co2_tons = annual_operational_co2_tons * lifetime_years
+    # A1-A3 (gross) + A4 + B6. Module D is NOT added here (EN 15804: separate module).
     total_lifecycle_co2_tons = embodied_co2_tons + a4_transport_co2_tons + lifetime_operational_co2_tons
     lifetime_pax_km = daily_pax_km * 365 * lifetime_years
     co2_kg_per_pkm = (total_lifecycle_co2_tons * 1000 / lifetime_pax_km) if lifetime_pax_km > 0 else np.nan
 
     return {
-        "scope": "Partial process-based LCA: A1-A3 materials + optional A4 transport + B6 operation",
+        "scope": "Partial process-based LCA: A1-A3 (gross) materials + optional A4 transport + B6 operation. Module D reported separately.",
         "embodied_co2_tons": embodied_co2_tons,
         "a4_transport_co2_tons": a4_transport_co2_tons,
         "annual_operational_co2_tons": annual_operational_co2_tons,
         "lifetime_operational_co2_tons": lifetime_operational_co2_tons,
         "total_lifecycle_co2_tons": total_lifecycle_co2_tons,
+        "module_d_carbon_credit_tons": module_d_carbon_credit_tons,
+        "module_d_energy_credit_mj": module_d_energy_credit_mj,
         "co2_kg_per_pkm": co2_kg_per_pkm,
         "embodied_energy_mj": embodied_energy_mj,
         "annual_operational_energy_kwh": annual_operational_energy_kwh,
         "lifetime_operational_energy_kwh": annual_operational_energy_kwh * lifetime_years,
         "lifetime_pax_km": lifetime_pax_km,
         "stage_coverage": {
-            "A1_A3_materials": "included",
+            "A1_A3_materials": "included (gross)",
             "A4_transport": "included" if a4_transport_co2_tons > 0 else "not included",
             "A5_construction": "not included",
             "B2_B5_maintenance_replacement": "not included",
             "B6_operation": "included",
-            "C1_C4_end_of_life": "not included"
+            "C1_C4_end_of_life": "not included",
+            "D_recycling_credit": "reported separately (not in A1-C4 total)"
         }
     }
 
@@ -472,7 +511,11 @@ def run_full_assessment(params):
     frp_tons = params['frp'] * 1000
     frp_kg = frp_tons * 1000
     glass_m2 = params['glass'] * 1000
-    glass_kg = glass_m2 * DENSITIES['glass_surface']
+    # Glass mass via geometry, NOT a flat areal density:
+    #   mass [kg] = area [m2] x thickness [mm] x 2.5 [kg per mm per m2]
+    #   (2500 kg/m3 flat-glass density / 1000 mm/m)  — per unit-harmonisation table.
+    glass_thickness_mm = params.get('glass_thickness_mm', 12.0)
+    glass_kg = glass_m2 * glass_thickness_mm * 2.5
 
     material_masses_kg = {"concrete": concrete_kg, "steel": steel_kg, "aluminum": aluminum_kg, "wood": wood_kg, "frp": frp_kg, "glass": glass_kg}
     a4_transport_co2_tons = calculate_a4_transport_co2(material_masses_kg, params.get("transport_distance_km", 0.0), params.get("transport_mode", "truck"))
@@ -504,37 +547,43 @@ def run_full_assessment(params):
     recycling_factors = RECYCLING_CREDIT_SCENARIOS[recycling_scenario]
     aluminum_recycle_rate = params['aluminum_recycle'] / 100.0
 
-    # Embodied Energy
-    ee_concrete = concrete_kg * MATERIAL_FACTORS['concrete_rc25_30']['ee_mj_per_kg']
-    ee_steel = steel_kg * MATERIAL_FACTORS['steel_structural']['ee_mj_per_kg']
+    # Embodied Energy (A1-A3, GROSS — legacy energy factors, secondary indicator)
+    ee_concrete = concrete_kg * MATERIAL_FACTORS['concrete_32_40']['ee_mj_per_kg']
+    ee_steel = steel_kg * MATERIAL_FACTORS['steel_section']['ee_mj_per_kg']
     ee_aluminum = aluminum_kg * MATERIAL_FACTORS['aluminum_general']['ee_mj_per_kg']
     ee_wood = wood_kg * MATERIAL_FACTORS['wood_general']['ee_mj_per_kg']
     ee_frp = frp_kg * MATERIAL_FACTORS['frp_general']['ee_mj_per_kg']
     ee_glass = glass_kg * MATERIAL_FACTORS['glass_primary']['ee_mj_per_kg']
 
-    steel_recycling_credit_ee = ee_steel * (params['steel_recycle'] / 100) * recycling_factors['steel']['energy_credit_fraction']
-    aluminum_recycling_credit_ee = ee_aluminum * (params['aluminum_recycle'] / 100) * recycling_factors['aluminum']['energy_credit_fraction']
-
+    # A1-A3 GROSS embodied energy (no end-of-life credit netted in)
     total_ee = (ee_concrete + ee_steel + ee_aluminum +
-                ee_wood + ee_frp + ee_glass -
-                steel_recycling_credit_ee - aluminum_recycling_credit_ee)
+                ee_wood + ee_frp + ee_glass)
 
-    # Embodied Carbon
-    carbon_concrete = concrete_kg * MATERIAL_FACTORS['concrete_rc25_30']['gwp_kgco2e_per_kg']
-    carbon_steel = steel_kg * MATERIAL_FACTORS['steel_structural']['gwp_kgco2e_per_kg']
+    # Embodied Carbon (A1-A3, GROSS — ICE V4.1 carbon factors, primary indicator)
+    carbon_concrete = concrete_kg * MATERIAL_FACTORS['concrete_32_40']['gwp_kgco2e_per_kg']
+    carbon_steel = steel_kg * MATERIAL_FACTORS['steel_section']['gwp_kgco2e_per_kg']
     carbon_aluminum = aluminum_kg * MATERIAL_FACTORS['aluminum_general']['gwp_kgco2e_per_kg']
     carbon_wood = wood_kg * MATERIAL_FACTORS['wood_general']['gwp_kgco2e_per_kg']
     carbon_frp = frp_kg * MATERIAL_FACTORS['frp_general']['gwp_kgco2e_per_kg']
     carbon_glass = glass_kg * MATERIAL_FACTORS['glass_primary']['gwp_kgco2e_per_kg']
 
-    steel_recycling_credit_c = carbon_steel * (params['steel_recycle'] / 100) * recycling_factors['steel']['carbon_credit_fraction']
-    aluminum_recycling_credit_c = carbon_aluminum * (params['aluminum_recycle'] / 100) * recycling_factors['aluminum']['carbon_credit_fraction']
-
+    # A1-A3 GROSS embodied carbon (kg) — Module D credit is reported SEPARATELY below
     total_carbon_raw = (carbon_concrete + carbon_steel + carbon_aluminum +
-                        carbon_wood + carbon_frp + carbon_glass -
-                        steel_recycling_credit_c - aluminum_recycling_credit_c)
+                        carbon_wood + carbon_frp + carbon_glass)
 
-    total_embodied_co2 = total_carbon_raw / 1000
+    total_embodied_co2 = total_carbon_raw / 1000  # tons CO2e, A1-A3 gross
+
+    # ── Module D (EN 15804): end-of-life recycling credits, reported SEPARATELY ──
+    # These are an informational module and are NOT subtracted from A1-A3 and
+    # NOT added into the A1-C4 lifecycle total.
+    module_d_energy_credit_mj = (
+        ee_steel * (params['steel_recycle'] / 100) * recycling_factors['steel']['energy_credit_fraction']
+        + ee_aluminum * (params['aluminum_recycle'] / 100) * recycling_factors['aluminum']['energy_credit_fraction']
+    )
+    module_d_carbon_credit_tons = (
+        carbon_steel * (params['steel_recycle'] / 100) * recycling_factors['steel']['carbon_credit_fraction']
+        + carbon_aluminum * (params['aluminum_recycle'] / 100) * recycling_factors['aluminum']['carbon_credit_fraction']
+    ) / 1000
 
     lca_results = calculate_lca_summary(
         embodied_co2_tons=total_embodied_co2,
@@ -543,7 +592,9 @@ def run_full_assessment(params):
         annual_operational_energy_kwh=annual_operational_energy,
         daily_pax_km=daily_pax_km,
         lifetime_years=ASSESSMENT_LIFETIME_YEARS,
-        a4_transport_co2_tons=a4_transport_co2_tons
+        a4_transport_co2_tons=a4_transport_co2_tons,
+        module_d_carbon_credit_tons=module_d_carbon_credit_tons,
+        module_d_energy_credit_mj=module_d_energy_credit_mj
     )
     total_co2 = lca_results["total_lifecycle_co2_tons"]
 
@@ -643,6 +694,8 @@ def run_full_assessment(params):
         'total_co2': total_co2,
         'annual_co2_operational': annual_co2_operational,
         'total_embodied_co2': total_embodied_co2,
+        'module_d_carbon_credit_tons': module_d_carbon_credit_tons,
+        'module_d_energy_credit_mj': module_d_energy_credit_mj,
         'effective_carbon_intensity': effective_carbon_intensity,
         'total_ee': total_ee,
         'annual_operational_energy': annual_operational_energy,
@@ -842,6 +895,8 @@ with st.sidebar:
         wood = st.number_input("Wood (1000 m³)", value=2.0, min_value=0.0, step=0.5, key="wood")
         frp = st.number_input("FRP (1000 tons)", value=1.0, min_value=0.0, step=0.1, key="frp")
         glass = st.number_input("Glass (1000 m²)", value=0.5, min_value=0.0, step=0.1, key="glass")
+        glass_thickness_mm = st.number_input("Glass thickness (mm)", value=12.0, min_value=1.0, step=1.0, key="glass_thickness",
+                                             help="Glass mass = area × thickness × 2.5 kg/(mm·m²)  [flat-glass 2500 kg/m³]")
 
         st.markdown("### 🚚 A4 Transport")
         transport_distance_km = st.number_input("Average material transport distance (km)", value=50.0, min_value=0.0, step=10.0, key="transport_distance")
@@ -879,7 +934,7 @@ with st.sidebar:
 # Collect parameters
 current_params = {
     'concrete': concrete, 'steel': steel, 'aluminum': aluminum,
-    'wood': wood, 'frp': frp, 'glass': glass,
+    'wood': wood, 'frp': frp, 'glass': glass, 'glass_thickness_mm': glass_thickness_mm,
     'steel_recycle': steel_recycle, 'aluminum_recycle': aluminum_recycle, 'recycling_scenario': recycling_scenario,
     'transport_distance_km': transport_distance_km, 'transport_mode': transport_mode,
     'carbon_intensity': carbon_intensity_input, 'renewable_share': renewable_share,
@@ -922,7 +977,7 @@ with st.expander("🧩 LCA Stage Coverage", expanded=False):
 # ═══════════════════════════════════════════════════════════════
 tabs = st.tabs([
     "📊 Results & Analysis",
-    "🔬 Benchmark & Validation",
+    "🔬 Benchmark & Reproduction",
     "🎯 Pareto Optimization",
     "📈 12-Element Analysis",
     "🎲 Uncertainty Analysis",
@@ -1101,9 +1156,10 @@ with tabs[0]:
 🌱 ENVIRONMENTAL ASSESSMENT
    • Environmental Score: {results['environmental_score']:.1f}/100
    • Annual Operational CO₂: {results['annual_co2_operational']:.1f} tons
-   • Total Embodied CO₂: {results['total_embodied_co2']:.1f} tons
+   • Embodied CO₂ A1-A3 (GROSS): {results['total_embodied_co2']:.1f} tons
    • A4 Transport CO₂: {results['lca_results']['a4_transport_co2_tons']:.1f} tons
-   • Total Lifecycle CO₂ (Embodied + A4 Transport + Lifetime Operational): {results['total_lifecycle_co2']:.1f} tons
+   • Total Lifecycle CO₂ (A1-A3 gross + A4 + Lifetime Operational): {results['total_lifecycle_co2']:.1f} tons
+   • Module D recycling credit (separate, NOT in total): -{results['lca_results']['module_d_carbon_credit_tons']:.1f} tons
    • Effective Carbon Intensity: {results['effective_carbon_intensity']:.3f} kg CO₂/kWh
    • Total Embodied Energy: {results['total_ee']:.0f} MJ
    • Renewable Energy Share: {params['renewable_share']:.1f}%
@@ -1135,7 +1191,8 @@ ORIGINAL → ADJUSTED SCORES:
 Synergy-to-Trade-off Ratio: {results['synergy_ratio']:.2f}
 
 Assessment Date: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
-Methodology: Partial process-based LCA (A1-A3 materials + optional A4 transport + B6 operation) + NPV-based LCCA. Chen 2022 is benchmark-only.
+Methodology: Partial process-based LCA (A1-A3 gross materials + optional A4 transport + B6 operation) + NPV-based LCCA.
+Carbon factors: ICE Database Educational V4.1 (Oct 2025). Module D (recycling) reported separately per EN 15804. Chen 2022 is benchmark-only.
 """
         st.code(report, language=None)
 
@@ -1149,8 +1206,9 @@ Methodology: Partial process-based LCA (A1-A3 materials + optional A4 transport 
             csv_data = pd.DataFrame([
                 {'Category': 'LCA', 'Metric': 'Total lifecycle CO₂', 'Value': f"{results['total_lifecycle_co2']:.1f}", 'Unit': 'tons CO₂e'},
                 {'Category': 'LCA', 'Metric': 'CO₂ intensity', 'Value': f"{results['co2_kg_per_pkm']:.6f}", 'Unit': 'kg CO₂e/pkm'},
-                {'Category': 'LCA', 'Metric': 'Embodied CO₂', 'Value': f"{results['lca_results']['embodied_co2_tons']:.1f}", 'Unit': 'tons CO₂e'},
+                {'Category': 'LCA', 'Metric': 'Embodied CO₂ A1-A3 (gross)', 'Value': f"{results['lca_results']['embodied_co2_tons']:.1f}", 'Unit': 'tons CO₂e'},
                 {'Category': 'LCA', 'Metric': 'A4 Transport CO₂', 'Value': f"{results['lca_results']['a4_transport_co2_tons']:.1f}", 'Unit': 'tons CO₂e'},
+                {'Category': 'Module D', 'Metric': 'Recycling credit (separate)', 'Value': f"-{results['lca_results']['module_d_carbon_credit_tons']:.1f}", 'Unit': 'tons CO₂e'},
                 {'Category': 'LCA', 'Metric': 'Lifetime operational CO₂', 'Value': f"{results['lca_results']['lifetime_operational_co2_tons']:.1f}", 'Unit': 'tons CO₂e'},
                 {'Category': 'LCA', 'Metric': 'Embodied Energy', 'Value': f"{results['total_ee']:.0f}", 'Unit': 'MJ'},
                 {'Category': 'LCCA', 'Metric': 'LCC NPV Cost', 'Value': f"{results['npv_lcc_m']:.0f}", 'Unit': '$M'},
@@ -1202,11 +1260,18 @@ Methodology: Partial process-based LCA (A1-A3 materials + optional A4 transport 
 # TAB 2: BENCHMARK & VALIDATION
 # ═══════════════════════════════════════════════════════════════
 with tabs[1]:
-    st.markdown("### 🔬 Benchmark Validation Against Chen et al. (2022)")
+    st.markdown("### 🔬 Benchmark / Reproduction Check Against Chen et al. (2022)")
     st.markdown("""
-    Compare your assessment results with peer-reviewed monorail LCA studies.
+    External comparison with a peer-reviewed monorail LCA study.
     **Benchmark:** Chen et al. (2022) — Complexity Journal (Q2) — DOI: 10.1155/2022/3872069
     """)
+    st.warning(
+        "⚠️ This is a **benchmark / reproduction check — NOT an independent validation.** "
+        "The default material quantities reproduce Chen's per-km intensities, so close agreement on "
+        "material/energy totals is expected *by construction* and does not validate the model. "
+        "Chen 2022 is used **only** as an external benchmark; it is **never** a source of material "
+        "carbon factors (those come from the ICE Database Educational V4.1, Oct 2025)."
+    )
 
     system_length_km = 96
     chen_total_concrete = CHEN_2022_BENCHMARK['material_intensity_per_km']['concrete_m3'] * system_length_km
@@ -1221,6 +1286,8 @@ with tabs[1]:
     your_operational_carbon_raw = results['energy_per_pax_km'] * results['effective_carbon_intensity']
 
     def get_status(your_val, bench_val):
+        if bench_val == 0:
+            return 'n/a (zero benchmark)', 'poor'
         err = abs((your_val - bench_val) / bench_val * 100)
         if err < 10: return '✓ Excellent', 'excellent'
         elif err < 20: return '~ Good', 'good'
@@ -1257,13 +1324,14 @@ with tabs[1]:
     st.dataframe(bench_df, use_container_width=True, hide_index=True)
 
     total_metrics = excellent_count + good_count + review_count
-    validation_rate = (excellent_count + good_count) / total_metrics * 100 if total_metrics > 0 else 0
+    agreement_rate = (excellent_count + good_count) / total_metrics * 100 if total_metrics > 0 else 0
 
     vc1, vc2, vc3, vc4 = st.columns(4)
     with vc1: st.metric("✓ Excellent (<10%)", excellent_count)
     with vc2: st.metric("~ Good (<20%)", good_count)
     with vc3: st.metric("✗ Review (>20%)", review_count)
-    with vc4: st.metric("Validation Rate", f"{validation_rate:.0f}%")
+    with vc4: st.metric("Reproduction Agreement", f"{agreement_rate:.0f}%",
+                        help="Agreement with Chen 2022 totals — reproduction check, not independent validation.")
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -1736,11 +1804,20 @@ with tabs[9]:
 
 ---
 
+#### DATA SOURCE HIERARCHY (per material, most-specific first)
+1. **Project BOQ** quantities (user input)
+2. **Local / product-specific EPD** — highest evidence; use if available
+3. **ICE Database Educational V4.1 (Oct 2025)**, "ICE Summary" sheet — generic A1-A3 carbon factors
+4. **Chen et al. (2022)** — benchmark comparison ONLY; never a factor source
+
 #### DATA SOURCES
-- **Material embodied energy and carbon:** MATERIAL_FACTOR_AUDIT table; Hammond & Jones / ICE legacy energy data + EPD/ICE-aligned A1-A3 carbon factors documented in Supplementary Dataset S1.
+- **Material embodied carbon (PRIMARY):** ICE Database Educational V4.1 (Oct 2025), ICE Summary sheet, A1-A3 Embodied Carbon. Each factor carries its exact `ice_name`, `dqi_score`, boundary and status in the MATERIAL_FACTOR_AUDIT table.
+- **Material embodied energy (SECONDARY):** legacy Hammond & Jones (2008) / ICE v2.0 values — explicitly **not** from ICE V4.1; reported as a secondary indicator only.
+- **FRP / GRP:** **UNVERIFIED placeholder** — ICE V4.1 has no published A1-A3 carbon value; a product-specific EPD is required before publication.
+- **Glass mass:** geometric — area × thickness (mm) × 2.5 kg/(mm·m²) (flat-glass 2500 kg/m³).
+- **Module D (recycling credit):** computed per EN 15804 and reported **separately**; it is **not** netted into A1-A3 and **not** added to the A1-C4 total.
 - **Operational electricity carbon:** User-defined grid carbon intensity adjusted by renewable share.
 - **LCCA:** User-defined construction, maintenance, energy cost, residual value, and discount rate.
-- **Recycling credits:** Scenario assumptions unless EPD/EoL allocation evidence is attached.
 - **Transport A4:** Scenario-based ton-km calculation using user-selected mode and transport distance.
 - **Synthetic visualizations:** Pareto, 12-element, and urban analytics tabs are illustrative only and not part of the scientific LCA/LCCA results.
 
