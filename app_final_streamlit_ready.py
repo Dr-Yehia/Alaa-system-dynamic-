@@ -1987,126 +1987,150 @@ st.markdown("""
 # SIDEBAR - INPUT PARAMETERS (WRAPPED IN FORM TO MIMIC TKINTER RUN)
 # ═══════════════════════════════════════════════════════════════
 with st.sidebar:
-    st.markdown("## 📊 Input Parameters")
-    
+    st.markdown("## ⚙️ Controls")
+
+    # ── Reactive module toggles (OUTSIDE the form → conditional visibility) ──
+    st.markdown("#### 🧩 Modules")
+    sd_enable = st.checkbox("Dynamic B6 (System Dynamics)", value=False, key="sd_enable")
+    include_a5 = st.checkbox("A5 Construction", value=False, key="include_a5")
+    include_b2b5 = st.checkbox("B2–B5 Use Stage", value=False, key="include_b2b5")
+    enable_b4 = st.checkbox("↳ B4 Replacement", value=False, key="enable_b4") if include_b2b5 else False
+    include_c1c4 = st.checkbox("C1–C4 End-of-Life", value=False, key="include_c1c4")
+    show_legacy = st.checkbox("Legacy options", value=False, key="show_legacy",
+                              help="Legacy Module-D recycling scenario (used only when C1–C4 is off) + dashboard-only inputs (renewable).")
+
+    MATERIALS_UI = ['concrete', 'steel', 'aluminum', 'wood', 'frp', 'glass']
+
     with st.form("assessment_form"):
+        run_top = st.form_submit_button("🚀 Run Assessment", type="primary", use_container_width=True)
+
         st.markdown("### 📦 Materials")
         concrete = st.number_input("Concrete (1000 m³)", value=700.0, min_value=0.0, step=10.0, key="concrete")
         steel = st.number_input("Steel (1000 tons)", value=100.0, min_value=0.0, step=5.0, key="steel")
         aluminum = st.number_input("Aluminum (1000 tons)", value=5.0, min_value=0.0, step=0.5, key="aluminum")
         wood = st.number_input("Wood (1000 m³)", value=2.0, min_value=0.0, step=0.5, key="wood")
-        frp = st.number_input("FRP (1000 tons) — needs verified EPD", value=0.0, min_value=0.0, step=0.1, key="frp",
-                              help="FRP/GRP has NO verified ICE V4.1 A1-A3 carbon factor. Keep at 0 for publication-grade LCA unless a product-specific EPD is supplied.")
+        frp = st.number_input("FRP (1000 tons)", value=0.0, min_value=0.0, step=0.1, key="frp",
+                              help="FRP/GRP has NO verified ICE V4.1 A1-A3 factor. Keep 0 for publication-grade unless a product EPD is supplied.")
         glass = st.number_input("Glass (1000 m²)", value=0.5, min_value=0.0, step=0.1, key="glass")
         glass_thickness_mm = st.number_input("Glass thickness (mm)", value=12.0, min_value=1.0, step=1.0, key="glass_thickness",
-                                             help="Glass mass = area × thickness × 2.5 kg/(mm·m²)  [flat-glass 2500 kg/m³]")
+                                             help="Glass mass = area × thickness × 2.5 kg/(mm·m²).")
 
-        st.markdown("### 🚚 A4 Transport")
-        transport_distance_km = st.number_input("Average material transport distance (km)", value=50.0, min_value=0.0, step=10.0, key="transport_distance")
+        st.markdown("### 🚚 Transport (A4)")
+        transport_distance_km = st.number_input("Transport distance (km)", value=50.0, min_value=0.0, step=10.0, key="transport_distance")
         transport_mode = st.selectbox("Transport mode", ["truck", "rail", "ship"], index=0, key="transport_mode")
 
-        st.markdown("### ♻️ Recycling Rates")
-        steel_recycle = st.slider("Steel Recycling (%)", 0, 100, 70, key="steel_recycle")
-        aluminum_recycle = st.slider("Aluminum Recycling (%)", 0, 100, 85, key="aluminum_recycle")
-        recycling_scenario = st.selectbox("EoL Recycling Credit Scenario", ["none", "conservative", "base"], index=0, key="recycling_scenario")
-
         st.markdown("### 🌍 Environmental")
-        carbon_intensity_input = st.number_input("Grid Carbon (kg CO₂/kWh)", value=0.5, min_value=0.0, step=0.05, key="carbon_int")
-        renewable_share = st.slider("Renewable Energy (%) — dashboard-only", 0, 100, 20, key="renewable",
-                                    help="Phase 1b: NOT applied to core B6 carbon (grid carbon intensity already reflects the grid mix). Deferred to Phase 2 as explicit project renewable procurement.")
-        land_use = st.number_input("Land Use (pass/ha)", value=5000.0, min_value=0.0, step=100.0, key="land_use")
-        noise_reduction = st.number_input("Noise Reduction (dB)", value=10.0, min_value=0.0, step=1.0, key="noise")
+        carbon_intensity_input = st.number_input("Grid carbon (kgCO₂/kWh)", value=0.5, min_value=0.0, step=0.05, key="carbon_int")
+        land_use = st.number_input("Land use (pass/ha)", value=5000.0, min_value=0.0, step=100.0, key="land_use")
+        noise_reduction = st.number_input("Noise reduction (dB)", value=10.0, min_value=0.0, step=1.0, key="noise")
 
         st.markdown("### ⚙️ Operational")
         energy_per_pax = st.number_input("Energy (kWh/pax-km)", value=0.15, min_value=0.0, step=0.01, format="%.3f", key="energy")
-        daily_pax_km = st.number_input("Daily Pax-km (1000)", value=500.0, min_value=0.0, step=10.0, key="daily_pax")
-        time_savings = st.number_input("Time Savings (1000h)", value=2.5, min_value=0.0, step=0.1, key="time_sav")
+        daily_pax_km = st.number_input("Daily pax-km (1000)", value=500.0, min_value=0.0, step=10.0, key="daily_pax")
+        time_savings = st.number_input("Time savings (1000h)", value=2.5, min_value=0.0, step=0.1, key="time_sav")
         availability = st.slider("Availability (%)", 0, 100, 98, key="avail")
 
         st.markdown("### 💰 Economic")
         construction_cost = st.number_input("Construction ($M)", value=2500.0, min_value=0.0, step=50.0, key="const_cost")
         maintenance_cost = st.number_input("Maintenance ($M/yr)", value=50.0, min_value=0.0, step=5.0, key="maint_cost")
-        jobs_created = st.number_input("Jobs Created", value=5000.0, min_value=0.0, step=100.0, key="jobs")
-        economic_multiplier = st.number_input("Economic Multiplier", value=2.5, min_value=1.0, step=0.1, key="econ_mult")
-        discount_rate = st.number_input("Discount Rate for LCC (%)", value=5.0, min_value=0.0, max_value=20.0, step=0.5, key="discount_rate")
-        annual_energy_cost = st.number_input("Annual Energy Cost ($M/yr)", value=0.0, min_value=0.0, step=1.0, key="energy_cost")
-        residual_value = st.number_input("Residual / Salvage Value at End of Life ($M)", value=0.0, min_value=0.0, step=10.0, key="residual_value")
+        jobs_created = st.number_input("Jobs created", value=5000.0, min_value=0.0, step=100.0, key="jobs")
+        economic_multiplier = st.number_input("Economic multiplier", value=2.5, min_value=1.0, step=0.1, key="econ_mult")
+        discount_rate = st.number_input("Discount rate (%)", value=5.0, min_value=0.0, max_value=20.0, step=0.5, key="discount_rate")
+        annual_energy_cost = st.number_input("Energy cost ($M/yr)", value=0.0, min_value=0.0, step=1.0, key="energy_cost")
+        residual_value = st.number_input("Residual value ($M)", value=0.0, min_value=0.0, step=10.0, key="residual_value")
 
-        st.markdown("### 🔧 System Dynamics — Asset Condition (B6)")
-        st.caption("⚠️ Scenario assumptions — NOT validated unless calibrated with inspection, maintenance, or measured energy data.")
-        sd_enable = st.checkbox("Enable dynamic B6", value=False, key="sd_enable",
-                                help="When on, the headline B6/total uses the condition-dependent dynamic result.")
-        sd_C0 = st.number_input("Initial asset condition C₀ (0–1)", value=1.0, min_value=0.0, max_value=1.0, step=0.05, key="sd_C0")
-        sd_delta = st.number_input("Annual degradation δ (condition/yr)", value=0.005, min_value=0.0, step=0.005, format="%.3f", key="sd_delta")
-        sd_maint_interval = st.number_input("Maintenance interval (years)", value=5, min_value=0, step=1, key="sd_maint_interval")
-        sd_rho = st.number_input("Maintenance recovery ρ (condition/action)", value=0.05, min_value=0.0, step=0.01, format="%.3f", key="sd_rho")
-        sd_tau = st.number_input("Maintenance delay τ (years)", value=1, min_value=0, step=1, key="sd_tau")
-        sd_alpha = st.number_input("Energy penalty α", value=0.10, min_value=0.0, step=0.05, format="%.2f", key="sd_alpha")
-        sd_growth_pct = st.number_input("Annual demand growth g (%)", value=0.0, min_value=0.0, step=0.5, key="sd_growth")
+        # ── Advanced module fields (defaults; rendered only when the module is on) ──
+        sd_C0, sd_delta, sd_maint_interval = 1.0, 0.005, 5
+        sd_rho, sd_tau, sd_alpha, sd_growth_pct = 0.05, 1, 0.10, 0.0
+        if sd_enable:
+            st.markdown("### 🔧 System Dynamics (B6)")
+            st.caption("Scenario — not validated unless calibrated.")
+            sd_C0 = st.number_input("Initial condition C₀", value=1.0, min_value=0.0, max_value=1.0, step=0.05, key="sd_C0")
+            sd_delta = st.number_input("Degradation δ (/yr)", value=0.005, min_value=0.0, step=0.005, format="%.3f", key="sd_delta")
+            sd_maint_interval = st.number_input("Maintenance interval (yr)", value=5, min_value=0, step=1, key="sd_maint_interval")
+            sd_rho = st.number_input("Recovery ρ", value=0.05, min_value=0.0, step=0.01, format="%.3f", key="sd_rho")
+            sd_tau = st.number_input("Delay τ (yr)", value=1, min_value=0, step=1, key="sd_tau")
+            sd_alpha = st.number_input("Energy penalty α", value=0.10, min_value=0.0, step=0.05, format="%.2f", key="sd_alpha")
+            sd_growth_pct = st.number_input("Demand growth g (%)", value=0.0, min_value=0.0, step=0.5, key="sd_growth")
 
-        st.markdown("### 🏗️ A5 Construction (Phase 3A)")
-        st.caption("⚠️ Scenario / user inputs. A5 is reported separately from A4.")
-        include_a5 = st.checkbox("Include A5 construction", value=False, key="include_a5")
-        a5_boq_mode = st.selectbox("BOQ quantity basis", ["installed", "purchased"], index=0, key="a5_boq_mode",
-                                   help="'installed': core masses are installed → extra waste production is added here. "
-                                        "'purchased': production already in A1-A3 → only waste transport/treatment here.")
-        a5_diesel_l = st.number_input("Construction diesel (L)", value=0.0, min_value=0.0, step=1000.0, key="a5_diesel_l")
-        a5_diesel_ef = st.number_input("Diesel EF (kgCO₂e/L)", value=FUEL_FACTORS['diesel']['ef_kgco2e_per_l'],
-                                       min_value=0.0, step=0.01, format="%.2f", key="a5_diesel_ef",
-                                       help=f"FUEL_FACTORS['diesel'] = {FUEL_FACTORS['diesel']['ef_kgco2e_per_l']} {FUEL_FACTORS['diesel']['unit']} "
-                                            f"({FUEL_FACTORS['diesel']['status']}).")
-        a5_elec_kwh = st.number_input("Construction electricity (kWh)", value=0.0, min_value=0.0, step=1000.0, key="a5_elec_kwh")
-        a5_waste_rate = st.number_input("Global scenario waste rate w (0–1)", value=0.0, min_value=0.0, max_value=0.95, step=0.01, format="%.2f", key="a5_waste_rate",
-                                        help="One global rate applied to all materials (simplification). Per-material waste rates are recommended before publication.")
-        a5_waste_transport_km = st.number_input("Waste transport distance (km)", value=0.0, min_value=0.0, step=10.0, key="a5_waste_km")
-        a5_waste_treatment_ef = st.number_input("Waste treatment EF (kgCO₂e/kg)", value=0.0, min_value=0.0, step=0.01, format="%.3f", key="a5_waste_ef")
+        a5_boq_mode, a5_diesel_l = 'installed', 0.0
+        a5_diesel_ef = FUEL_FACTORS['diesel']['ef_kgco2e_per_l']
+        a5_elec_kwh, a5_waste_rate, a5_waste_transport_km, a5_waste_treatment_ef = 0.0, 0.0, 0.0, 0.0
+        if include_a5:
+            st.markdown("### 🏗️ A5 Construction")
+            st.caption("Scenario / user inputs. A5 is reported separately from A4.")
+            a5_boq_mode = st.selectbox("BOQ basis", ["installed", "purchased"], index=0, key="a5_boq_mode",
+                                       help="installed: extra waste production added here. purchased: production already in A1-A3.")
+            a5_diesel_l = st.number_input("Construction diesel (L)", value=0.0, min_value=0.0, step=1000.0, key="a5_diesel_l")
+            a5_diesel_ef = st.number_input("Diesel EF (kgCO₂e/L)", value=FUEL_FACTORS['diesel']['ef_kgco2e_per_l'],
+                                           min_value=0.0, step=0.01, format="%.2f", key="a5_diesel_ef")
+            a5_elec_kwh = st.number_input("Construction electricity (kWh)", value=0.0, min_value=0.0, step=1000.0, key="a5_elec_kwh")
+            a5_waste_rate = st.number_input("Waste rate w (0–1)", value=0.0, min_value=0.0, max_value=0.95, step=0.01, format="%.2f", key="a5_waste_rate",
+                                            help="Global scenario waste rate (per-material recommended before publication).")
+            a5_waste_transport_km = st.number_input("Waste transport (km)", value=0.0, min_value=0.0, step=10.0, key="a5_waste_km")
+            a5_waste_treatment_ef = st.number_input("Waste treatment EF (kgCO₂e/kg)", value=0.0, min_value=0.0, step=0.01, format="%.3f", key="a5_waste_ef")
 
-        st.markdown("### 🔁 B2–B5 Use Stage (Phase 3B)")
-        st.caption("⚠️ Activity-based scenario unless project maintenance records are supplied.")
-        include_b2b5 = st.checkbox("Include B2–B5", value=False, key="include_b2b5")
-        b2_use_sd_schedule = st.checkbox("Use SD maintenance schedule for B2", value=True, key="b2_use_sd",
-                                         help="Links B2 maintenance events to the SD schedule so SD condition recovery is never 'free'.")
-        b2_interval = st.number_input("B2 interval (years, if not SD-linked)", value=5, min_value=0, step=1, key="b2_interval")
-        b2_material_pct = st.number_input("B2 material per event (% of A1-A3 carbon)", value=0.05, min_value=0.0, step=0.05, format="%.2f", key="b2_material_pct")
-        b2_diesel_l = st.number_input("B2 diesel per event (L)", value=0.0, min_value=0.0, step=100.0, key="b2_diesel_l")
-        b2_elec_kwh = st.number_input("B2 electricity per event (kWh)", value=0.0, min_value=0.0, step=100.0, key="b2_elec_kwh")
-        b2_transport_km = st.number_input("B2 material transport (km)", value=0.0, min_value=0.0, step=10.0, key="b2_transport_km")
-        b2_cost_per_event_m = st.number_input("B2 cost per event ($M, activity LCCA)", value=0.0, min_value=0.0, step=0.1, key="b2_cost_event")
-        enable_b4 = st.checkbox("Enable B4 replacement", value=False, key="enable_b4")
-        b4_years = st.text_input("B4 replacement years (e.g. 25,40)", value="", key="b4_years")
-        b4_frac_steel = st.number_input("B4 replacement fraction — steel", value=0.0, min_value=0.0, max_value=1.0, step=0.05, format="%.2f", key="b4_frac_steel")
-        b4_frac_concrete = st.number_input("B4 replacement fraction — concrete", value=0.0, min_value=0.0, max_value=1.0, step=0.05, format="%.2f", key="b4_frac_concrete")
-        b4_cost_per_event_m = st.number_input("B4 replacement cost per event ($M)", value=0.0, min_value=0.0, step=1.0, key="b4_cost_event")
-        b4_waste_ef = st.number_input("B4 removed-material waste EF (kgCO₂e/kg)", value=0.0, min_value=0.0, step=0.01, format="%.3f", key="b4_waste_ef")
-        b4_transport_km = st.number_input("B4 waste transport (km)", value=0.0, min_value=0.0, step=10.0, key="b4_transport_km")
-        lcca_maint_mode = st.selectbox("LCCA maintenance mode", ["simple_annual", "activity_based"], index=0, key="lcca_maint_mode",
-                                       help="simple_annual: uses annual maintenance only. activity_based: uses B2/B3/B5 activity costs only. "
-                                            "B4 replacement cost is added in BOTH modes (prevents double counting).")
+        b2_use_sd_schedule, b2_interval, b2_material_pct = True, 5, 0.05
+        b2_diesel_l, b2_elec_kwh, b2_transport_km, b2_cost_per_event_m = 0.0, 0.0, 0.0, 0.0
+        b4_years, b4_frac_steel, b4_frac_concrete = "", 0.0, 0.0
+        b4_cost_per_event_m, b4_waste_ef, b4_transport_km = 0.0, 0.0, 0.0
+        lcca_maint_mode = 'simple_annual'
+        if include_b2b5:
+            st.markdown("### 🔁 B2–B5 Use Stage")
+            st.caption("Activity-based scenario unless project records are supplied.")
+            b2_use_sd_schedule = st.checkbox("Link B2 to SD schedule", value=True, key="b2_use_sd")
+            b2_interval = st.number_input("B2 interval (yr)", value=5, min_value=0, step=1, key="b2_interval")
+            b2_material_pct = st.number_input("B2 material/event (% A1-A3)", value=0.05, min_value=0.0, step=0.05, format="%.2f", key="b2_material_pct")
+            b2_diesel_l = st.number_input("B2 diesel/event (L)", value=0.0, min_value=0.0, step=100.0, key="b2_diesel_l")
+            b2_elec_kwh = st.number_input("B2 electricity/event (kWh)", value=0.0, min_value=0.0, step=100.0, key="b2_elec_kwh")
+            b2_transport_km = st.number_input("B2 transport (km)", value=0.0, min_value=0.0, step=10.0, key="b2_transport_km")
+            b2_cost_per_event_m = st.number_input("B2 cost/event ($M)", value=0.0, min_value=0.0, step=0.1, key="b2_cost_event")
+            lcca_maint_mode = st.selectbox("LCCA maintenance mode", ["simple_annual", "activity_based"], index=0, key="lcca_maint_mode",
+                                           help="simple_annual: annual maintenance only. activity_based: B2/B3/B5 activity costs only. B4 cost added in both.")
+            if enable_b4:
+                b4_years = st.text_input("B4 years (e.g. 25,40)", value="", key="b4_years")
+                b4_frac_steel = st.number_input("B4 fraction — steel", value=0.0, min_value=0.0, max_value=1.0, step=0.05, format="%.2f", key="b4_frac_steel")
+                b4_frac_concrete = st.number_input("B4 fraction — concrete", value=0.0, min_value=0.0, max_value=1.0, step=0.05, format="%.2f", key="b4_frac_concrete")
+                b4_cost_per_event_m = st.number_input("B4 cost/event ($M)", value=0.0, min_value=0.0, step=1.0, key="b4_cost_event")
+                b4_waste_ef = st.number_input("B4 waste EF (kgCO₂e/kg)", value=0.0, min_value=0.0, step=0.01, format="%.3f", key="b4_waste_ef")
+                b4_transport_km = st.number_input("B4 waste transport (km)", value=0.0, min_value=0.0, step=10.0, key="b4_transport_km")
 
-        st.markdown("### ♻️ C1–C4 End-of-Life (Phase 3C)")
-        st.caption("⚠️ EOL scenario / project data. Per-material treatment shares must sum to 1. "
-                   "Uses remaining masses after B4/B5 (no double counting).")
-        include_c1c4 = st.checkbox("Include C1–C4", value=False, key="include_c1c4")
-        c1_diesel_l = st.number_input("C1 demolition diesel (L)", value=0.0, min_value=0.0, step=1000.0, key="c1_diesel_l")
-        c1_elec_kwh = st.number_input("C1 demolition electricity (kWh)", value=0.0, min_value=0.0, step=1000.0, key="c1_elec_kwh")
-        eol_transport_km = st.number_input("EOL transport distance (km)", value=50.0, min_value=0.0, step=10.0, key="eol_transport_km")
-        eol_reuse_ef = st.number_input("Reuse processing EF (kgCO₂e/kg)", value=0.0, min_value=0.0, step=0.01, format="%.3f", key="eol_reuse_ef")
-        eol_recycle_ef = st.number_input("Recycling processing EF (kgCO₂e/kg)", value=0.0, min_value=0.0, step=0.01, format="%.3f", key="eol_recycle_ef")
-        eol_disposal_ef = st.number_input("Disposal EF (kgCO₂e/kg)", value=0.0, min_value=0.0, step=0.01, format="%.3f", key="eol_disposal_ef")
-        eol_recovery_eta = st.number_input("Module D recovery efficiency η (0–1)", value=1.0, min_value=0.0, max_value=1.0, step=0.05, format="%.2f", key="eol_eta")
-        eol_cost_m = st.number_input("EOL cost ($M)", value=0.0, min_value=0.0, step=10.0, key="eol_cost_m")
-        _eol_default_recycle = {'concrete': 0.0, 'steel': 0.0, 'aluminum': 0.0, 'wood': 0.0, 'frp': 0.0, 'glass': 0.0}
-        eol_shares = {}
-        for _m in ['concrete', 'steel', 'aluminum', 'wood', 'frp', 'glass']:
-            with st.expander(f"EOL shares/factors — {_m}", expanded=False):
-                _reuse = st.number_input(f"{_m} reuse share", value=0.0, min_value=0.0, max_value=1.0, step=0.05, format="%.2f", key=f"eol_reuse_{_m}")
-                _recycle = st.number_input(f"{_m} recycle share", value=_eol_default_recycle[_m], min_value=0.0, max_value=1.0, step=0.05, format="%.2f", key=f"eol_recycle_{_m}")
-                _sec = st.number_input(f"{_m} secondary EF (kgCO₂e/kg, 0=none → no Module D)", value=0.0, min_value=0.0, step=0.01, format="%.3f", key=f"eol_secondary_ef_{_m}")
-                st.caption(f"disposal share = {max(1.0 - _reuse - _recycle, 0.0):.2f}")
-                eol_shares[_m] = {'reuse': _reuse, 'recycle': _recycle, 'secondary_ef': _sec}
+        c1_diesel_l, c1_elec_kwh, eol_transport_km = 0.0, 0.0, 50.0
+        eol_reuse_ef, eol_recycle_ef, eol_disposal_ef = 0.0, 0.0, 0.0
+        eol_recovery_eta, eol_cost_m = 1.0, 0.0
+        eol_table = {m: {'reuse': 0.0, 'recycle': 0.0, 'secondary_ef': 0.0} for m in MATERIALS_UI}
+        if include_c1c4:
+            st.markdown("### ♻️ C1–C4 End-of-Life")
+            st.caption("EOL scenario. Treatment shares must sum to 1 (uses remaining masses after B4/B5).")
+            c1_diesel_l = st.number_input("C1 diesel (L)", value=0.0, min_value=0.0, step=1000.0, key="c1_diesel_l")
+            c1_elec_kwh = st.number_input("C1 electricity (kWh)", value=0.0, min_value=0.0, step=1000.0, key="c1_elec_kwh")
+            eol_transport_km = st.number_input("EOL transport (km)", value=50.0, min_value=0.0, step=10.0, key="eol_transport_km")
+            eol_reuse_ef = st.number_input("Reuse EF (kgCO₂e/kg)", value=0.0, min_value=0.0, step=0.01, format="%.3f", key="eol_reuse_ef")
+            eol_recycle_ef = st.number_input("Recycle EF (kgCO₂e/kg)", value=0.0, min_value=0.0, step=0.01, format="%.3f", key="eol_recycle_ef")
+            eol_disposal_ef = st.number_input("Disposal EF (kgCO₂e/kg)", value=0.0, min_value=0.0, step=0.01, format="%.3f", key="eol_disposal_ef")
+            eol_recovery_eta = st.number_input("Recovery efficiency η", value=1.0, min_value=0.0, max_value=1.0, step=0.05, format="%.2f", key="eol_eta")
+            eol_cost_m = st.number_input("EOL cost ($M)", value=0.0, min_value=0.0, step=10.0, key="eol_cost_m")
+            st.markdown("**Per-material treatment shares + secondary EF**")
+            eol_df0 = pd.DataFrame({'material': MATERIALS_UI, 'reuse': [0.0]*6, 'recycle': [0.0]*6, 'secondary_EF': [0.0]*6})
+            eol_edit = st.data_editor(eol_df0, hide_index=True, use_container_width=True, key="eol_editor",
+                                      disabled=['material'])
+            st.caption("Disposal share = 1 − reuse − recycle (auto). Secondary EF 0 = no Module D for that material.")
+            for _, _r in pd.DataFrame(eol_edit).iterrows():
+                eol_table[_r['material']] = {'reuse': float(_r['reuse']), 'recycle': float(_r['recycle']),
+                                             'secondary_ef': float(_r['secondary_EF'])}
+
+        steel_recycle, aluminum_recycle, recycling_scenario, renewable_share = 70, 85, 'none', 20
+        if show_legacy:
+            st.markdown("### 🗄️ Legacy / dashboard-only")
+            st.caption("Module-D recycling scenario is used ONLY when C1–C4 is off. Renewable is dashboard-only.")
+            steel_recycle = st.slider("Steel recycling (%)", 0, 100, 70, key="steel_recycle")
+            aluminum_recycle = st.slider("Aluminum recycling (%)", 0, 100, 85, key="aluminum_recycle")
+            recycling_scenario = st.selectbox("Legacy Module-D scenario", ["none", "conservative", "base"], index=0, key="recycling_scenario")
+            renewable_share = st.slider("Renewable share (%) — dashboard-only", 0, 100, 20, key="renewable")
 
         st.markdown("---")
-        run_btn = st.form_submit_button("🚀 RUN ASSESSMENT", type="primary", use_container_width=True)
+        run_btn = st.form_submit_button("🚀 Run Assessment", type="primary", use_container_width=True)
+    run_btn = bool(run_btn or run_top)
 
 # Collect parameters
 current_params = {
@@ -2137,9 +2161,9 @@ current_params = {
     'include_c1c4': include_c1c4, 'c1_diesel_l': c1_diesel_l, 'c1_elec_kwh': c1_elec_kwh,
     'eol_transport_km': eol_transport_km, 'eol_reuse_ef': eol_reuse_ef, 'eol_recycle_ef': eol_recycle_ef,
     'eol_disposal_ef': eol_disposal_ef, 'eol_recovery_eta': eol_recovery_eta, 'eol_cost_m': eol_cost_m,
-    **{f'eol_reuse_{_m}': eol_shares[_m]['reuse'] for _m in eol_shares},
-    **{f'eol_recycle_{_m}': eol_shares[_m]['recycle'] for _m in eol_shares},
-    **{f'eol_secondary_ef_{_m}': eol_shares[_m]['secondary_ef'] for _m in eol_shares},
+    **{f'eol_reuse_{_m}': eol_table[_m]['reuse'] for _m in eol_table},
+    **{f'eol_recycle_{_m}': eol_table[_m]['recycle'] for _m in eol_table},
+    **{f'eol_secondary_ef_{_m}': eol_table[_m]['secondary_ef'] for _m in eol_table},
 }
 
 @st.cache_data
@@ -2165,9 +2189,13 @@ if not results.get('publication_grade', True):
         "Set FRP = 0, or supply a product-specific EPD, before reporting."
     )
 
-with st.sidebar.expander("📊 Dashboard Display Score (legacy / illustrative / interface-only)", expanded=False):
-    st.info("This score is for interface visualization only and is not used as an ISO LCA/LCCA result.")
-    st.metric("Dashboard Display Score", f"{results['dashboard_display_score']:.1f}/100")
+with st.sidebar:
+    st.markdown("#### ✅ Publication readiness")
+    def _flag(label, ok):
+        st.markdown(f"{'🟢' if ok else '🟡'} {label}: **{'yes' if ok else 'conditional'}**")
+    _flag("Full LCA (A1–C4)", results.get('publication_grade_full_lca', False))
+    _flag("Module D complete", results.get('module_d_quality_ok', True))
+    st.caption("Uncertainty (Phase 4) & SI (Phase 5) readiness are shown in their tabs.")
 
 with st.expander("🧩 LCA Stage Coverage", expanded=False):
     # Phase 3A: authoritative coverage comes from the modular stage_contribution.
