@@ -1988,6 +1988,9 @@ st.markdown("""
 # ═══════════════════════════════════════════════════════════════
 with st.sidebar:
     st.markdown("## ⚙️ Controls")
+    publication_mode = st.checkbox("📑 Publication mode", value=True, key="publication_mode",
+                                   help="Shows only the scientific tabs (LCA/LCCA/Uncertainty/SI/Benchmark/Methodology). "
+                                        "Turn off (Developer mode) to also see illustrative/legacy visualizations.")
 
     # ── Reactive module toggles (OUTSIDE the form → conditional visibility) ──
     st.markdown("#### 🧩 Modules")
@@ -2205,27 +2208,27 @@ with st.expander("🧩 LCA Stage Coverage", expanded=False):
     st.caption("Module D (recycling credit) is reported separately and is NOT part of the gross total.")
 
 # ═══════════════════════════════════════════════════════════════
-# MAIN CONTENT - TABS (10 TABS like original)
+# MAIN CONTENT - TABS (Publication mode hides illustrative/legacy tabs)
 # ═══════════════════════════════════════════════════════════════
-tabs = st.tabs([
-    "📊 Results & Analysis",
-    "🔬 Benchmark & Reproduction",
-    "🎯 Pareto Optimization",
-    "📈 12-Element Analysis",
-    "🎲 Uncertainty Analysis",
-    "📐 3D Sensitivity Surface",
-    "📊 Sensitivity Analysis",
-    "🗺️ Urban Analytics",
-    "🔄 Interaction Network",
-    "📖 About & Methodology",
-    "🔧 System Dynamics (B6)",
-    "🏁 Sustainability Index (Phase 5)"
-])
+_TAB_LABELS = {
+    'results': "📊 Results & Analysis", 'oat': "📊 Sensitivity (OAT)",
+    'uncertainty': "🎲 Uncertainty (Phase 4)", 'si': "🏁 Sustainability Index",
+    'sd': "🔧 System Dynamics (B6)", 'benchmark': "🔬 External Benchmarking",
+    'about': "📖 About & Methodology",
+    'pareto': "🗄️ Pareto (illustrative)", 'twelve': "🗄️ 12-Element (illustrative)",
+    'surface3d': "🗄️ 3D Surface (illustrative)", 'urban': "🗄️ Urban 3D (illustrative)",
+    'interaction': "🗄️ Interaction Net (illustrative)",
+}
+_SCI_ORDER = ['results', 'oat', 'uncertainty', 'si', 'sd', 'benchmark', 'about']
+_LEGACY_ORDER = ['pareto', 'twelve', 'surface3d', 'urban', 'interaction']
+_order = _SCI_ORDER if publication_mode else (_SCI_ORDER + _LEGACY_ORDER)
+_created = st.tabs([_TAB_LABELS[k] for k in _order])
+TABS = {k: _created[i] for i, k in enumerate(_order)}
 
 # ═══════════════════════════════════════════════════════════════
 # TAB 1: RESULTS & ANALYSIS
 # ═══════════════════════════════════════════════════════════════
-with tabs[0]:
+with TABS['results']:
     # Key metrics row
     m1, m2, m3, m4, m5 = st.columns(5)
     with m1:
@@ -2611,7 +2614,7 @@ Carbon factors: ICE Database Educational V4.1 (Oct 2025). Module D (recycling) r
 # ═══════════════════════════════════════════════════════════════
 # TAB 2: BENCHMARK / REPRODUCTION CHECK
 # ═══════════════════════════════════════════════════════════════
-with tabs[1]:
+with TABS['benchmark']:
     st.markdown("### 🔬 Benchmark / Reproduction Check Against Li and Zhu (2022)")
     st.markdown("""
     External comparison with a peer-reviewed monorail LCA study.
@@ -2689,129 +2692,131 @@ with tabs[1]:
 # ═══════════════════════════════════════════════════════════════
 # TAB 3: PARETO OPTIMIZATION
 # ═══════════════════════════════════════════════════════════════
-with tabs[2]:
-    st.markdown("### 🎯 Multi-Objective Optimization: Pareto Front Analysis")
-    st.warning("Illustrative synthetic scenario visualization; not used in the scientific LCA/LCCA results.")
-    st.markdown("Visualize trade-offs between Environmental Impact, Economic Cost, and Technical Performance.")
+if 'pareto' in TABS:
+    with TABS['pareto']:
+        st.markdown("### 🎯 Multi-Objective Optimization: Pareto Front Analysis")
+        st.warning("Illustrative synthetic scenario visualization; not used in the scientific LCA/LCCA results.")
+        st.markdown("Visualize trade-offs between Environmental Impact, Economic Cost, and Technical Performance.")
 
-    if st.button("🔄 Generate Pareto Front", key="pareto_btn"):
-        np.random.seed(42)
-        n_solutions = 100
+        if st.button("🔄 Generate Pareto Front", key="pareto_btn"):
+            np.random.seed(42)
+            n_solutions = 100
 
-        base_co2 = results['total_co2']
-        base_cost = results.get('total_cost', base_co2 * 0.01)
-        base_score = results.get('dashboard_display_score', 75)
+            base_co2 = results['total_co2']
+            base_cost = results.get('total_cost', base_co2 * 0.01)
+            base_score = results.get('dashboard_display_score', 75)
 
-        co2_values = base_co2 * np.random.uniform(0.85, 1.15, n_solutions)
-        cost_values = base_cost * np.random.uniform(0.80, 1.20, n_solutions)
-        score_values = base_score * np.random.uniform(0.90, 1.10, n_solutions)
+            co2_values = base_co2 * np.random.uniform(0.85, 1.15, n_solutions)
+            cost_values = base_cost * np.random.uniform(0.80, 1.20, n_solutions)
+            score_values = base_score * np.random.uniform(0.90, 1.10, n_solutions)
 
-        # Identify Pareto-optimal
-        pareto_mask = np.ones(n_solutions, dtype=bool)
-        for i in range(n_solutions):
-            if not pareto_mask[i]: continue
-            for j in range(n_solutions):
-                if i == j: continue
-                if (co2_values[j] <= co2_values[i] and cost_values[j] <= cost_values[i] and
-                    score_values[j] >= score_values[i] and
-                    (co2_values[j] < co2_values[i] or cost_values[j] < cost_values[i] or score_values[j] > score_values[i])):
-                    pareto_mask[i] = False
-                    break
+            # Identify Pareto-optimal
+            pareto_mask = np.ones(n_solutions, dtype=bool)
+            for i in range(n_solutions):
+                if not pareto_mask[i]: continue
+                for j in range(n_solutions):
+                    if i == j: continue
+                    if (co2_values[j] <= co2_values[i] and cost_values[j] <= cost_values[i] and
+                        score_values[j] >= score_values[i] and
+                        (co2_values[j] < co2_values[i] or cost_values[j] < cost_values[i] or score_values[j] > score_values[i])):
+                        pareto_mask[i] = False
+                        break
 
-        fig = go.Figure()
-        fig.add_trace(go.Scatter3d(
-            x=co2_values[pareto_mask], y=cost_values[pareto_mask] / 1e6,
-            z=score_values[pareto_mask], mode='markers',
-            marker=dict(size=10, color=score_values[pareto_mask], colorscale='Viridis',
-                       showscale=True, colorbar=dict(title="Score"), line=dict(color='gold', width=2)),
-            name='Pareto Optimal',
-            text=[f'CO₂: {c/1000:.1f}k<br>Cost: ${co/1e6:.2f}M<br>Score: {s:.1f}'
-                  for c, co, s in zip(co2_values[pareto_mask], cost_values[pareto_mask], score_values[pareto_mask])],
-            hoverinfo='text'
-        ))
-        fig.add_trace(go.Scatter3d(
-            x=co2_values[~pareto_mask], y=cost_values[~pareto_mask] / 1e6,
-            z=score_values[~pareto_mask], mode='markers',
-            marker=dict(size=5, color='lightgray', opacity=0.3), name='Dominated'
-        ))
-        fig.add_trace(go.Scatter3d(
-            x=[base_co2], y=[base_cost / 1e6], z=[base_score], mode='markers',
-            marker=dict(size=15, color='red', symbol='diamond', line=dict(color='darkred', width=3)),
-            name='Current Solution'
-        ))
-        fig.update_layout(
-            title='3D Pareto Front: Environmental vs Economic vs Performance',
-            scene=dict(
-                xaxis=dict(title='CO₂ (tons)', backgroundcolor='white'),
-                yaxis=dict(title='Cost ($M)', backgroundcolor='white'),
-                zaxis=dict(title='Score', backgroundcolor='white'),
-                camera=dict(eye=dict(x=1.5, y=1.5, z=1.3))
-            ),
-            height=700, paper_bgcolor='white', plot_bgcolor='white'
-        )
-        st.plotly_chart(fig, use_container_width=True)
+            fig = go.Figure()
+            fig.add_trace(go.Scatter3d(
+                x=co2_values[pareto_mask], y=cost_values[pareto_mask] / 1e6,
+                z=score_values[pareto_mask], mode='markers',
+                marker=dict(size=10, color=score_values[pareto_mask], colorscale='Viridis',
+                           showscale=True, colorbar=dict(title="Score"), line=dict(color='gold', width=2)),
+                name='Pareto Optimal',
+                text=[f'CO₂: {c/1000:.1f}k<br>Cost: ${co/1e6:.2f}M<br>Score: {s:.1f}'
+                      for c, co, s in zip(co2_values[pareto_mask], cost_values[pareto_mask], score_values[pareto_mask])],
+                hoverinfo='text'
+            ))
+            fig.add_trace(go.Scatter3d(
+                x=co2_values[~pareto_mask], y=cost_values[~pareto_mask] / 1e6,
+                z=score_values[~pareto_mask], mode='markers',
+                marker=dict(size=5, color='lightgray', opacity=0.3), name='Dominated'
+            ))
+            fig.add_trace(go.Scatter3d(
+                x=[base_co2], y=[base_cost / 1e6], z=[base_score], mode='markers',
+                marker=dict(size=15, color='red', symbol='diamond', line=dict(color='darkred', width=3)),
+                name='Current Solution'
+            ))
+            fig.update_layout(
+                title='3D Pareto Front: Environmental vs Economic vs Performance',
+                scene=dict(
+                    xaxis=dict(title='CO₂ (tons)', backgroundcolor='white'),
+                    yaxis=dict(title='Cost ($M)', backgroundcolor='white'),
+                    zaxis=dict(title='Score', backgroundcolor='white'),
+                    camera=dict(eye=dict(x=1.5, y=1.5, z=1.3))
+                ),
+                height=700, paper_bgcolor='white', plot_bgcolor='white'
+            )
+            st.plotly_chart(fig, use_container_width=True)
 
-        n_pareto = np.sum(pareto_mask)
-        st.success(f"Found {n_pareto} Pareto-optimal solutions out of {n_solutions} evaluated.")
+            n_pareto = np.sum(pareto_mask)
+            st.success(f"Found {n_pareto} Pareto-optimal solutions out of {n_solutions} evaluated.")
 
 
 # ═══════════════════════════════════════════════════════════════
 # TAB 4: 12-ELEMENT ANALYSIS (Parallel Coordinates)
 # ═══════════════════════════════════════════════════════════════
-with tabs[3]:
-    st.warning("Illustrative synthetic scenario visualization; not used in the scientific LCA/LCCA results.")
-    st.markdown("### 📈 Parallel Coordinates: 12 Illustrative Dashboard Elements")
+if 'twelve' in TABS:
+    with TABS['twelve']:
+        st.warning("Illustrative synthetic scenario visualization; not used in the scientific LCA/LCCA results.")
+        st.markdown("### 📈 Parallel Coordinates: 12 Illustrative Dashboard Elements")
 
-    if st.button("📊 Generate Parallel Coordinates", key="parallel_btn"):
-        np.random.seed(42)
-        n_scenarios = 20
-        scenarios_data = []
-        for i in range(n_scenarios):
-            variation = np.random.uniform(0.9, 1.1)
-            scenario = {
-                'Concrete Impact': float(np.clip(100 - (results['concrete_volume'] / 10000) * variation, 0, 100)),
-                'Steel Impact': float(np.clip(100 - (results['steel_mass'] / 1500) * variation, 0, 100)),
-                'Aluminum Impact': float(np.clip(100 - (results['aluminum_mass'] / 75) * variation, 0, 100)),
-                'Embodied Energy': float(np.clip(100 - (results['total_ee'] / 100000) * variation, 0, 100)),
-                'Carbon Emissions': float(np.clip(100 - (results['total_co2'] / 4000) * variation, 0, 100)),
-                'Water Consumption': float(np.clip(np.random.uniform(60, 85) * variation, 0, 100)),
-                'Op. Efficiency': float(np.clip(np.random.uniform(70, 95) * variation, 0, 100)),
-                'Maintenance': float(np.clip(np.random.uniform(65, 90) * variation, 0, 100)),
-                'Safety Rating': float(np.clip(np.random.uniform(80, 98) * variation, 0, 100)),
-                'Economic Viability': float(np.clip(np.random.uniform(60, 85) * variation, 0, 100)),
-                'Social Impact': float(np.clip(np.random.uniform(55, 80) * variation, 0, 100)),
-                'Lifecycle Cost': float(np.clip(100 - (results.get('total_cost', 2500) / 40) * variation, 0, 100))
-            }
-            scenarios_data.append(scenario)
+        if st.button("📊 Generate Parallel Coordinates", key="parallel_btn"):
+            np.random.seed(42)
+            n_scenarios = 20
+            scenarios_data = []
+            for i in range(n_scenarios):
+                variation = np.random.uniform(0.9, 1.1)
+                scenario = {
+                    'Concrete Impact': float(np.clip(100 - (results['concrete_volume'] / 10000) * variation, 0, 100)),
+                    'Steel Impact': float(np.clip(100 - (results['steel_mass'] / 1500) * variation, 0, 100)),
+                    'Aluminum Impact': float(np.clip(100 - (results['aluminum_mass'] / 75) * variation, 0, 100)),
+                    'Embodied Energy': float(np.clip(100 - (results['total_ee'] / 100000) * variation, 0, 100)),
+                    'Carbon Emissions': float(np.clip(100 - (results['total_co2'] / 4000) * variation, 0, 100)),
+                    'Water Consumption': float(np.clip(np.random.uniform(60, 85) * variation, 0, 100)),
+                    'Op. Efficiency': float(np.clip(np.random.uniform(70, 95) * variation, 0, 100)),
+                    'Maintenance': float(np.clip(np.random.uniform(65, 90) * variation, 0, 100)),
+                    'Safety Rating': float(np.clip(np.random.uniform(80, 98) * variation, 0, 100)),
+                    'Economic Viability': float(np.clip(np.random.uniform(60, 85) * variation, 0, 100)),
+                    'Social Impact': float(np.clip(np.random.uniform(55, 80) * variation, 0, 100)),
+                    'Lifecycle Cost': float(np.clip(100 - (results.get('total_cost', 2500) / 40) * variation, 0, 100))
+                }
+                scenarios_data.append(scenario)
 
-        df = pd.DataFrame(scenarios_data)
-        df['Composite_Display_Score'] = df.mean(axis=1)
+            df = pd.DataFrame(scenarios_data)
+            df['Composite_Display_Score'] = df.mean(axis=1)
 
-        dimensions = [dict(label=col, values=df[col], range=[0, 100]) for col in df.columns[:-1]]
+            dimensions = [dict(label=col, values=df[col], range=[0, 100]) for col in df.columns[:-1]]
 
-        fig = go.Figure(data=go.Parcoords(
-            line=dict(color=df['Composite_Display_Score'], colorscale='RdYlGn', showscale=True, cmin=0, cmax=100,
-                     colorbar=dict(title="Composite<br>Display Score", thickness=20)),
-            dimensions=dimensions
-        ))
-        fig.update_layout(title='12 Illustrative Dashboard Elements Across Scenarios', height=700, paper_bgcolor='white')
-        st.plotly_chart(fig, use_container_width=True)
+            fig = go.Figure(data=go.Parcoords(
+                line=dict(color=df['Composite_Display_Score'], colorscale='RdYlGn', showscale=True, cmin=0, cmax=100,
+                         colorbar=dict(title="Composite<br>Display Score", thickness=20)),
+                dimensions=dimensions
+            ))
+            fig.update_layout(title='12 Illustrative Dashboard Elements Across Scenarios', height=700, paper_bgcolor='white')
+            st.plotly_chart(fig, use_container_width=True)
 
-        best = df[df.columns[:-1]].mean().nlargest(3)
-        worst = df[df.columns[:-1]].mean().nsmallest(3)
-        bc1, bc2 = st.columns(2)
-        with bc1:
-            st.markdown("**🏆 Top Performing Elements:**")
-            for i, (name, val) in enumerate(best.items()): st.write(f"{i+1}. {name}: {val:.1f}/100")
-        with bc2:
-            st.markdown("**⚠️ Needs Improvement:**")
-            for i, (name, val) in enumerate(worst.items()): st.write(f"{i+1}. {name}: {val:.1f}/100")
+            best = df[df.columns[:-1]].mean().nlargest(3)
+            worst = df[df.columns[:-1]].mean().nsmallest(3)
+            bc1, bc2 = st.columns(2)
+            with bc1:
+                st.markdown("**🏆 Top Performing Elements:**")
+                for i, (name, val) in enumerate(best.items()): st.write(f"{i+1}. {name}: {val:.1f}/100")
+            with bc2:
+                st.markdown("**⚠️ Needs Improvement:**")
+                for i, (name, val) in enumerate(worst.items()): st.write(f"{i+1}. {name}: {val:.1f}/100")
 
 
 # ═══════════════════════════════════════════════════════════════
 # TAB 5: UNCERTAINTY ANALYSIS (Monte Carlo)
 # ═══════════════════════════════════════════════════════════════
-with tabs[4]:
+with TABS['uncertainty']:
     st.markdown("### 🎲 Phase 4 — Component-based Monte Carlo Uncertainty")
     st.caption("Each uncertain input is sampled from its own distribution and the full A1–C4 model is "
                "re-run, so uncertainty propagates per component while gross = Σ stages, net = gross − Module D, "
@@ -2914,13 +2919,14 @@ with tabs[4]:
                                file_name=f"mc_summary_{datetime.now().strftime('%Y%m%d')}.xlsx",
                                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
-    st.markdown("---")
-    st.markdown("#### 🗄️ Legacy illustrative MC (display-only, NOT publication-grade)")
-    st.warning("⚠️ **Legacy total-scaling Monte Carlo — illustrative only.** It scales the *total* CO₂ by "
-               "concrete and grid factors and must NOT be used as scientific uncertainty. Superseded by the "
-               "Phase 4 component-based engine above.")
+    if not publication_mode:
+        st.markdown("---")
+        st.markdown("#### 🗄️ Legacy illustrative MC (display-only, NOT publication-grade)")
+        st.warning("⚠️ **Legacy total-scaling Monte Carlo — illustrative only.** It scales the *total* CO₂ by "
+                   "concrete and grid factors and must NOT be used as scientific uncertainty. Superseded by the "
+                   "Phase 4 component-based engine above.")
 
-    if st.button("🎲 Run legacy illustrative MC", key="mc_btn"):
+    if (not publication_mode) and st.button("🎲 Run legacy illustrative MC", key="mc_btn"):
         n_simulations = 1000
         np.random.seed(42)
 
@@ -2992,52 +2998,53 @@ with tabs[4]:
 # ═══════════════════════════════════════════════════════════════
 # TAB 6: 3D SENSITIVITY SURFACE
 # ═══════════════════════════════════════════════════════════════
-with tabs[5]:
-    st.markdown("### 📐 3D Sensitivity Surface: Carbon Intensity × Renewable Energy")
-    st.warning("⚠️ Illustrative dashboard-only surface. Renewable share is NOT used in the core LCA "
-               "(grid carbon intensity already reflects the grid mix); this view is for visualization only.")
+if 'surface3d' in TABS:
+    with TABS['surface3d']:
+        st.markdown("### 📐 3D Sensitivity Surface: Carbon Intensity × Renewable Energy")
+        st.warning("⚠️ Illustrative dashboard-only surface. Renewable share is NOT used in the core LCA "
+                   "(grid carbon intensity already reflects the grid mix); this view is for visualization only.")
 
-    if st.button("📈 Generate 3D Surface", key="surface_btn"):
-        carbon_range = np.linspace(0.2, 0.8, 30)
-        renew_range = np.linspace(0, 100, 30)
-        X, Y = np.meshgrid(carbon_range, renew_range)
-        Z = np.zeros_like(X)
+        if st.button("📈 Generate 3D Surface", key="surface_btn"):
+            carbon_range = np.linspace(0.2, 0.8, 30)
+            renew_range = np.linspace(0, 100, 30)
+            X, Y = np.meshgrid(carbon_range, renew_range)
+            Z = np.zeros_like(X)
 
-        base_co2 = results['total_co2']
-        for i in range(X.shape[0]):
-            for j in range(X.shape[1]):
-                carbon_factor = X[i, j] / 0.5
-                renewable_factor = (100 - Y[i, j]) / (100 - 20)
-                Z[i, j] = base_co2 * carbon_factor * renewable_factor
+            base_co2 = results['total_co2']
+            for i in range(X.shape[0]):
+                for j in range(X.shape[1]):
+                    carbon_factor = X[i, j] / 0.5
+                    renewable_factor = (100 - Y[i, j]) / (100 - 20)
+                    Z[i, j] = base_co2 * carbon_factor * renewable_factor
 
-        Z_norm = (Z - Z.min()) / (Z.max() - Z.min()) * 10
+            Z_norm = (Z - Z.min()) / (Z.max() - Z.min()) * 10
 
-        fig = go.Figure(data=[go.Surface(
-            x=X, y=Y, z=Z_norm, colorscale='RdYlGn_r',
-            colorbar=dict(title="Relative<br>Impact"),
-            contours=dict(z=dict(show=True, usecolormap=True, highlightcolor="limegreen", project=dict(z=True))),
-            hovertemplate='Carbon: %{x:.2f}<br>Renewable: %{y:.1f}%<br>Impact: %{z:.2f}<extra></extra>'
-        )])
-        fig.update_layout(
-            title='3D Sensitivity: Carbon Intensity vs Renewable Energy',
-            scene=dict(
-                xaxis=dict(title='Carbon (kg CO₂/kWh)', backgroundcolor="rgb(230,230,230)"),
-                yaxis=dict(title='Renewable (%)', backgroundcolor="rgb(230,230,230)"),
-                zaxis=dict(title='Relative Impact', backgroundcolor="rgb(230,230,230)"),
-                camera=dict(eye=dict(x=1.5, y=1.5, z=1.3))
-            ),
-            height=800, paper_bgcolor='white'
-        )
-        st.plotly_chart(fig, use_container_width=True)
+            fig = go.Figure(data=[go.Surface(
+                x=X, y=Y, z=Z_norm, colorscale='RdYlGn_r',
+                colorbar=dict(title="Relative<br>Impact"),
+                contours=dict(z=dict(show=True, usecolormap=True, highlightcolor="limegreen", project=dict(z=True))),
+                hovertemplate='Carbon: %{x:.2f}<br>Renewable: %{y:.1f}%<br>Impact: %{z:.2f}<extra></extra>'
+            )])
+            fig.update_layout(
+                title='3D Sensitivity: Carbon Intensity vs Renewable Energy',
+                scene=dict(
+                    xaxis=dict(title='Carbon (kg CO₂/kWh)', backgroundcolor="rgb(230,230,230)"),
+                    yaxis=dict(title='Renewable (%)', backgroundcolor="rgb(230,230,230)"),
+                    zaxis=dict(title='Relative Impact', backgroundcolor="rgb(230,230,230)"),
+                    camera=dict(eye=dict(x=1.5, y=1.5, z=1.3))
+                ),
+                height=800, paper_bgcolor='white'
+            )
+            st.plotly_chart(fig, use_container_width=True)
 
-        min_idx = np.unravel_index(Z.argmin(), Z.shape)
-        st.success(f"Optimal: Carbon = {X[min_idx]:.3f} kg/kWh, Renewable = {Y[min_idx]:.1f}%")
+            min_idx = np.unravel_index(Z.argmin(), Z.shape)
+            st.success(f"Optimal: Carbon = {X[min_idx]:.3f} kg/kWh, Renewable = {Y[min_idx]:.1f}%")
 
 
 # ═══════════════════════════════════════════════════════════════
 # TAB 7: ONE-AT-A-TIME SENSITIVITY ANALYSIS
 # ═══════════════════════════════════════════════════════════════
-with tabs[6]:
+with TABS['oat']:
     st.markdown("### 📊 One-at-a-Time Sensitivity Analysis")
     st.caption("Scenario-based OAT sensitivity on the gross modular LCA total (±10% per variable).")
 
@@ -3083,136 +3090,138 @@ with tabs[6]:
 
 # TAB 8: URBAN ANALYTICS
 # ═══════════════════════════════════════════════════════════════
-with tabs[7]:
-    st.warning("Illustrative synthetic scenario visualization; not used in the scientific LCA/LCCA results.")
-    st.markdown("### 🗺️ Urban Analytics 3D: Spatial Sustainability Assessment")
+if 'urban' in TABS:
+    with TABS['urban']:
+        st.warning("Illustrative synthetic scenario visualization; not used in the scientific LCA/LCCA results.")
+        st.markdown("### 🗺️ Urban Analytics 3D: Spatial Sustainability Assessment")
 
-    case_study = st.selectbox("Select Case Study:", ['Cairo', 'Chongqing', 'Osaka', 'Generic'], key="case_sel")
+        case_study = st.selectbox("Select Case Study:", ['Cairo', 'Chongqing', 'Osaka', 'Generic'], key="case_sel")
 
-    if st.button("🗺️ Generate Urban Analytics", key="urban_btn"):
-        case_data = {
-            'Cairo': {'stations': 22, 'length_km': 54, 'lat_center': 30.0444, 'lon_center': 31.2357, 'population_served': 2000000},
-            'Chongqing': {'stations': 45, 'length_km': 67, 'lat_center': 29.5630, 'lon_center': 106.5516, 'population_served': 5000000},
-            'Osaka': {'stations': 18, 'length_km': 28, 'lat_center': 34.6937, 'lon_center': 135.5023, 'population_served': 1500000},
-            'Generic': {'stations': 25, 'length_km': 40, 'lat_center': 40.7128, 'lon_center': -74.0060, 'population_served': 1000000}
-        }
-        data = case_data[case_study]
-        n_stations = data['stations']
+        if st.button("🗺️ Generate Urban Analytics", key="urban_btn"):
+            case_data = {
+                'Cairo': {'stations': 22, 'length_km': 54, 'lat_center': 30.0444, 'lon_center': 31.2357, 'population_served': 2000000},
+                'Chongqing': {'stations': 45, 'length_km': 67, 'lat_center': 29.5630, 'lon_center': 106.5516, 'population_served': 5000000},
+                'Osaka': {'stations': 18, 'length_km': 28, 'lat_center': 34.6937, 'lon_center': 135.5023, 'population_served': 1500000},
+                'Generic': {'stations': 25, 'length_km': 40, 'lat_center': 40.7128, 'lon_center': -74.0060, 'population_served': 1000000}
+            }
+            data = case_data[case_study]
+            n_stations = data['stations']
 
-        np.random.seed(42)
-        lats = np.linspace(data['lat_center'] - 0.2, data['lat_center'] + 0.2, n_stations) + np.random.normal(0, 0.02, n_stations)
-        lons = np.linspace(data['lon_center'] - 0.2, data['lon_center'] + 0.2, n_stations) + np.random.normal(0, 0.02, n_stations)
+            np.random.seed(42)
+            lats = np.linspace(data['lat_center'] - 0.2, data['lat_center'] + 0.2, n_stations) + np.random.normal(0, 0.02, n_stations)
+            lons = np.linspace(data['lon_center'] - 0.2, data['lon_center'] + 0.2, n_stations) + np.random.normal(0, 0.02, n_stations)
 
-        station_co2 = results['total_co2'] / n_stations
-        co2_per_station = station_co2 * np.random.uniform(0.8, 1.2, n_stations)
-        pax_per_station = (data['population_served'] / n_stations) * np.random.uniform(0.7, 1.3, n_stations)
+            station_co2 = results['total_co2'] / n_stations
+            co2_per_station = station_co2 * np.random.uniform(0.8, 1.2, n_stations)
+            pax_per_station = (data['population_served'] / n_stations) * np.random.uniform(0.7, 1.3, n_stations)
 
-        fig = go.Figure()
-        fig.add_trace(go.Scattergeo(
-            lat=lats, lon=lons, mode='markers+text',
-            marker=dict(size=co2_per_station / np.max(co2_per_station) * 30 + 10,
-                       color=co2_per_station, colorscale='RdYlGn_r', showscale=True,
-                       colorbar=dict(title="CO₂<br>(tons/yr)"), line=dict(color='black', width=1)),
-            text=[f'S{i+1}' for i in range(n_stations)], textposition='top center',
-            hovertext=[f'<b>Station S{i+1}</b><br>CO₂: {co2:.0f} t/yr<br>Pax: {int(p):,}/day'
-                      for i, (co2, p) in enumerate(zip(co2_per_station, pax_per_station))],
-            hoverinfo='text', name='Stations'
-        ))
-        fig.add_trace(go.Scattergeo(lat=lats, lon=lons, mode='lines',
-                                     line=dict(width=3, color='blue'), opacity=0.5, name='Route'))
-        fig.update_geos(center=dict(lat=data['lat_center'], lon=data['lon_center']),
-                       projection_type='natural earth', showcountries=True, showcoastlines=True,
-                       showland=True, landcolor='rgb(243,243,243)')
-        fig.update_layout(
-            title=f'Urban Analytics: {case_study} Monorail Network ({n_stations} stations | {data["length_km"]} km)',
-            height=700, showlegend=True
-        )
-        st.plotly_chart(fig, use_container_width=True)
+            fig = go.Figure()
+            fig.add_trace(go.Scattergeo(
+                lat=lats, lon=lons, mode='markers+text',
+                marker=dict(size=co2_per_station / np.max(co2_per_station) * 30 + 10,
+                           color=co2_per_station, colorscale='RdYlGn_r', showscale=True,
+                           colorbar=dict(title="CO₂<br>(tons/yr)"), line=dict(color='black', width=1)),
+                text=[f'S{i+1}' for i in range(n_stations)], textposition='top center',
+                hovertext=[f'<b>Station S{i+1}</b><br>CO₂: {co2:.0f} t/yr<br>Pax: {int(p):,}/day'
+                          for i, (co2, p) in enumerate(zip(co2_per_station, pax_per_station))],
+                hoverinfo='text', name='Stations'
+            ))
+            fig.add_trace(go.Scattergeo(lat=lats, lon=lons, mode='lines',
+                                         line=dict(width=3, color='blue'), opacity=0.5, name='Route'))
+            fig.update_geos(center=dict(lat=data['lat_center'], lon=data['lon_center']),
+                           projection_type='natural earth', showcountries=True, showcoastlines=True,
+                           showland=True, landcolor='rgb(243,243,243)')
+            fig.update_layout(
+                title=f'Urban Analytics: {case_study} Monorail Network ({n_stations} stations | {data["length_km"]} km)',
+                height=700, showlegend=True
+            )
+            st.plotly_chart(fig, use_container_width=True)
 
-        uc1, uc2, uc3 = st.columns(3)
-        with uc1:
-            st.metric("Total CO₂", f"{np.sum(co2_per_station):,.0f} t/yr")
-            st.metric("Avg/Station", f"{np.mean(co2_per_station):,.0f} t/yr")
-        with uc2:
-            st.metric("Max Station", f"S{np.argmax(co2_per_station)+1} ({co2_per_station[np.argmax(co2_per_station)]:,.0f} t)")
-            st.metric("Min Station", f"S{np.argmin(co2_per_station)+1} ({co2_per_station[np.argmin(co2_per_station)]:,.0f} t)")
-        with uc3:
-            st.metric("Per Capita", f"{np.sum(co2_per_station)/data['population_served']*1000:.2f} kg/person/yr")
-            st.metric("Density", f"{n_stations/data['length_km']:.2f} stations/km")
+            uc1, uc2, uc3 = st.columns(3)
+            with uc1:
+                st.metric("Total CO₂", f"{np.sum(co2_per_station):,.0f} t/yr")
+                st.metric("Avg/Station", f"{np.mean(co2_per_station):,.0f} t/yr")
+            with uc2:
+                st.metric("Max Station", f"S{np.argmax(co2_per_station)+1} ({co2_per_station[np.argmax(co2_per_station)]:,.0f} t)")
+                st.metric("Min Station", f"S{np.argmin(co2_per_station)+1} ({co2_per_station[np.argmin(co2_per_station)]:,.0f} t)")
+            with uc3:
+                st.metric("Per Capita", f"{np.sum(co2_per_station)/data['population_served']*1000:.2f} kg/person/yr")
+                st.metric("Density", f"{n_stations/data['length_km']:.2f} stations/km")
 
 
 # ═══════════════════════════════════════════════════════════════
 # TAB 9: INTERACTION NETWORK
 # ═══════════════════════════════════════════════════════════════
-with tabs[8]:
-    st.markdown("### 🔄 Illustrative Interaction Visualization")
-    st.warning("This network is a heuristic visualization only. The coefficients are not validated causal effects and are not used in the core LCA/LCCA results.")
+if 'interaction' in TABS:
+    with TABS['interaction']:
+        st.markdown("### 🔄 Illustrative Interaction Visualization")
+        st.warning("This network is a heuristic visualization only. The coefficients are not validated causal effects and are not used in the core LCA/LCCA results.")
 
-    categories_net = ['Material', 'Environmental', 'Operational', 'Economic']
-    angles = np.linspace(0, 2*np.pi, 4, endpoint=False)
-    node_x = np.cos(angles)
-    node_y = np.sin(angles)
+        categories_net = ['Material', 'Environmental', 'Operational', 'Economic']
+        angles = np.linspace(0, 2*np.pi, 4, endpoint=False)
+        node_x = np.cos(angles)
+        node_y = np.sin(angles)
 
-    interactions = [
-        ('Material', 'Environmental', effects['mat_env_effect']),
-        ('Environmental', 'Operational', effects['env_op_effect']),
-        ('Operational', 'Economic', effects['op_econ_effect']),
-        ('Economic', 'Material', effects['econ_mat_effect']),
-        ('Material', 'Operational', effects['mat_op_effect']),
-        ('Environmental', 'Economic', effects['env_econ_effect'])
-    ]
+        interactions = [
+            ('Material', 'Environmental', effects['mat_env_effect']),
+            ('Environmental', 'Operational', effects['env_op_effect']),
+            ('Operational', 'Economic', effects['op_econ_effect']),
+            ('Economic', 'Material', effects['econ_mat_effect']),
+            ('Material', 'Operational', effects['mat_op_effect']),
+            ('Environmental', 'Economic', effects['env_econ_effect'])
+        ]
 
-    fig_net = go.Figure()
-    for fr, to, val in interactions:
-        fi = categories_net.index(fr)
-        ti = categories_net.index(to)
-        color = 'green' if val > 0 else 'red'
+        fig_net = go.Figure()
+        for fr, to, val in interactions:
+            fi = categories_net.index(fr)
+            ti = categories_net.index(to)
+            color = 'green' if val > 0 else 'red'
+            fig_net.add_trace(go.Scatter(
+                x=[node_x[fi], node_x[ti], None], y=[node_y[fi], node_y[ti], None],
+                mode='lines', line=dict(width=min(abs(val)*2+1, 10), color=color),
+                hoverinfo='text', hovertext=f"{fr} → {to}: {val:+.2f} ({'Synergy' if val > 0 else 'Trade-off'})",
+                showlegend=False
+            ))
+
+        node_colors = ['#3498db', '#2ecc71', '#f39c12', '#e74c3c']
+        scores_adj = [results['adjusted_material_score'], results['adjusted_environmental_score'],
+                      results['adjusted_operational_score'], results['adjusted_economic_score']]
+
         fig_net.add_trace(go.Scatter(
-            x=[node_x[fi], node_x[ti], None], y=[node_y[fi], node_y[ti], None],
-            mode='lines', line=dict(width=min(abs(val)*2+1, 10), color=color),
-            hoverinfo='text', hovertext=f"{fr} → {to}: {val:+.2f} ({'Synergy' if val > 0 else 'Trade-off'})",
-            showlegend=False
+            x=node_x, y=node_y, mode='markers+text',
+            marker=dict(size=[s*0.5+20 for s in scores_adj], color=node_colors,
+                       line=dict(width=3, color='white')),
+            text=categories_net, textposition='middle center',
+            textfont=dict(size=12, color='white', family='Arial Black'),
+            hovertext=[f"<b>{c}</b><br>Score: {s:.1f}" for c, s in zip(categories_net, scores_adj)],
+            hoverinfo='text', showlegend=False
         ))
 
-    node_colors = ['#3498db', '#2ecc71', '#f39c12', '#e74c3c']
-    scores_adj = [results['adjusted_material_score'], results['adjusted_environmental_score'],
-                  results['adjusted_operational_score'], results['adjusted_economic_score']]
+        fig_net.add_trace(go.Scatter(x=[None], y=[None], mode='lines',
+                                      line=dict(width=4, color='green'), name='Synergy (+)'))
+        fig_net.add_trace(go.Scatter(x=[None], y=[None], mode='lines',
+                                      line=dict(width=4, color='red'), name='Trade-off (-)'))
 
-    fig_net.add_trace(go.Scatter(
-        x=node_x, y=node_y, mode='markers+text',
-        marker=dict(size=[s*0.5+20 for s in scores_adj], color=node_colors,
-                   line=dict(width=3, color='white')),
-        text=categories_net, textposition='middle center',
-        textfont=dict(size=12, color='white', family='Arial Black'),
-        hovertext=[f"<b>{c}</b><br>Score: {s:.1f}" for c, s in zip(categories_net, scores_adj)],
-        hoverinfo='text', showlegend=False
-    ))
-
-    fig_net.add_trace(go.Scatter(x=[None], y=[None], mode='lines',
-                                  line=dict(width=4, color='green'), name='Synergy (+)'))
-    fig_net.add_trace(go.Scatter(x=[None], y=[None], mode='lines',
-                                  line=dict(width=4, color='red'), name='Trade-off (-)'))
-
-    fig_net.update_layout(
-        title='Cross-Category Interaction Network',
-        xaxis=dict(showgrid=False, showticklabels=False, zeroline=False, range=[-1.5, 1.5]),
-        yaxis=dict(showgrid=False, showticklabels=False, zeroline=False, range=[-1.5, 1.5]),
-        plot_bgcolor='#f8f9fa', paper_bgcolor='white', height=700,
-        showlegend=True, legend=dict(x=0.02, y=0.98)
-    )
-    fig_net.add_annotation(
-        text=f"<b>Stats</b><br>Synergy: {results['total_synergy']:.2f}<br>"
-             f"Trade-off: {results['total_tradeoff']:.2f}<br>Ratio: {results['synergy_ratio']:.2f}",
-        xref="paper", yref="paper", x=0.98, y=0.02, xanchor='right', yanchor='bottom',
-        showarrow=False, bgcolor='rgba(255,255,255,0.9)', bordercolor='black', borderwidth=1
-    )
-    st.plotly_chart(fig_net, use_container_width=True)
+        fig_net.update_layout(
+            title='Cross-Category Interaction Network',
+            xaxis=dict(showgrid=False, showticklabels=False, zeroline=False, range=[-1.5, 1.5]),
+            yaxis=dict(showgrid=False, showticklabels=False, zeroline=False, range=[-1.5, 1.5]),
+            plot_bgcolor='#f8f9fa', paper_bgcolor='white', height=700,
+            showlegend=True, legend=dict(x=0.02, y=0.98)
+        )
+        fig_net.add_annotation(
+            text=f"<b>Stats</b><br>Synergy: {results['total_synergy']:.2f}<br>"
+                 f"Trade-off: {results['total_tradeoff']:.2f}<br>Ratio: {results['synergy_ratio']:.2f}",
+            xref="paper", yref="paper", x=0.98, y=0.02, xanchor='right', yanchor='bottom',
+            showarrow=False, bgcolor='rgba(255,255,255,0.9)', bordercolor='black', borderwidth=1
+        )
+        st.plotly_chart(fig_net, use_container_width=True)
 
 
 # ═══════════════════════════════════════════════════════════════
 # TAB 10: ABOUT & METHODOLOGY
 # ═══════════════════════════════════════════════════════════════
-with tabs[9]:
+with TABS['about']:
     st.markdown("""
 ### 📖 Assessment Methodology
 
@@ -3257,7 +3266,11 @@ EI_t  = EI₀ · [1 + α·(1 − C_t)]     (condition → energy intensity)
 B6_dyn = Σ_t  EI_t · PKM_t · CI_t / 1000      (CI_t = grid only, no renewable)
 ```
 
+<details><summary>🌐 Arabic explanation (الشرح بالعربية)</summary>
+
 تضيف المرحلة الثانية طبقة ديناميكية قائمة على السيناريوهات لحساب انبعاثات التشغيل B6. تمثل حالة الأصل C(t) مخزونًا يتدهور سنويًا ويتحسن بفعل الصيانة بعد فترة تأخير. تؤثر حالة الأصل على كثافة استهلاك الطاقة، ومن ثم على انبعاثات التشغيل السنوية. تُعامل معاملات النظام الديناميكي كافتراضات سيناريو ما لم تتم معايرتها ببيانات فحص أو صيانة أو قياسات تشغيلية.
+
+</details>
 
 #### 3c. MODULAR GROSS A1–C4 LCA (Phase 3A–3C)
 The model reports a **gross modular A1–C4 LCA** built from separate modules:
@@ -3403,7 +3416,7 @@ Cairo University. Software version 2.0.
 # ═══════════════════════════════════════════════════════════════
 # TAB 11: SYSTEM DYNAMICS (B6) — Phase 2
 # ═══════════════════════════════════════════════════════════════
-with tabs[10]:
+with TABS['sd']:
     st.markdown("### 🔧 System Dynamics — Asset Condition C(t) → Dynamic B6")
     st.warning(
         "Scenario-based system dynamics layer. Parameters (δ, ρ, τ, α, C₀, g) are "
@@ -3485,7 +3498,7 @@ with tabs[10]:
 # ═══════════════════════════════════════════════════════════════
 # TAB 12: SUSTAINABILITY INDEX (Phase 5)
 # ═══════════════════════════════════════════════════════════════
-with tabs[11]:
+with TABS['si']:
     st.markdown("### 🏁 Scientific Sustainability Index — hybrid CRITIC–Entropy")
     st.caption("A **decision-support composite index** over a scenario-year matrix. It does NOT replace the "
                "reported gross A1–C4 LCA, GWP/pkm, Module D, LCCA or Monte Carlo uncertainty, and is NOT the "
