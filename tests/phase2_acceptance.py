@@ -1,6 +1,6 @@
 import types, sys
 # build the same streamlit stub by importing the smoke harness machinery
-HARNESS="/tmp/claude-0/-home-user-Alaa-system-dynamic-/929ac78a-f3ba-50be-8f38-ed4bf8142a8b/scratchpad/smoke.py"
+HARNESS="tests/smoke_headless.py"
 src = open(HARNESS).read().split('# ---- Execute the app module ----')[0]
 exec(src)  # defines st stub and registers sys.modules['streamlit']
 

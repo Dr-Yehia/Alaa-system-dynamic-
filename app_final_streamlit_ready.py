@@ -671,8 +671,151 @@ def calculate_a5_construction(masses_kg, params, CI0):
             'waste_mass_total_kg': waste_mass_total_kg}
 
 
+# ═══════════════════════════════════════════════════════════════
+# PHASE 3B — B2-B5 USE-STAGE (activity-based) + MASS BALANCE
+# ───────────────────────────────────────────────────────────────
+# SYMBOL TABLE (Phase 3B)
+#   a        activity in {B2 maintenance, B3 repair, B4 replacement, B5 refurb}
+#   n_(a,t)  count of activity a in year t
+#   M_(j,a)  material j mass per activity (kg);  EF_j material factor
+#   F_(f,a)  fuel per activity (L);              EF_f fuel factor
+#   E_a      electricity per activity (kWh);     CI_t grid carbon
+#   A_(j,t)  material added (replacement/refurb), kg/year
+#   R_(j,t)  material removed (replacement/refurb), kg/year
+#   M_remaining = M_initial + Σ A - Σ R   (feeds Phase 3C; removed NOT re-counted)
+#   B2 schedule may be LINKED to the SD maintenance schedule (m_t) so that SD
+#   condition recovery is never "free" — it incurs B2 activity emissions/cost.
+# All quantities/factors are user inputs / scenario parameters (not validated).
+# ═══════════════════════════════════════════════════════════════
+
+def _parse_year_list(text, T):
+    years = set()
+    for tok in str(text).replace(';', ',').split(','):
+        tok = tok.strip()
+        if tok.isdigit():
+            y = int(tok)
+            if 1 <= y <= T:
+                years.add(y)
+    return years
+
+
+def build_b2_b5_activity_schedule(sd_rows, params, lifetime_years=ASSESSMENT_LIFETIME_YEARS):
+    """Yearly activity counts. B2 is linked to the SD maintenance schedule when
+    'b2_use_sd_schedule' is True (prevents 'free maintenance')."""
+    use_sd = params.get('b2_use_sd_schedule', True)
+    b2_interval = int(params.get('b2_interval', 5))
+    enable_b4 = params.get('enable_b4', False)
+    b4_years = _parse_year_list(params.get('b4_years', ''), int(lifetime_years)) if enable_b4 else set()
+    rows = []
+    for t in range(1, int(lifetime_years) + 1):
+        if use_sd and sd_rows:
+            b2 = int(sd_rows[t - 1]['maintenance_action'])
+            src = 'SD maintenance schedule'
+        else:
+            b2 = 1 if (b2_interval > 0 and t % b2_interval == 0) else 0
+            src = 'fixed interval'
+        b4 = 1 if t in b4_years else 0
+        rows.append({'year': t, 'B2_count': b2, 'B3_count': 0, 'B4_count': b4, 'B5_count': 0, 'source': src})
+    return rows
+
+
+def calculate_b2_b5_use_stage(schedule, masses_kg, total_embodied_carbon_kg, total_mass_kg,
+                              params, CI, diesel_ef, truck_ef):
+    """Activity-based B2-B5 emissions (tCO2e) + material added/removed (kg) for mass balance.
+    I_(a,t) = n_(a,t)[Σ M_j EF_j + Σ F_f EF_f + E_a CI_t + Σ (M_j/1000) D EF_tr + Σ Rwaste EF_waste]/1000."""
+    if not params.get('include_b2b5', False):
+        return {'included': False, 'b2_b5_total_tons': 0.0, 'b2_tons': 0.0, 'b3_tons': 0.0,
+                'b4_tons': 0.0, 'b5_tons': 0.0, 'yearly': [],
+                'material_added_kg': {k: 0.0 for k in masses_kg},
+                'material_removed_kg': {k: 0.0 for k in masses_kg}}
+
+    ef_steel = MATERIAL_FACTORS['steel_section']['gwp_kgco2e_per_kg']
+    ef_concrete = MATERIAL_FACTORS['concrete_32_40']['gwp_kgco2e_per_kg']
+    b2_mat_frac = params.get('b2_material_pct', 0.0) / 100.0
+    added = {k: 0.0 for k in masses_kg}
+    removed = {k: 0.0 for k in masses_kg}
+    b2_tons = b4_tons = 0.0
+    yearly = []
+    for row in schedule:
+        t = row['year']
+        # B2 routine maintenance (consumables; does not change structural mass balance)
+        b2_kg = 0.0
+        if row['B2_count']:
+            mat = b2_mat_frac * total_embodied_carbon_kg
+            dies = params.get('b2_diesel_l', 0.0) * diesel_ef
+            ele = params.get('b2_elec_kwh', 0.0) * CI
+            trans = (b2_mat_frac * total_mass_kg / 1000.0) * params.get('b2_transport_km', 0.0) * truck_ef
+            b2_kg = row['B2_count'] * (mat + dies + ele + trans)
+        b2_tons += b2_kg / 1000.0
+        # B4 replacement (like-for-like): new material production + removed-material waste
+        b4_kg = 0.0
+        if row['B4_count']:
+            rs = params.get('b4_frac_steel', 0.0) * masses_kg.get('steel', 0.0)
+            rc = params.get('b4_frac_concrete', 0.0) * masses_kg.get('concrete', 0.0)
+            new_mat = rs * ef_steel + rc * ef_concrete
+            waste_treat = (rs + rc) * params.get('b4_waste_ef', 0.0)
+            waste_trans = ((rs + rc) / 1000.0) * params.get('b4_transport_km', 0.0) * truck_ef
+            b4_kg = row['B4_count'] * (new_mat + waste_treat + waste_trans)
+            added['steel'] += row['B4_count'] * rs
+            added['concrete'] += row['B4_count'] * rc
+            removed['steel'] += row['B4_count'] * rs
+            removed['concrete'] += row['B4_count'] * rc
+        b4_tons += b4_kg / 1000.0
+        yearly.append({'year': t, 'B2_count': row['B2_count'], 'B4_count': row['B4_count'],
+                       'B2_tCO2e': b2_kg / 1000.0, 'B4_tCO2e': b4_kg / 1000.0})
+    total = b2_tons + b4_tons
+    return {'included': True, 'b2_b5_total_tons': total, 'b2_tons': b2_tons, 'b3_tons': 0.0,
+            'b4_tons': b4_tons, 'b5_tons': 0.0, 'yearly': yearly,
+            'material_added_kg': added, 'material_removed_kg': removed}
+
+
+def update_material_mass_balance(initial_masses_kg, added_kg, removed_kg):
+    """remaining = initial + Σ added - Σ removed. Removed material is handled in B4/B5
+    and is NOT re-counted in C1-C4 (Phase 3C uses remaining_masses_for_c1_c4)."""
+    remaining = {}
+    table = []
+    for k, M0 in initial_masses_kg.items():
+        a = added_kg.get(k, 0.0)
+        r = removed_kg.get(k, 0.0)
+        rem = M0 + a - r
+        remaining[k] = rem
+        table.append({'material': k, 'initial_kg': M0, 'added_B4_B5_kg': a,
+                      'removed_B4_B5_kg': r, 'remaining_for_C1_C4_kg': rem})
+    return {'mass_balance_by_material': table, 'remaining_masses_for_c1_c4': remaining}
+
+
+def calculate_lcc_npv_activity_based(construction_cost_m, annual_energy_cost_m, maintenance_mode,
+                                     annual_maintenance_m, b2b3b5_costs_by_year, replacement_costs_by_year,
+                                     end_of_life_cost_m=0.0, residual_value_m=0.0,
+                                     discount_rate_pct=5.0, lifetime_years=ASSESSMENT_LIFETIME_YEARS):
+    """LCCA with a maintenance mode that prevents double counting:
+      simple_annual : routine cost = annual_maintenance (NO activity routine costs)
+      activity_based: routine cost = Σ B2/B3/B5 activity costs (NO annual_maintenance)
+    B4 replacement cost is a discrete capital event added in BOTH modes (so B4 LCA
+    emissions always have a matching LCCA cost)."""
+    r = discount_rate_pct / 100.0
+    n = int(lifetime_years)
+
+    def pv(cost, year):
+        return cost / ((1 + r) ** year) if r > 0 else cost
+
+    upv = (1 - (1 + r) ** (-n)) / r if r > 0 else n
+    pv_energy = annual_energy_cost_m * upv
+    if maintenance_mode == 'activity_based':
+        pv_routine = sum(pv(c, y) for y, c in (b2b3b5_costs_by_year or {}).items())
+    else:
+        pv_routine = annual_maintenance_m * upv
+    pv_replacement = sum(pv(c, y) for y, c in (replacement_costs_by_year or {}).items())
+    pv_eol = pv(end_of_life_cost_m, n)
+    pv_residual = pv(residual_value_m, n)
+    npv = construction_cost_m + pv_routine + pv_energy + pv_replacement + pv_eol - pv_residual
+    return {'npv_lcc_m': npv, 'discount_rate_pct': discount_rate_pct, 'lifetime_years': n,
+            'maintenance_mode': maintenance_mode, 'pv_routine_m': pv_routine,
+            'pv_replacement_m': pv_replacement}
+
+
 def update_lca_summary_full(I_A1_A3, I_A4, I_A5, I_B2_B5, I_B6_active, I_C1_C4,
-                            module_d_tons, total_pkm, b6_mode):
+                            module_d_tons, total_pkm, b6_mode, b2b5_included=False):
     """Combine modules into a GROSS A1-C4 result. Module D stays separate.
     Functional unit (GWP/pkm) uses GROSS, never net."""
     i_a5_val = I_A5['a5_total_tons'] if isinstance(I_A5, dict) else I_A5
@@ -684,7 +827,7 @@ def update_lca_summary_full(I_A1_A3, I_A4, I_A5, I_B2_B5, I_B6_active, I_C1_C4,
         ('A1-A3 materials', I_A1_A3, 'included'),
         ('A4 transport', I_A4, 'included' if I_A4 > 0 else 'not included'),
         ('A5 construction', i_a5_val, 'included' if a5_included else 'not included'),
-        ('B2-B5 use stage', I_B2_B5, 'not included (Phase 3B)'),
+        ('B2-B5 use stage', I_B2_B5, 'included — activity-based scenario' if b2b5_included else 'not included'),
         (f'B6 operation ({b6_mode})', I_B6_active, 'included'),
         ('C1-C4 end-of-life', I_C1_C4, 'not included (Phase 3C)'),
     ]
@@ -846,17 +989,26 @@ def calculate_core_lca_lcc(params):
         active_total_lifecycle_co2_tons = lca_results['total_lifecycle_co2_tons']
     active_co2_kg_per_pkm = (active_total_lifecycle_co2_tons * 1000 / active_total_pkm) if active_total_pkm > 0 else np.nan
 
-    # ── PHASE 3A: modular gross A1-C4 backbone (A5 now; B2-B5/C1-C4 later) ──
+    # ── PHASE 3A: A5 construction ──
     a5 = calculate_a5_construction(material_masses_kg, params, effective_carbon_intensity)
-    I_B2_B5 = 0.0   # Phase 3B
+
+    # ── PHASE 3B: B2-B5 activity-based use stage + mass balance ──
+    b2b5_schedule = build_b2_b5_activity_schedule(sd_rows, params, ASSESSMENT_LIFETIME_YEARS)
+    diesel_ef_val = params.get('a5_diesel_ef', FUEL_FACTORS['diesel']['ef_kgco2e_per_l'])
+    b2b5 = calculate_b2_b5_use_stage(
+        b2b5_schedule, material_masses_kg, total_carbon_raw, sum(material_masses_kg.values()),
+        params, effective_carbon_intensity, diesel_ef_val, TRANSPORT_EMISSION_FACTORS['truck'])
+    mass_balance = update_material_mass_balance(
+        material_masses_kg, b2b5['material_added_kg'], b2b5['material_removed_kg'])
+    I_B2_B5 = b2b5['b2_b5_total_tons']
     I_C1_C4 = 0.0   # Phase 3C
+
     full_lca = update_lca_summary_full(
         I_A1_A3=total_embodied_co2, I_A4=a4_transport_co2_tons, I_A5=a5,
         I_B2_B5=I_B2_B5, I_B6_active=active_b6_tons, I_C1_C4=I_C1_C4,
         module_d_tons=module_d_carbon_credit_tons, total_pkm=active_total_pkm,
-        b6_mode=active_b6_mode)
-    # Publication-grade for the FULL LCA: currently gated by the FRP/EPD rule.
-    # (Extended in 3B/3C: treatment shares summing to 1, EOL data present, etc.)
+        b6_mode=active_b6_mode, b2b5_included=b2b5['included'])
+    # Publication-grade for the FULL LCA: gated by the FRP/EPD rule (extended in 3C).
     publication_grade_full_lca = publication_grade
 
     # Economic (LCCA)
@@ -867,14 +1019,34 @@ def calculate_core_lca_lcc(params):
     total_jobs = jobs_created * economic_multiplier
     total_maintenance_cost = annual_maintenance * ASSESSMENT_LIFETIME_YEARS
 
-    lcc_results = calculate_lcc_npv(
-        construction_cost_m=construction_cost,
-        annual_maintenance_m=annual_maintenance,
-        annual_energy_cost_m=params.get("annual_energy_cost", 0.0),
-        residual_value_m=params.get("residual_value", 0.0),
-        discount_rate_pct=params.get("discount_rate", 5.0),
-        lifetime_years=ASSESSMENT_LIFETIME_YEARS
-    )
+    # LCCA — when B2-B5 is active, use the mode-aware activity LCCA (prevents
+    # double counting); B4 replacement cost is a discrete capital event in BOTH modes.
+    lcca_maint_mode = params.get('lcca_maint_mode', 'simple_annual')
+    b4_cost_per_event = params.get('b4_cost_per_event_m', 0.0)
+    b2_cost_per_event = params.get('b2_cost_per_event_m', 0.0)
+    replacement_costs_by_year = {row['year']: b4_cost_per_event
+                                 for row in b2b5_schedule if row['B4_count'] and b4_cost_per_event}
+    b2b3b5_costs_by_year = {row['year']: row['B2_count'] * b2_cost_per_event
+                            for row in b2b5_schedule if row['B2_count'] and b2_cost_per_event}
+    if b2b5['included']:
+        lcc_results = calculate_lcc_npv_activity_based(
+            construction_cost_m=construction_cost,
+            annual_energy_cost_m=params.get("annual_energy_cost", 0.0),
+            maintenance_mode=lcca_maint_mode,
+            annual_maintenance_m=annual_maintenance,
+            b2b3b5_costs_by_year=b2b3b5_costs_by_year,
+            replacement_costs_by_year=replacement_costs_by_year,
+            residual_value_m=params.get("residual_value", 0.0),
+            discount_rate_pct=params.get("discount_rate", 5.0),
+            lifetime_years=ASSESSMENT_LIFETIME_YEARS)
+    else:
+        lcc_results = calculate_lcc_npv(
+            construction_cost_m=construction_cost,
+            annual_maintenance_m=annual_maintenance,
+            annual_energy_cost_m=params.get("annual_energy_cost", 0.0),
+            residual_value_m=params.get("residual_value", 0.0),
+            discount_rate_pct=params.get("discount_rate", 5.0),
+            lifetime_years=ASSESSMENT_LIFETIME_YEARS)
 
     return {
         'total_co2': total_co2,
@@ -941,6 +1113,12 @@ def calculate_core_lca_lcc(params):
         'active_co2_kg_per_pkm': active_co2_kg_per_pkm,
         # ── PHASE 3A: A5 + gross A1-C4 backbone ──
         'a5': a5,
+        # ── PHASE 3B: B2-B5 use stage + mass balance ──
+        'b2b5': b2b5,
+        'i_b2b5_tons': I_B2_B5,
+        'b2b5_schedule': b2b5_schedule,
+        'mass_balance': mass_balance,
+        'lcca_maint_mode': lcca_maint_mode,
         'gross_a1_c4_tons': full_lca['gross_a1_c4_tons'],
         'gwp_pkm_gross': full_lca['gwp_pkm_gross'],
         'net_with_module_d_tons': full_lca['net_with_module_d_tons'],
@@ -1242,6 +1420,28 @@ with st.sidebar:
         a5_waste_transport_km = st.number_input("Waste transport distance (km)", value=0.0, min_value=0.0, step=10.0, key="a5_waste_km")
         a5_waste_treatment_ef = st.number_input("Waste treatment EF (kgCO₂e/kg)", value=0.0, min_value=0.0, step=0.01, format="%.3f", key="a5_waste_ef")
 
+        st.markdown("### 🔁 B2–B5 Use Stage (Phase 3B)")
+        st.caption("⚠️ Activity-based scenario unless project maintenance records are supplied.")
+        include_b2b5 = st.checkbox("Include B2–B5", value=False, key="include_b2b5")
+        b2_use_sd_schedule = st.checkbox("Use SD maintenance schedule for B2", value=True, key="b2_use_sd",
+                                         help="Links B2 maintenance events to the SD schedule so SD condition recovery is never 'free'.")
+        b2_interval = st.number_input("B2 interval (years, if not SD-linked)", value=5, min_value=0, step=1, key="b2_interval")
+        b2_material_pct = st.number_input("B2 material per event (% of A1-A3 carbon)", value=0.05, min_value=0.0, step=0.05, format="%.2f", key="b2_material_pct")
+        b2_diesel_l = st.number_input("B2 diesel per event (L)", value=0.0, min_value=0.0, step=100.0, key="b2_diesel_l")
+        b2_elec_kwh = st.number_input("B2 electricity per event (kWh)", value=0.0, min_value=0.0, step=100.0, key="b2_elec_kwh")
+        b2_transport_km = st.number_input("B2 material transport (km)", value=0.0, min_value=0.0, step=10.0, key="b2_transport_km")
+        b2_cost_per_event_m = st.number_input("B2 cost per event ($M, activity LCCA)", value=0.0, min_value=0.0, step=0.1, key="b2_cost_event")
+        enable_b4 = st.checkbox("Enable B4 replacement", value=False, key="enable_b4")
+        b4_years = st.text_input("B4 replacement years (e.g. 25,40)", value="", key="b4_years")
+        b4_frac_steel = st.number_input("B4 replacement fraction — steel", value=0.0, min_value=0.0, max_value=1.0, step=0.05, format="%.2f", key="b4_frac_steel")
+        b4_frac_concrete = st.number_input("B4 replacement fraction — concrete", value=0.0, min_value=0.0, max_value=1.0, step=0.05, format="%.2f", key="b4_frac_concrete")
+        b4_cost_per_event_m = st.number_input("B4 replacement cost per event ($M)", value=0.0, min_value=0.0, step=1.0, key="b4_cost_event")
+        b4_waste_ef = st.number_input("B4 removed-material waste EF (kgCO₂e/kg)", value=0.0, min_value=0.0, step=0.01, format="%.3f", key="b4_waste_ef")
+        b4_transport_km = st.number_input("B4 waste transport (km)", value=0.0, min_value=0.0, step=10.0, key="b4_transport_km")
+        lcca_maint_mode = st.selectbox("LCCA maintenance mode", ["simple_annual", "activity_based"], index=0, key="lcca_maint_mode",
+                                       help="simple_annual: uses annual maintenance only. activity_based: uses B2/B3/B5 activity costs only. "
+                                            "B4 replacement cost is added in BOTH modes (prevents double counting).")
+
         st.markdown("---")
         run_btn = st.form_submit_button("🚀 RUN ASSESSMENT", type="primary", use_container_width=True)
 
@@ -1265,6 +1465,12 @@ current_params = {
     'include_a5': include_a5, 'a5_boq_mode': a5_boq_mode, 'a5_diesel_l': a5_diesel_l,
     'a5_diesel_ef': a5_diesel_ef, 'a5_elec_kwh': a5_elec_kwh, 'a5_waste_rate': a5_waste_rate,
     'a5_waste_transport_km': a5_waste_transport_km, 'a5_waste_treatment_ef': a5_waste_treatment_ef,
+    'include_b2b5': include_b2b5, 'b2_use_sd_schedule': b2_use_sd_schedule, 'b2_interval': b2_interval,
+    'b2_material_pct': b2_material_pct, 'b2_diesel_l': b2_diesel_l, 'b2_elec_kwh': b2_elec_kwh,
+    'b2_transport_km': b2_transport_km, 'b2_cost_per_event_m': b2_cost_per_event_m,
+    'enable_b4': enable_b4, 'b4_years': b4_years, 'b4_frac_steel': b4_frac_steel,
+    'b4_frac_concrete': b4_frac_concrete, 'b4_cost_per_event_m': b4_cost_per_event_m,
+    'b4_waste_ef': b4_waste_ef, 'b4_transport_km': b4_transport_km, 'lcca_maint_mode': lcca_maint_mode,
 }
 
 @st.cache_data
@@ -1371,20 +1577,39 @@ with tabs[0]:
             f"({results['co2_kg_per_pkm_dynamic']:.5f} kg/pkm). See the System Dynamics (B6) tab."
         )
 
-    with st.expander("🧱 Stage Contribution (gross modular LCA — B2-B5/C1-C4 pending)", expanded=True):
+    with st.expander("🧱 Stage Contribution (gross modular LCA — C1-C4 pending)", expanded=True):
         sc_df = pd.DataFrame(results['stage_contribution'])
         sc_df['tCO2e'] = sc_df['tCO2e'].map(lambda v: f"{v:,.1f}")
         sc_df['% of gross'] = sc_df['% of gross'].map(lambda v: f"{v:.1f}%")
         st.dataframe(sc_df, use_container_width=True, hide_index=True)
         st.caption(
-            f"Gross modular LCA total (A1-A3+A4+A5+B6; B2-B5/C1-C4 pending) = {results['gross_a1_c4_tons']:,.1f} t CO₂e · "
+            f"Gross modular LCA total (A1-A3+A4+A5+B2-B5+B6; C1-C4 pending) = {results['gross_a1_c4_tons']:,.1f} t CO₂e · "
             f"GWP = {results['gwp_pkm_gross']:.5f} kg/pkm (gross, never net) · "
             f"Module D (separate) = −{results['module_d_tons']:,.1f} t · "
             f"Net incl. Module D (supplementary) = {results['net_with_module_d_tons']:,.1f} t. "
-            "B2–B5 and C1–C4 are not yet included (Phase 3B/3C)."
+            "C1–C4 is not yet included (Phase 3C)."
         )
         if not results.get('publication_grade_full_lca', True):
             st.error("🚫 Full-LCA result is NOT publication-grade (see FRP/EPD warning above).")
+
+    if results['b2b5']['included']:
+        with st.expander("🔁 B2–B5 activity & mass balance (Phase 3B)", expanded=False):
+            bb = results['b2b5']
+            mb1, mb2, mb3 = st.columns(3)
+            with mb1: st.metric("B2 maintenance (t CO₂e)", f"{bb['b2_tons']:,.1f}")
+            with mb2: st.metric("B4 replacement (t CO₂e)", f"{bb['b4_tons']:,.1f}")
+            with mb3: st.metric("B2–B5 total (t CO₂e)", f"{bb['b2_b5_total_tons']:,.1f}")
+            st.caption(f"LCCA maintenance mode: **{results['lcca_maint_mode']}** "
+                       "(B4 replacement cost is added in both modes; routine maintenance never double-counted).")
+            st.markdown("**Yearly B2–B5 activity** (years with activity only)")
+            yb = pd.DataFrame(bb['yearly'])
+            yb = yb[(yb['B2_count'] > 0) | (yb['B4_count'] > 0)]
+            st.dataframe(yb, use_container_width=True, hide_index=True)
+            st.markdown("**Material mass balance** (remaining feeds Phase 3C C1–C4; removed handled in B4/B5)")
+            st.dataframe(pd.DataFrame(results['mass_balance']['mass_balance_by_material']),
+                         use_container_width=True, hide_index=True)
+            st.info("B2–B5 is an **activity-based scenario** and is not 'validated' unless project "
+                    "maintenance/replacement records are supplied. Module D is unchanged by B2–B5 (deferred to Phase 3C).")
 
     st.markdown("---")
 
@@ -2188,8 +2413,20 @@ material-production waste.
 - **A5 implemented (Phase 3A):** construction diesel + site electricity + material-waste
   production (installed mode) + waste transport + waste treatment. All A5 factors/quantities
   are user inputs / scenario parameters (e.g. diesel EF default 2.68 — replace before publication).
-- **Still pending:** B2–B5 maintenance/replacement (Phase 3B, mass balance + activity-based,
-  linked to the SD maintenance schedule), C1–C4 end-of-life and Module-D-from-EOL (Phase 3C),
+- **B2–B5 implemented (Phase 3B):** activity-based maintenance/replacement. B2 is linked to the
+  SD maintenance schedule (no 'free maintenance'); B4 replacement uses a mass balance so removed
+  material is handled in B4 and is **not re-counted** in C1–C4. LCCA has a maintenance mode
+  (simple_annual vs activity_based) that prevents double counting; B4 replacement cost is added
+  in both modes.
+
+```
+I_(a,t) = n_(a,t)·[ Σ M_j EF_j + Σ F_f EF_f + E_a CI_t + Σ (M_j/1000) D EF_tr + Σ Rwaste EF_waste ] / 1000
+I_B2-B5 = Σ_t Σ_a I_(a,t)                      a ∈ {B2,B3,B4,B5}
+M_remaining_j = M_initial_j + Σ A_(j,t) − Σ R_(j,t)
+LCC_activity = CAPEX + Σ_t [EnergyCost_t + Cost_B2..B5,t]/(1+r)^t + EOL/(1+r)^T − RV/(1+r)^T
+```
+
+- **Still pending:** C1–C4 end-of-life and Module-D-from-EOL (Phase 3C),
   component-based Monte Carlo (Phase 4), sustainability index / CRITIC–Entropy (Phase 5).
 
 #### 4. ILLUSTRATIVE INTERACTION VISUALIZATION

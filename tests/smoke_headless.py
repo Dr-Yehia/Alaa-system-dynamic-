@@ -21,6 +21,7 @@ def slider(label, min_value=0, max_value=100, value=0, **k): return value
 def selectbox(label, options, index=0, **k): return options[index]
 def button(*a, **k): return False
 def checkbox(label, value=False, **k): return value
+def text_input(label, value="", **k): return value
 def form_submit_button(*a, **k): return False
 def columns(n, **k):
     n = n if isinstance(n, int) else len(n)
@@ -52,6 +53,7 @@ st.slider = slider
 st.selectbox = selectbox
 st.button = button
 st.checkbox = checkbox
+st.text_input = text_input
 st.form_submit_button = form_submit_button
 st.columns = columns
 st.tabs = tabs
