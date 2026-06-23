@@ -569,7 +569,14 @@ def calculate_core_lca_lcc(params):
     total_carbon_raw = (carbon_concrete + carbon_steel + carbon_aluminum +
                         carbon_wood + carbon_frp + carbon_glass)
 
-    total_embodied_co2 = total_carbon_raw / 1000  # tons CO2e, A1-A3 gross
+    total_embodied_co2 = total_carbon_raw / 1000  # tons CO2e, A1-A3 gross (incl. any FRP placeholder)
+
+    # FRP is unverified (no ICE V4.1 A1-A3 factor). A publication-grade result
+    # must either have FRP = 0 or a supplied product-specific EPD.
+    frp_epd_verified = bool(params.get('frp_epd_verified', False))
+    publication_grade = (params['frp'] == 0) or frp_epd_verified
+    # Core LCA EXCLUDING the unverified FRP placeholder (the defensible figure):
+    total_embodied_co2_excl_frp = (total_carbon_raw - carbon_frp) / 1000
 
     # ── Module D (EN 15804): end-of-life recycling credits, reported SEPARATELY ──
     # These are an informational module and are NOT subtracted from A1-A3 and
@@ -617,6 +624,8 @@ def calculate_core_lca_lcc(params):
         'total_co2': total_co2,
         'annual_co2_operational': annual_co2_operational,
         'total_embodied_co2': total_embodied_co2,
+        'total_embodied_co2_excl_frp': total_embodied_co2_excl_frp,
+        'publication_grade': publication_grade,
         'module_d_carbon_credit_tons': module_d_carbon_credit_tons,
         'module_d_energy_credit_mj': module_d_energy_credit_mj,
         'effective_carbon_intensity': effective_carbon_intensity,
@@ -866,7 +875,7 @@ st.markdown("""
 # ═══════════════════════════════════════════════════════════════
 st.markdown("""
 <div class="main-header">
-    <h1>🚝 Enhanced Monorail Sustainability Assessment Tool</h1>
+    <h1>🚝 Enhanced Monorail LCA/LCCA Assessment Tool</h1>
     <p>Process-based Partial LCA + NPV-based LCCA Framework | ISO 14040/14044 + ASTM E917 | Cairo University</p>
 </div>
 """, unsafe_allow_html=True)
@@ -953,12 +962,13 @@ if run_btn or 'results' not in st.session_state:
 results = st.session_state['results']
 params = st.session_state['params']
 
-if params.get('frp', 0) > 0:
-    st.warning(
-        "⚠️ **FRP is included but has NO verified A1-A3 carbon factor.** "
-        f"The current FRP carbon contribution ({results['carbon_frp']/1000:,.1f} t CO₂e) uses an UNVERIFIED placeholder "
-        "and is **excluded from publication-grade LCA** unless a product-specific EPD is supplied. "
-        "Set FRP = 0 (sidebar) for a defensible result."
+if not results.get('publication_grade', True):
+    st.error(
+        "🚫 **NOT publication-grade:** FRP is included but has NO verified A1-A3 carbon factor. "
+        f"FRP placeholder contribution = {results['carbon_frp']/1000:,.1f} t CO₂e. "
+        f"**Defensible A1-A3 embodied carbon (excluding FRP) = {results['total_embodied_co2_excl_frp']:,.1f} t CO₂e** "
+        f"vs {results['total_embodied_co2']:,.1f} t including the placeholder. "
+        "Set FRP = 0, or supply a product-specific EPD, before reporting."
     )
 
 with st.sidebar.expander("📊 Dashboard Display Score (non-scientific)", expanded=False):
@@ -1257,7 +1267,7 @@ Carbon factors: ICE Database Educational V4.1 (Oct 2025). Module D (recycling) r
 
 
 # ═══════════════════════════════════════════════════════════════
-# TAB 2: BENCHMARK & VALIDATION
+# TAB 2: BENCHMARK / REPRODUCTION CHECK
 # ═══════════════════════════════════════════════════════════════
 with tabs[1]:
     st.markdown("### 🔬 Benchmark / Reproduction Check Against Li and Zhu (2022)")
@@ -1408,7 +1418,7 @@ with tabs[2]:
 # ═══════════════════════════════════════════════════════════════
 with tabs[3]:
     st.warning("Illustrative synthetic scenario visualization; not used in the scientific LCA/LCCA results.")
-    st.markdown("### 📈 Parallel Coordinates: 12 Sustainability Elements")
+    st.markdown("### 📈 Parallel Coordinates: 12 Illustrative Dashboard Elements")
 
     if st.button("📊 Generate Parallel Coordinates", key="parallel_btn"):
         np.random.seed(42)
@@ -1433,16 +1443,16 @@ with tabs[3]:
             scenarios_data.append(scenario)
 
         df = pd.DataFrame(scenarios_data)
-        df['Overall_Score'] = df.mean(axis=1)
+        df['Composite_Display_Score'] = df.mean(axis=1)
 
         dimensions = [dict(label=col, values=df[col], range=[0, 100]) for col in df.columns[:-1]]
 
         fig = go.Figure(data=go.Parcoords(
-            line=dict(color=df['Overall_Score'], colorscale='RdYlGn', showscale=True, cmin=0, cmax=100,
+            line=dict(color=df['Composite_Display_Score'], colorscale='RdYlGn', showscale=True, cmin=0, cmax=100,
                      colorbar=dict(title="Overall<br>Score", thickness=20)),
             dimensions=dimensions
         ))
-        fig.update_layout(title='12 Sustainability Elements Across Scenarios', height=700, paper_bgcolor='white')
+        fig.update_layout(title='12 Illustrative Dashboard Elements Across Scenarios', height=700, paper_bgcolor='white')
         st.plotly_chart(fig, use_container_width=True)
 
         best = df[df.columns[:-1]].mean().nlargest(3)
@@ -1596,14 +1606,15 @@ with tabs[6]:
             return 0.0
         return ((new_val - base) / base) / change_pct
 
+    # Renewable share is intentionally excluded: it is dashboard-only in Phase 1b
+    # and does not affect core B6, so its OAT sensitivity would be a confusing zero.
     var_map = {
         'carbon_intensity': 'Grid Carbon Intensity',
         'energy_per_pax': 'Energy per pax-km',
         'daily_pax_km': 'Daily pax-km',
         'steel': 'Steel quantity',
         'aluminum': 'Aluminum quantity',
-        'concrete': 'Concrete quantity',
-        'renewable_share': 'Renewable share'
+        'concrete': 'Concrete quantity'
     }
 
     sens = []
@@ -1793,7 +1804,7 @@ with tabs[9]:
 - They are not validated causal effects and are not part of the core LCA/LCCA results.
 - SDG interaction literature is used only as conceptual background, not as a numerical source for the coefficients.
 
-#### 5. BENCHMARK VALIDATION
+#### 5. BENCHMARK / REPRODUCTION CHECK
 - **Li and Zhu (2022)** — Computational Intelligence and Neuroscience
 - DOI: [10.1155/2022/3872069](https://doi.org/10.1155/2022/3872069)
 - Used only as an external benchmark comparison; no Li & Zhu calibration factors are used in the core model.
@@ -1832,7 +1843,7 @@ with tabs[9]:
 #### HOW TO CITE
 
 ```
-[Your Name]. (2025). Enhanced Monorail Sustainability Assessment Tool:
+[Your Name]. (2025). Enhanced Monorail LCA/LCCA Assessment Tool:
 Process-based Partial LCA and NPV-based LCCA Framework with Scenario-based Sensitivity Analysis.
 Cairo University. Software version 2.0.
 ```
@@ -1840,7 +1851,7 @@ Cairo University. Software version 2.0.
 ```bibtex
 @software{monorail_lca_2025,
   author = {[Your Name]},
-  title = {Enhanced Monorail Sustainability Assessment Tool: Process-based Partial LCA and NPV-based LCCA Framework},
+  title = {Enhanced Monorail LCA/LCCA Assessment Tool: Process-based Partial LCA and NPV-based LCCA Framework},
   year = {2025},
   institution = {Cairo University},
   version = {2.0}
