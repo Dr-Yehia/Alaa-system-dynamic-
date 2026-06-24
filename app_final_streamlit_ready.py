@@ -1808,12 +1808,17 @@ def build_si_audit_table(meta, active_meta, validation, weights):
 
 
 def run_phase5_si(scenarios, base_params, lam=0.5, pillar_weights=None, critic_method='pearson',
-                  uncertainty_n=0, publication_grade_uncertainty=False, seed=42):
+                  uncertainty_n=0, publication_grade_uncertainty=False, seed=42,
+                  scenario_source='generated_demo', uploaded_matrix=None):
     if pillar_weights is None:
         pillar_weights = {'Environmental': 0.35, 'Economic': 0.25, 'Operational': 0.25, 'Social': 0.15}
     warnings = []
     meta = build_indicator_metadata()
-    raw = build_scenario_year_matrix(scenarios, base_params, uncertainty_n=uncertainty_n, seed=seed)
+    if uploaded_matrix is not None and len(uploaded_matrix) > 0:
+        raw = uploaded_matrix.copy()
+        scenario_source = 'uploaded'
+    else:
+        raw = build_scenario_year_matrix(scenarios, base_params, uncertainty_n=uncertainty_n, seed=seed)
     validation = validate_indicator_matrix(meta, raw)
     warnings += validation['warnings']
     active = _active_indicators(meta, raw)
@@ -1829,8 +1834,14 @@ def run_phase5_si(scenarios, base_params, lam=0.5, pillar_weights=None, critic_m
     base_full = run_full_assessment(base_params).get('publication_grade_full_lca', False)
     pw_sum_ok = abs(sum(pillar_weights.values()) - 1.0) < 1e-9
     w_sum_ok = abs(float(weights.sum()) - 1.0) < 1e-9
+    # Synthetic LHS demo scenarios are NOT acceptable for publication: require a
+    # documented or uploaded scenario-year matrix.
+    source_ok = scenario_source in ('documented', 'uploaded')
+    if not source_ok:
+        warnings.append("Scenario source is 'generated_demo' (synthetic LHS) → publication_grade_si = False. "
+                        "Upload or document a scenario-year matrix for publication.")
     pgs = bool(base_full and publication_grade_uncertainty and n_scen >= 30 and validation['valid']
-               and pw_sum_ok and w_sum_ok and len(active) >= 3)
+               and pw_sum_ok and w_sum_ok and len(active) >= 3 and source_ok)
     weights_df = pd.DataFrame({'indicator': weights.index, 'entropy': wE.values,
                                'critic': wC.values, 'hybrid': weights.values})
     return {'raw_matrix': raw, 'normalized_matrix': Z, 'indicator_metadata': meta,
@@ -1838,7 +1849,7 @@ def run_phase5_si(scenarios, base_params, lam=0.5, pillar_weights=None, critic_m
             'combined_weights': weights, 'weights_table': weights_df, 'pillar_scores': pillar_df,
             'si_scores': si_df, 'ranked_scenarios': ranked, 'lambda_sensitivity': lambda_sens,
             'audit': audit, 'validation': validation, 'n_scenarios': n_scen,
-            'pillar_weights': pillar_weights, 'lambda': lam,
+            'pillar_weights': pillar_weights, 'lambda': lam, 'scenario_source': scenario_source,
             'publication_grade_si': pgs, 'warnings': warnings}
 
 
@@ -2364,117 +2375,126 @@ with TABS['results']:
 
     st.markdown("---")
 
-    # Category Scores Comparison
-    col_scores1, col_scores2 = st.columns(2)
+    if not publication_mode:
+        st.caption("Legacy dashboard scores & interaction network (interface-only) are hidden in Publication mode.")
+        # Category Scores Comparison
+        col_scores1, col_scores2 = st.columns(2)
 
-    with col_scores1:
-        st.markdown("#### 📊 Category Scores (Original vs Adjusted)")
-        categories = ['Material', 'Environmental', 'Operational', 'Economic']
-        original = [results['material_score'], results['environmental_score'],
-                     results['operational_score'], results['economic_score']]
-        adjusted = [results['adjusted_material_score'], results['adjusted_environmental_score'],
-                     results['adjusted_operational_score'], results['adjusted_economic_score']]
+        with col_scores1:
+            st.markdown("#### 📊 Category Scores (Original vs Adjusted)")
+            categories = ['Material', 'Environmental', 'Operational', 'Economic']
+            original = [results['material_score'], results['environmental_score'],
+                         results['operational_score'], results['economic_score']]
+            adjusted = [results['adjusted_material_score'], results['adjusted_environmental_score'],
+                         results['adjusted_operational_score'], results['adjusted_economic_score']]
 
-        fig_scores = go.Figure()
-        fig_scores.add_trace(go.Bar(name='Original', x=categories, y=original,
-                                     marker_color='rgba(100, 149, 237, 0.7)',
-                                     text=[f'{v:.1f}' for v in original], textposition='outside'))
-        fig_scores.add_trace(go.Bar(name='Interaction-Adjusted', x=categories, y=adjusted,
-                                     marker_color='rgba(100, 255, 218, 0.7)',
-                                     text=[f'{v:.1f}' for v in adjusted], textposition='outside'))
-        fig_scores.update_layout(
-            barmode='group', height=400,
-            plot_bgcolor='rgba(10,25,47,0.8)', paper_bgcolor='rgba(0,0,0,0)',
-            font_color='#ccd6f6', yaxis_range=[0, 110],
-            yaxis_title='Score (0-100)', margin=dict(t=30, b=30)
-        )
-        st.plotly_chart(fig_scores, use_container_width=True)
+            fig_scores = go.Figure()
+            fig_scores.add_trace(go.Bar(name='Original', x=categories, y=original,
+                                         marker_color='rgba(100, 149, 237, 0.7)',
+                                         text=[f'{v:.1f}' for v in original], textposition='outside'))
+            fig_scores.add_trace(go.Bar(name='Interaction-Adjusted', x=categories, y=adjusted,
+                                         marker_color='rgba(100, 255, 218, 0.7)',
+                                         text=[f'{v:.1f}' for v in adjusted], textposition='outside'))
+            fig_scores.update_layout(
+                barmode='group', height=400,
+                plot_bgcolor='rgba(10,25,47,0.8)', paper_bgcolor='rgba(0,0,0,0)',
+                font_color='#ccd6f6', yaxis_range=[0, 110],
+                yaxis_title='Score (0-100)', margin=dict(t=30, b=30)
+            )
+            st.plotly_chart(fig_scores, use_container_width=True)
 
-    with col_scores2:
-        st.markdown("#### 🕸️ Dashboard Radar")
-        fig_radar = go.Figure()
-        fig_radar.add_trace(go.Scatterpolar(
-            r=adjusted + [adjusted[0]],
-            theta=categories + [categories[0]],
-            fill='toself', fillcolor='rgba(100, 255, 218, 0.15)',
-            line=dict(color='#64ffda', width=2), name='Adjusted'
-        ))
-        fig_radar.add_trace(go.Scatterpolar(
-            r=original + [original[0]],
-            theta=categories + [categories[0]],
-            fill='toself', fillcolor='rgba(100, 149, 237, 0.1)',
-            line=dict(color='#6495ed', width=2, dash='dash'), name='Original'
-        ))
-        fig_radar.update_layout(
-            polar=dict(
-                bgcolor='rgba(10,25,47,0.8)',
-                radialaxis=dict(visible=True, range=[0, 100], gridcolor='rgba(255,255,255,0.1)'),
-                angularaxis=dict(gridcolor='rgba(255,255,255,0.1)')
-            ),
-            showlegend=True, height=400,
-            paper_bgcolor='rgba(0,0,0,0)', font_color='#ccd6f6',
-            margin=dict(t=30, b=30)
-        )
-        st.plotly_chart(fig_radar, use_container_width=True)
+        with col_scores2:
+            st.markdown("#### 🕸️ Dashboard Radar")
+            fig_radar = go.Figure()
+            fig_radar.add_trace(go.Scatterpolar(
+                r=adjusted + [adjusted[0]],
+                theta=categories + [categories[0]],
+                fill='toself', fillcolor='rgba(100, 255, 218, 0.15)',
+                line=dict(color='#64ffda', width=2), name='Adjusted'
+            ))
+            fig_radar.add_trace(go.Scatterpolar(
+                r=original + [original[0]],
+                theta=categories + [categories[0]],
+                fill='toself', fillcolor='rgba(100, 149, 237, 0.1)',
+                line=dict(color='#6495ed', width=2, dash='dash'), name='Original'
+            ))
+            fig_radar.update_layout(
+                polar=dict(
+                    bgcolor='rgba(10,25,47,0.8)',
+                    radialaxis=dict(visible=True, range=[0, 100], gridcolor='rgba(255,255,255,0.1)'),
+                    angularaxis=dict(gridcolor='rgba(255,255,255,0.1)')
+                ),
+                showlegend=True, height=400,
+                paper_bgcolor='rgba(0,0,0,0)', font_color='#ccd6f6',
+                margin=dict(t=30, b=30)
+            )
+            st.plotly_chart(fig_radar, use_container_width=True)
 
-    # Interaction Analysis
-    st.markdown("#### 🔄 Cross-Category Interaction Effects")
-    effects = results['interaction_effects']
+        # Interaction Analysis
+        st.markdown("#### 🔄 Cross-Category Interaction Effects")
+        effects = results['interaction_effects']
 
-    int_col1, int_col2, int_col3 = st.columns(3)
-    with int_col1:
-        st.markdown(f"""
-        <div class="info-box">
-            <b>Synergy Effects</b><br>
-            Total: <span class="interaction-synergy">{results['total_synergy']:.2f} pts</span><br>
-            Ratio: <span class="interaction-synergy">{results['synergy_ratio']:.2f}</span>
-        </div>""", unsafe_allow_html=True)
-    with int_col2:
-        st.markdown(f"""
-        <div class="info-box">
-            <b>Trade-off Effects</b><br>
-            Total: <span class="interaction-tradeoff">{results['total_tradeoff']:.2f} pts</span><br>
-            {"Synergies dominate ✅" if results['synergy_ratio'] > 1 else "Trade-offs dominate ⚠️"}
-        </div>""", unsafe_allow_html=True)
-    with int_col3:
-        st.markdown(f"""
-        <div class="info-box">
-            <b>Dashboard Display Summary</b><br>
-            Score: <b>{results['dashboard_display_score']:.1f}/100</b><br>
-            {"Excellent 🎉" if results['dashboard_display_score'] >= 80 else ("Good 👍" if results['dashboard_display_score'] >= 60 else "Needs Improvement 📈")}
-        </div>""", unsafe_allow_html=True)
+        int_col1, int_col2, int_col3 = st.columns(3)
+        with int_col1:
+            st.markdown(f"""
+            <div class="info-box">
+                <b>Synergy Effects</b><br>
+                Total: <span class="interaction-synergy">{results['total_synergy']:.2f} pts</span><br>
+                Ratio: <span class="interaction-synergy">{results['synergy_ratio']:.2f}</span>
+            </div>""", unsafe_allow_html=True)
+        with int_col2:
+            st.markdown(f"""
+            <div class="info-box">
+                <b>Trade-off Effects</b><br>
+                Total: <span class="interaction-tradeoff">{results['total_tradeoff']:.2f} pts</span><br>
+                {"Synergies dominate ✅" if results['synergy_ratio'] > 1 else "Trade-offs dominate ⚠️"}
+            </div>""", unsafe_allow_html=True)
+        with int_col3:
+            st.markdown(f"""
+            <div class="info-box">
+                <b>Dashboard Display Summary</b><br>
+                Score: <b>{results['dashboard_display_score']:.1f}/100</b><br>
+                {"Excellent 🎉" if results['dashboard_display_score'] >= 80 else ("Good 👍" if results['dashboard_display_score'] >= 60 else "Needs Improvement 📈")}
+            </div>""", unsafe_allow_html=True)
 
-    # Detailed interaction effects table
-    with st.expander("📋 Detailed Interaction Effects", expanded=False):
-        interaction_df = pd.DataFrame({
-            'Interaction': ['Material → Environmental', 'Environmental → Operational',
-                           'Operational → Economic', 'Economic → Material',
-                           'Material → Operational', 'Environmental → Economic'],
-            'Effect (pts)': [f"{effects['mat_env_effect']:+.2f}", f"{effects['env_op_effect']:+.2f}",
-                            f"{effects['op_econ_effect']:+.2f}", f"{effects['econ_mat_effect']:+.2f}",
-                            f"{effects['mat_op_effect']:+.2f}", f"{effects['env_econ_effect']:+.2f}"],
-            'Type': ['Trade-off' if effects['mat_env_effect'] < 0 else 'Synergy',
-                     'Trade-off' if effects['env_op_effect'] < 0 else 'Synergy',
-                     'Trade-off' if effects['op_econ_effect'] < 0 else 'Synergy',
-                     'Trade-off' if effects['econ_mat_effect'] < 0 else 'Synergy',
-                     'Trade-off' if effects['mat_op_effect'] < 0 else 'Synergy',
-                     'Trade-off' if effects['env_econ_effect'] < 0 else 'Synergy']
-        })
-        st.dataframe(interaction_df, use_container_width=True, hide_index=True)
+        # Detailed interaction effects table
+        with st.expander("📋 Detailed Interaction Effects", expanded=False):
+            interaction_df = pd.DataFrame({
+                'Interaction': ['Material → Environmental', 'Environmental → Operational',
+                               'Operational → Economic', 'Economic → Material',
+                               'Material → Operational', 'Environmental → Economic'],
+                'Effect (pts)': [f"{effects['mat_env_effect']:+.2f}", f"{effects['env_op_effect']:+.2f}",
+                                f"{effects['op_econ_effect']:+.2f}", f"{effects['econ_mat_effect']:+.2f}",
+                                f"{effects['mat_op_effect']:+.2f}", f"{effects['env_econ_effect']:+.2f}"],
+                'Type': ['Trade-off' if effects['mat_env_effect'] < 0 else 'Synergy',
+                         'Trade-off' if effects['env_op_effect'] < 0 else 'Synergy',
+                         'Trade-off' if effects['op_econ_effect'] < 0 else 'Synergy',
+                         'Trade-off' if effects['econ_mat_effect'] < 0 else 'Synergy',
+                         'Trade-off' if effects['mat_op_effect'] < 0 else 'Synergy',
+                         'Trade-off' if effects['env_econ_effect'] < 0 else 'Synergy']
+            })
+            st.dataframe(interaction_df, use_container_width=True, hide_index=True)
 
     # Full Report Text
     with st.expander("📄 Full Assessment Report", expanded=False):
+        _legacy_block = ""
+        if not publication_mode:
+            _legacy_block = f"""
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+LEGACY DASHBOARD (non-scientific, interface-only)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Dashboard Display Score: {results['dashboard_display_score']:.1f}/100
+Category (Material/Environmental/Operational/Economic): {results['material_score']:.1f} / {results['environmental_score']:.1f} / {results['operational_score']:.1f} / {results['economic_score']:.1f}
+Synergy-to-Trade-off ratio: {results['synergy_ratio']:.2f}
+"""
         report = f"""
 ╔══════════════════════════════════════════════════════════════════════════════╗
 ║                    ENHANCED MONORAIL LCA / LCCA ASSESSMENT RESULTS       ║
 ╚══════════════════════════════════════════════════════════════════════════════╝
 
-📊 DASHBOARD DISPLAY SCORE (non-scientific): {results['dashboard_display_score']:.1f}/100
-
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 🏗️ MATERIALS ASSESSMENT
-   • Material Efficiency Score: {results['material_score']:.1f}/100
    • Concrete Volume: {params['concrete']:.1f} thousand m³
    • Steel Mass: {params['steel']:.1f} thousand tons
    • Aluminum Mass: {params['aluminum']:.1f} thousand tons
@@ -2485,7 +2505,6 @@ with TABS['results']:
    • Aluminum Recycling Rate: {params['aluminum_recycle']:.1f}%
 
 🌱 ENVIRONMENTAL ASSESSMENT
-   • Environmental Score: {results['environmental_score']:.1f}/100
    • Annual Operational CO₂: {results['annual_co2_operational']:.1f} tons
    • Embodied CO₂ A1-A3 (GROSS): {results['total_embodied_co2']:.1f} tons
    • A4 Transport CO₂: {results['lca_results']['a4_transport_co2_tons']:.1f} tons
@@ -2502,31 +2521,17 @@ with TABS['results']:
    • Renewable Share (dashboard-only, NOT applied to core LCA in Phase 1b): {params['renewable_share']:.1f}%
 
 ⚡ OPERATIONAL ASSESSMENT
-   • Operational Score: {results['operational_score']:.1f}/100
    • Energy per Passenger-km: {params['energy_per_pax']:.3f} kWh
    • Daily Passenger-km: {params['daily_pax_km']:.1f} thousand
    • System Availability: {params['availability']:.1f}%
 
 💰 ECONOMIC ASSESSMENT
-   • Economic Score: {results['economic_score']:.1f}/100
    • Construction Cost: ${params['construction_cost']:.1f} million
    • Annual Maintenance: ${params['maintenance_cost']:.1f} million
    • Total Jobs Created: {results['total_jobs']:.0f}
    • 50-Year Maintenance (undiscounted): ${results['total_maintenance_cost']:.1f} million
 
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-INTEGRATED SCORING WITH CROSS-CATEGORY INTERACTIONS
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-ORIGINAL → ADJUSTED SCORES:
-  Material:      {results['material_score']:.1f} → {results['adjusted_material_score']:.1f} ({results['adjusted_material_score'] - results['material_score']:+.1f})
-  Environmental: {results['environmental_score']:.1f} → {results['adjusted_environmental_score']:.1f} ({results['adjusted_environmental_score'] - results['environmental_score']:+.1f})
-  Operational:   {results['operational_score']:.1f} → {results['adjusted_operational_score']:.1f} ({results['adjusted_operational_score'] - results['operational_score']:+.1f})
-  Economic:      {results['economic_score']:.1f} → {results['adjusted_economic_score']:.1f} ({results['adjusted_economic_score'] - results['economic_score']:+.1f})
-
-Synergy-to-Trade-off Ratio: {results['synergy_ratio']:.2f}
-
+{_legacy_block}
 Assessment Date: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
 Methodology: Gross modular A1-C4 LCA (A1-A3 + A4 + optional A5 + activity-based B2-B5 + active B6 + optional C1-C4) + NPV-based LCCA.
 Carbon factors: ICE Database Educational V4.1 (Oct 2025). Module D (recycling) reported separately per EN 15804. Li and Zhu (2022) is benchmark-only.
@@ -2540,7 +2545,7 @@ Carbon factors: ICE Database Educational V4.1 (Oct 2025). Module D (recycling) r
                               file_name=f"monorail_report_{datetime.now().strftime('%Y%m%d')}.txt",
                               mime="text/plain")
         with exp2:
-            csv_data = pd.DataFrame([
+            csv_rows = [
                 {'Category': 'LCA', 'Metric': f"Gross modular A1-C4 LCA total (B6 {results['active_b6_mode']})", 'Value': f"{results['gross_a1_c4_tons']:.1f}", 'Unit': 'tons CO₂e'},
                 {'Category': 'LCA', 'Metric': 'GWP per pkm (gross)', 'Value': f"{results['gwp_pkm_gross']:.6f}", 'Unit': 'kg CO₂e/pkm'},
                 {'Category': 'LCA', 'Metric': 'Embodied CO₂ A1-A3 (gross)', 'Value': f"{results['lca_results']['embodied_co2_tons']:.1f}", 'Unit': 'tons CO₂e'},
@@ -2552,60 +2557,31 @@ Carbon factors: ICE Database Educational V4.1 (Oct 2025). Module D (recycling) r
                 {'Category': 'LCA', 'Metric': 'Lifetime operational CO₂', 'Value': f"{results['lca_results']['lifetime_operational_co2_tons']:.1f}", 'Unit': 'tons CO₂e'},
                 {'Category': 'LCA', 'Metric': 'Embodied Energy', 'Value': f"{results['total_ee']:.0f}", 'Unit': 'MJ'},
                 {'Category': 'LCCA', 'Metric': 'LCC NPV Cost', 'Value': f"{results['npv_lcc_m']:.0f}", 'Unit': '$M'},
-                {'Category': 'Display-only', 'Metric': 'Dashboard Display Score', 'Value': f"{results['dashboard_display_score']:.1f}", 'Unit': '/100'},
-            ]).to_csv(index=False)
+            ]
+            if not publication_mode:
+                csv_rows.append({'Category': 'Display-only', 'Metric': 'Dashboard Display Score', 'Value': f"{results['dashboard_display_score']:.1f}", 'Unit': '/100'})
+            csv_data = pd.DataFrame(csv_rows).to_csv(index=False)
             st.download_button("📥 Download CSV", csv_data,
                               file_name=f"monorail_data_{datetime.now().strftime('%Y%m%d')}.csv")
         with exp3:
             excel_buf = io.BytesIO()
+            xl_metric = [
+                f"Gross modular A1-C4 LCA total (B6 {results['active_b6_mode']})",
+                'GWP per pkm (gross)', 'Embodied CO₂ A1-A3 (gross)', 'A4 Transport CO₂',
+                'A5 Construction CO₂', 'B2-B5 Use Stage CO₂', 'B6 operation (active)',
+                'C1-C4 End-of-Life CO₂', 'Module D (separate)', 'Net incl. Module D (supplementary)',
+                'Embodied Energy', 'LCC NPV Cost']
+            xl_value = [
+                results['gross_a1_c4_tons'], results['gwp_pkm_gross'], results['lca_results']['embodied_co2_tons'],
+                results['lca_results']['a4_transport_co2_tons'], results['a5']['a5_total_tons'],
+                results['i_b2b5_tons'], results['active_b6_tons'], results['i_c1c4_tons'],
+                -results['module_d_tons'], results['net_with_module_d_tons'], results['total_ee'], results['npv_lcc_m']]
+            xl_unit = ['tons CO₂e', 'kg CO₂e/pkm', 'tons CO₂e', 'tons CO₂e', 'tons CO₂e', 'tons CO₂e',
+                       'tons CO₂e', 'tons CO₂e', 'tons CO₂e', 'tons CO₂e', 'MJ', '$M']
+            if not publication_mode:
+                xl_metric.append('Dashboard Display Score'); xl_value.append(results['dashboard_display_score']); xl_unit.append('/100 display-only')
             with pd.ExcelWriter(excel_buf, engine='openpyxl') as writer:
-                pd.DataFrame({
-                    'Metric': [
-                        f"Gross modular A1-C4 LCA total (B6 {results['active_b6_mode']})",
-                        'GWP per pkm (gross)',
-                        'Embodied CO₂ A1-A3 (gross)',
-                        'A4 Transport CO₂',
-                        'A5 Construction CO₂',
-                        'B2-B5 Use Stage CO₂',
-                        'B6 operation (active)',
-                        'C1-C4 End-of-Life CO₂',
-                        'Module D (separate)',
-                        'Net incl. Module D (supplementary)',
-                        'Embodied Energy',
-                        'LCC NPV Cost',
-                        'Dashboard Display Score'
-                    ],
-                    'Value': [
-                        results['gross_a1_c4_tons'],
-                        results['gwp_pkm_gross'],
-                        results['lca_results']['embodied_co2_tons'],
-                        results['lca_results']['a4_transport_co2_tons'],
-                        results['a5']['a5_total_tons'],
-                        results['i_b2b5_tons'],
-                        results['active_b6_tons'],
-                        results['i_c1c4_tons'],
-                        -results['module_d_tons'],
-                        results['net_with_module_d_tons'],
-                        results['total_ee'],
-                        results['npv_lcc_m'],
-                        results['dashboard_display_score']
-                    ],
-                    'Unit': [
-                        'tons CO₂e',
-                        'kg CO₂e/pkm',
-                        'tons CO₂e',
-                        'tons CO₂e',
-                        'tons CO₂e',
-                        'tons CO₂e',
-                        'tons CO₂e',
-                        'tons CO₂e',
-                        'tons CO₂e',
-                        'tons CO₂e',
-                        'MJ',
-                        '$M',
-                        '/100 display-only'
-                    ]
-                }).to_excel(writer, sheet_name='Summary', index=False)
+                pd.DataFrame({'Metric': xl_metric, 'Value': xl_value, 'Unit': xl_unit}).to_excel(writer, sheet_name='Summary', index=False)
             st.download_button("📥 Download Excel", excel_buf.getvalue(),
                               file_name=f"monorail_report_{datetime.now().strftime('%Y%m%d')}.xlsx",
                               mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
@@ -2837,6 +2813,7 @@ with TABS['uncertainty']:
         def _run_mc(params_tuple, n, seed):
             return run_component_monte_carlo(dict(params_tuple), n=int(n), seed=int(seed))
         mcres = _run_mc(tuple(sorted(params.items())), mc_n, mc_seed)
+        st.session_state['phase4_pgu'] = bool(mcres['publication_grade_uncertainty'])
         sm = mcres['summary'].set_index('metric')
         g = sm.loc['gross_a1_c4_tons']
         st.success(f"Gross A1–C4: mean {g['mean']:,.0f} t · 95% uncertainty interval "
@@ -3266,12 +3243,6 @@ EI_t  = EI₀ · [1 + α·(1 − C_t)]     (condition → energy intensity)
 B6_dyn = Σ_t  EI_t · PKM_t · CI_t / 1000      (CI_t = grid only, no renewable)
 ```
 
-<details><summary>🌐 Arabic explanation (الشرح بالعربية)</summary>
-
-تضيف المرحلة الثانية طبقة ديناميكية قائمة على السيناريوهات لحساب انبعاثات التشغيل B6. تمثل حالة الأصل C(t) مخزونًا يتدهور سنويًا ويتحسن بفعل الصيانة بعد فترة تأخير. تؤثر حالة الأصل على كثافة استهلاك الطاقة، ومن ثم على انبعاثات التشغيل السنوية. تُعامل معاملات النظام الديناميكي كافتراضات سيناريو ما لم تتم معايرتها ببيانات فحص أو صيانة أو قياسات تشغيلية.
-
-</details>
-
 #### 3c. MODULAR GROSS A1–C4 LCA (Phase 3A–3C)
 The model reports a **gross modular A1–C4 LCA** built from separate modules:
 `gross = A1–A3 + A4 + A5 + B2–B5 + B6_active + C1–C4`. Each stage is independently
@@ -3514,17 +3485,32 @@ with TABS['si']:
         si_critic = st.selectbox("CRITIC correlation", ["pearson", "spearman"], index=0, key="si_critic")
     with sic3:
         si_unc_n = st.number_input("Per-scenario MC (0=skip robustness)", value=0, min_value=0, max_value=2000, step=100, key="si_unc_n")
-        si_pgu = st.checkbox("Phase 4 uncertainty publication-grade", value=False, key="si_pgu",
-                             help="Set only if you have run the Phase 4 MC at n≥5000 with convergence.")
+        si_pgu = st.checkbox("Manual confirmation: Phase 4 uncertainty is publication-grade",
+                             value=bool(st.session_state.get('phase4_pgu', False)), key="si_pgu",
+                             help="Auto-filled from the last Phase 4 MC run (n≥5000 + convergence). Override only if confirmed independently.")
+
+    si_source = st.selectbox("Scenario-year matrix source",
+                             ["generated_demo (synthetic — not publication-grade)", "documented", "uploaded (CSV)"],
+                             index=0, key="si_source")
+    si_source_key = {'generated_demo (synthetic — not publication-grade)': 'generated_demo',
+                     'documented': 'documented', 'uploaded (CSV)': 'uploaded'}[si_source]
+    si_uploaded_df = None
+    if si_source_key == 'uploaded':
+        up = st.file_uploader("Upload scenario-year matrix CSV (scenario_id, year, indicator columns)", type=['csv'], key="si_csv")
+        if up is not None:
+            try:
+                si_uploaded_df = pd.read_csv(up)
+                st.success(f"Loaded uploaded matrix: {len(si_uploaded_df)} scenarios.")
+            except Exception as _e:
+                st.error(f"Could not read CSV: {_e}")
 
     if si_enable:
-        @st.cache_data(show_spinner=True)
-        def _run_si(params_tuple, n, lam, method, unc_n, pgu, seed):
-            bp = dict(params_tuple)
+        def _run_si(bp, n, lam, method, unc_n, pgu, source, uploaded, seed):
             scs = generate_default_scenarios(bp, n=int(n), seed=int(seed))
             return run_phase5_si(scs, bp, lam=float(lam), critic_method=method,
-                                 uncertainty_n=int(unc_n), publication_grade_uncertainty=bool(pgu), seed=int(seed))
-        si = _run_si(tuple(sorted(params.items())), si_n, si_lambda, si_critic, si_unc_n, si_pgu, 42)
+                                 uncertainty_n=int(unc_n), publication_grade_uncertainty=bool(pgu),
+                                 seed=int(seed), scenario_source=source, uploaded_matrix=uploaded)
+        si = _run_si(dict(params), si_n, si_lambda, si_critic, si_unc_n, si_pgu, si_source_key, si_uploaded_df, 42)
 
         st.warning("SI is a **decision-support composite index**, not a validation claim. "
                    "Targets are scenario/literature values; intervals/weights are data-driven on the chosen matrix.")

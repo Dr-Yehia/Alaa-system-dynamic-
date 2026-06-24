@@ -23,6 +23,7 @@ def button(*a, **k): return False
 def checkbox(label, value=False, **k): return value
 def text_input(label, value="", **k): return value
 def data_editor(data, **k): return data
+def file_uploader(*a, **k): return None
 def form_submit_button(*a, **k): return False
 def columns(n, **k):
     n = n if isinstance(n, int) else len(n)
@@ -56,6 +57,7 @@ st.button = button
 st.checkbox = checkbox
 st.text_input = text_input
 st.data_editor = data_editor
+st.file_uploader = file_uploader
 st.form_submit_button = form_submit_button
 st.columns = columns
 st.tabs = tabs
