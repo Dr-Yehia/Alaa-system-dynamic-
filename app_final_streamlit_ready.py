@@ -2016,7 +2016,7 @@ with st.sidebar:
     MATERIALS_UI = ['concrete', 'steel', 'aluminum', 'wood', 'frp', 'glass']
 
     with st.form("assessment_form"):
-        run_top = st.form_submit_button("🚀 Run Assessment (top)", type="primary", use_container_width=True)
+        run_btn = st.form_submit_button("🚀 Run Assessment", type="primary", use_container_width=True)
 
         st.markdown("### 📦 Materials")
         concrete = st.number_input("Concrete (1000 m³)", value=700.0, min_value=0.0, step=10.0, key="concrete")
@@ -2143,8 +2143,8 @@ with st.sidebar:
             renewable_share = st.slider("Renewable share (%) — dashboard-only", 0, 100, 20, key="renewable")
 
         st.markdown("---")
-        run_btn = st.form_submit_button("🚀 Run Assessment", type="primary", use_container_width=True)  # bottom (distinct label below)
-    run_btn = bool(run_btn or run_top)
+        st.caption("↑ Use the **Run Assessment** button at the top of this panel to apply all inputs.")
+    run_btn = bool(run_btn)
 
 # Collect parameters
 current_params = {
