@@ -1430,9 +1430,11 @@ def calculate_core_lca_lcc(params):
         I_B2_B5=I_B2_B5, I_B6_active=active_b6_tons, I_C1_C4=I_C1_C4,
         module_d_tons=module_d_used_tons, total_pkm=active_total_pkm,
         b6_mode=active_b6_mode, b2b5_included=b2b5['included'], c1c4_included=c1c4['included'])
-    # publication_grade_full_lca: False if FRP lacks EPD, shares don't sum to 1, or
-    # Module D is reported with a missing secondary factor.
-    publication_grade_full_lca = bool(publication_grade and shares_ok and module_d_ok)
+    # publication_grade_full_lca: False if FRP lacks EPD, shares don't sum to 1,
+    # Module D is reported with a missing secondary factor, or a recycled-content
+    # secondary EF was supplied without a source (R27).
+    recycled_secondary_ok = bool(params.get('recycled_secondary_documented_ok', True))
+    publication_grade_full_lca = bool(publication_grade and shares_ok and module_d_ok and recycled_secondary_ok)
 
     # Economic (LCCA)
     # R28: contract factor adjusts the base CAPEX before it enters the NPV
@@ -2393,18 +2395,33 @@ with st.sidebar:
         # material has BOTH a recycled-content fraction > 0 AND a documented secondary EF.
         # Otherwise the virgin ICE V4.1 factor is used and the EOL benefit stays in Module D.
         recycled_content_inputs, ef_secondary_inputs = {}, {}
+        ef_secondary_sources, ef_secondary_basis = {}, {}
+        recycled_secondary_documented_ok = True
         with st.expander("♻️ Recycled content (effective A1-A3 EF — EN 15804)", expanded=False):
             st.caption("EF_eff = (1−RC)·EF_virgin + RC·EF_secondary. Applied per material only when "
-                       "BOTH a recycled-content % and a *documented* secondary emission factor are given; "
-                       "otherwise the virgin factor is kept and no A1-A3 credit is taken (the end-of-life "
-                       "recovery benefit is reported separately in Module D — no double counting).")
+                       "BOTH a recycled-content % AND a *documented* secondary EF (with a source) are given; "
+                       "an undocumented secondary EF is ignored (virgin factor kept) and the result is flagged "
+                       "not publication-grade. The end-of-life recovery benefit stays in Module D — no double counting.")
             for _m in MATERIALS_UI:
                 rc_pct = st.number_input(f"{_m.capitalize()} recycled content (%)", value=0.0,
                                          min_value=0.0, max_value=100.0, step=5.0, key=f"rc_{_m}")
-                sec_ef = st.number_input(f"{_m.capitalize()} documented secondary EF (kgCO₂e/kg, 0 = none)",
+                sec_ef = st.number_input(f"{_m.capitalize()} secondary EF (kgCO₂e/kg, 0 = none)",
                                          value=0.0, min_value=0.0, step=0.01, format="%.4f", key=f"secef_{_m}")
+                sec_src = st.text_input(f"{_m.capitalize()} secondary EF source (EPD/DB, year, boundary)",
+                                        value="", key=f"secsrc_{_m}")
+                sec_basis = st.selectbox(f"{_m.capitalize()} factor basis", ["virgin", "market-average"],
+                                         index=0, key=f"secbasis_{_m}")
                 recycled_content_inputs[_m] = rc_pct / 100.0
-                ef_secondary_inputs[_m] = sec_ef if sec_ef > 0.0 else None
+                ef_secondary_sources[_m] = sec_src.strip()
+                ef_secondary_basis[_m] = sec_basis
+                documented = (sec_ef > 0.0) and bool(sec_src.strip())
+                # R27: only a documented secondary EF is allowed to drive the A1-A3 substitution.
+                ef_secondary_inputs[_m] = sec_ef if documented else None
+                if sec_ef > 0.0 and not sec_src.strip():
+                    recycled_secondary_documented_ok = False
+            if not recycled_secondary_documented_ok:
+                st.warning("A secondary EF was entered without a source → it is NOT applied and the A1-A3 "
+                           "recycled-content result is not publication-grade until a source is provided.")
 
         st.markdown("### 🚚 Transport (A4)")
         a4_mode = st.selectbox("A4 method", ["simple", "advanced"], index=0, key="a4_mode",
@@ -2501,7 +2518,7 @@ with st.sidebar:
         a5_diesel_ef = FUEL_FACTORS['diesel']['ef_kgco2e_per_l']
         a5_elec_kwh, a5_waste_rate, a5_waste_transport_km, a5_waste_treatment_ef = 0.0, 0.0, 0.0, 0.0
         a5_diesel_mode, a5_equipment = 'simple', None
-        a5_waste_rates, a5_treatment_shares = None, None
+        a5_waste_rates, a5_treatment_shares, a5_waste_routes = None, None, None
         if include_a5:
             st.markdown("### 🏗️ A5 Construction")
             st.caption("Scenario / user inputs. A5 is reported separately from A4.")
@@ -2530,21 +2547,31 @@ with st.sidebar:
                                             help="Used for any material without a per-material rate below.")
             a5_waste_transport_km = st.number_input("Waste transport (km, fallback)", value=0.0, min_value=0.0, step=10.0, key="a5_waste_km")
             a5_waste_treatment_ef = st.number_input("Waste treatment EF (kgCO₂e/kg, fallback landfill)", value=0.0, min_value=0.0, step=0.01, format="%.3f", key="a5_waste_ef")
-            # R10: per-material waste rates + treatment shares (reuse+recycle+landfill=1)
-            with st.expander("♻️ Per-material A5 waste (rates + treatment shares)", expanded=False):
-                wdf0 = pd.DataFrame({'material': MATERIALS_UI, 'waste_rate': [a5_waste_rate] * len(MATERIALS_UI),
-                                     'reuse': [0.0] * len(MATERIALS_UI), 'recycle': [0.0] * len(MATERIALS_UI),
-                                     'landfill': [1.0] * len(MATERIALS_UI)})
+            # R10/R26: per-material waste rates + treatment shares + transport/treatment routes
+            a5_waste_routes = None
+            with st.expander("♻️ Per-material A5 waste (rates + shares + routes/factors)", expanded=False):
+                _n = len(MATERIALS_UI)
+                wdf0 = pd.DataFrame({'material': MATERIALS_UI, 'waste_rate': [a5_waste_rate] * _n,
+                                     'reuse': [0.0] * _n, 'recycle': [0.0] * _n, 'landfill': [1.0] * _n,
+                                     'transport_km': [a5_waste_transport_km] * _n,
+                                     'transport_ef': [TRANSPORT_EMISSION_FACTORS['truck']] * _n,
+                                     'ef_reuse': [0.0] * _n, 'ef_recycle': [0.0] * _n,
+                                     'ef_landfill': [a5_waste_treatment_ef] * _n, 'source': [''] * _n})
                 wedit = st.data_editor(wdf0, hide_index=True, use_container_width=True, key="a5_waste_editor",
                                        disabled=['material'])
-                a5_waste_rates, a5_treatment_shares = {}, {}
+                a5_waste_rates, a5_treatment_shares, a5_waste_routes = {}, {}, {}
                 for _, _r in pd.DataFrame(wedit).iterrows():
-                    a5_waste_rates[_r['material']] = float(_r['waste_rate'])
-                    a5_treatment_shares[_r['material']] = {'reuse': float(_r['reuse']),
-                                                           'recycle': float(_r['recycle']),
-                                                           'landfill': float(_r['landfill'])}
+                    _m = _r['material']
+                    a5_waste_rates[_m] = float(_r['waste_rate'])
+                    a5_treatment_shares[_m] = {'reuse': float(_r['reuse']), 'recycle': float(_r['recycle']),
+                                               'landfill': float(_r['landfill'])}
+                    a5_waste_routes[_m] = {
+                        'transport_km': float(_r['transport_km']), 'transport_ef': float(_r['transport_ef']),
+                        'ef_reuse': float(_r['ef_reuse']), 'ef_recycle': float(_r['ef_recycle']),
+                        'ef_landfill': float(_r['ef_landfill']), 'source': str(_r['source'])}
                 st.caption("W_j = M_j·w/(1−w) [installed] or M_j·w [purchased]. "
-                           "reuse + recycle + landfill must equal 1 per material.")
+                           "reuse + recycle + landfill must equal 1. Treatment EF = Σ share·EF_route; "
+                           "transport = (W/1000)·km·EF. Provide a source for each route before publication.")
 
         b2_use_sd_schedule, b2_interval, b2_material_pct = True, 5, 0.05
         b2_diesel_l, b2_elec_kwh, b2_transport_km, b2_cost_per_event_m = 0.0, 0.0, 0.0, 0.0
@@ -2652,6 +2679,9 @@ current_params = {
     'wood': wood, 'frp': frp, 'glass': glass, 'glass_thickness_mm': glass_thickness_mm,
     **{f'recycled_content_{_m}': recycled_content_inputs[_m] for _m in MATERIALS_UI},
     **{f'ef_secondary_{_m}': ef_secondary_inputs[_m] for _m in MATERIALS_UI},
+    **{f'ef_secondary_source_{_m}': ef_secondary_sources[_m] for _m in MATERIALS_UI},
+    **{f'factor_basis_{_m}': ef_secondary_basis[_m] for _m in MATERIALS_UI},
+    'recycled_secondary_documented_ok': recycled_secondary_documented_ok,
     'steel_recycle': steel_recycle, 'aluminum_recycle': aluminum_recycle, 'recycling_scenario': recycling_scenario,
     'transport_distance_km': transport_distance_km, 'transport_mode': transport_mode,
     'a4_mode': a4_mode, 'a4_advanced_legs': a4_advanced_legs,
@@ -2682,6 +2712,7 @@ current_params = {
     'a5_waste_transport_km': a5_waste_transport_km, 'a5_waste_treatment_ef': a5_waste_treatment_ef,
     'a5_diesel_mode': a5_diesel_mode, 'a5_equipment': a5_equipment,
     'a5_waste_rates': a5_waste_rates, 'a5_treatment_shares': a5_treatment_shares,
+    'a5_waste_routes': a5_waste_routes,
     'include_b2b5': include_b2b5, 'b2_use_sd_schedule': b2_use_sd_schedule, 'b2_interval': b2_interval,
     'b2_material_pct': b2_material_pct, 'b2_diesel_l': b2_diesel_l, 'b2_elec_kwh': b2_elec_kwh,
     'b2_transport_km': b2_transport_km, 'b2_cost_per_event_m': b2_cost_per_event_m,

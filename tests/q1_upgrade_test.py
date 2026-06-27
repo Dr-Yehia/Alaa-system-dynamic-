@@ -282,6 +282,25 @@ check("R23 SI time_savings sourced from Benefit KPI", abs(row['time_savings'] - 
 check("R23 SI noise sourced from Benefit KPI", abs(row['noise_reduction'] - rk['noise_reduction_db']) < 1e-9)
 check("R23 SI land indicator is ha/Mpkm (lower better)", 'land_ha_per_mpkm' in row)
 
+# ── Batch 2 / R26: per-material A5 waste routes drive transport + treatment ──
+routes = {'steel': {'transport_km': 100.0, 'transport_ef': 0.10, 'ef_reuse': 0.0,
+                    'ef_recycle': 0.0, 'ef_landfill': 0.05, 'source': 'EPD 2024'}}
+a5r = a5fn({'steel': 1000.0}, {'include_a5': True, 'a5_boq_mode': 'purchased',
+           'a5_waste_rates': {'steel': 0.1}, 'a5_waste_routes': routes,
+           'a5_treatment_shares': {'steel': {'reuse': 0.0, 'recycle': 0.0, 'landfill': 1.0}}}, 0.5)
+# W = 100 kg; transport = (100/1000)*100*0.10/1000 t; treatment = 100*0.05/1000 t
+check("R26 per-material waste transport from route", abs(a5r['a5_waste_transport_tons'] - (100.0/1000.0*100.0*0.10/1000.0)) < 1e-12)
+check("R26 per-material waste treatment from route+shares", abs(a5r['a5_waste_treatment_tons'] - (100.0*0.05/1000.0)) < 1e-12)
+
+# ── Batch 2 / R27: undocumented secondary EF is blocked + flags not publication-grade ──
+p_doc = dict(base); p_doc['recycled_content_steel'] = 0.5; p_doc['ef_secondary_steel'] = 0.4
+p_doc['recycled_secondary_documented_ok'] = True
+r_doc = rfa(p_doc)
+check("R27 documented secondary EF applied", r_doc['recycled_content_applied']['steel'])
+p_undoc = dict(base); p_undoc['recycled_secondary_documented_ok'] = False
+r_undoc = rfa(p_undoc)
+check("R27 missing source → not publication-grade", not r_undoc['publication_grade_full_lca'])
+
 # ── R1/R20: per-material A1-A3 metadata present in the audit table ──
 audit_cols = set(ns["MATERIAL_FACTOR_AUDIT"].columns)
 check("R1 audit has dqi/source/declared_unit/boundary/status",
