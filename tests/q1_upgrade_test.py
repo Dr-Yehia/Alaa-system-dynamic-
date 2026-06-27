@@ -179,6 +179,44 @@ check("R11 energy cost = kWh·tariff (no esc/disc) ×years", abs(undisc - 3 * 10
 pv0, _ = ecfn(1000.0, 0.0, 0.0, 5.0, 50)
 check("R11 zero tariff → zero energy cost", pv0 == 0.0)
 
+# ── Sprint 6 / R12: B2-B5 carbon separate from LCCA PV cost + mass balance ──
+pm = dict(base)
+pm.update({'include_b2b5': True, 'enable_b4': True, 'b4_years': '25', 'b4_frac_steel': 0.1,
+           'b4_frac_concrete': 0.1, 'b2_cost_per_event_m': 2.0, 'b4_cost_per_event_m': 50.0,
+           'lcca_maint_mode': 'activity_based', 'include_c1c4': True,
+           'eol_recycle_steel': 0.5, 'eol_secondary_ef_steel': 0.4})
+r_lo = rfa({**pm, 'discount_rate': 3.0})
+r_hi = rfa({**pm, 'discount_rate': 12.0})
+check("R12 B2-B5 carbon is invariant to discount rate (CO2≠f(PV cost))",
+      abs(r_lo['i_b2b5_tons'] - r_hi['i_b2b5_tons']) < 1e-9)
+check("R12 LCCA NPV does change with discount rate", abs(r_lo['npv_lcc_m'] - r_hi['npv_lcc_m']) > 1e-9)
+r_nocost = rfa({**pm, 'b2_cost_per_event_m': 0.0, 'b4_cost_per_event_m': 0.0})
+check("R12 B2-B5 carbon is invariant to cost inputs", abs(r_nocost['i_b2b5_tons'] - r_lo['i_b2b5_tons']) < 1e-9)
+mb = r_lo['mass_balance']['mass_balance_by_material']
+check("R12 mass balance: remaining = initial + added - removed",
+      all(abs(x['remaining_for_C1_C4_kg'] - (x['initial_kg'] + x['added_B4_B5_kg'] - x['removed_B4_B5_kg'])) < 1e-6 for x in mb))
+mbfn = ns["update_material_mass_balance"]
+mbr = mbfn({'steel': 1000.0}, {'steel': 200.0}, {'steel': 50.0})
+check("R12 mass-balance helper arithmetic", abs(mbr['remaining_masses_for_c1_c4']['steel'] - 1150.0) < 1e-9)
+
+# ── Sprint 6 / R13: C1-C4 consumes remaining masses (not initial) ──
+c1c4fn = ns["calculate_c1_c4_end_of_life"]
+cp = {'include_c1c4': True, 'c1_diesel_l': 0.0, 'c1_elec_kwh': 0.0,
+      'eol_transport_km': 100.0, 'eol_disposal_ef': 0.02}
+small = c1c4fn({'steel': 1000.0}, cp, 0.5, 2.68, 0.10)
+big = c1c4fn({'steel': 2000.0}, cp, 0.5, 2.68, 0.10)
+check("R13 C1-C4 scales with the remaining mass it is given",
+      big['c1_c4_total_tons'] > small['c1_c4_total_tons'] > 0)
+
+# ── Sprint 6 / R14: gross/net strictly separated; GWP/pkm on gross only ──
+check("R14 GWP/pkm uses GROSS (not net)",
+      abs(r_lo['gwp_pkm_gross'] - r_lo['gross_a1_c4_tons'] * 1000 / r_lo['active_total_pkm']) < 1e-6)
+check("R14 Module D never inside gross (net = gross - D)",
+      abs(r_lo['net_with_module_d_tons'] - (r_lo['gross_a1_c4_tons'] - r_lo['module_d_tons'])) < 1e-6)
+check("R14 gross = Σ stages (A1A3+A4+A5+B2B5+B6+C1C4)",
+      abs(r_lo['gross_a1_c4_tons'] - (r_lo['total_embodied_co2'] + r_lo['lca_results']['a4_transport_co2_tons']
+          + r_lo['a5']['a5_total_tons'] + r_lo['i_b2b5_tons'] + r_lo['active_b6_tons'] + r_lo['i_c1c4_tons'])) < 1e-6)
+
 # ── R1/R20: per-material A1-A3 metadata present in the audit table ──
 audit_cols = set(ns["MATERIAL_FACTOR_AUDIT"].columns)
 check("R1 audit has dqi/source/declared_unit/boundary/status",
