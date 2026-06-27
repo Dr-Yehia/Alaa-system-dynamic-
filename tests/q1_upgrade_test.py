@@ -137,9 +137,11 @@ check("R10 purchased adds no production term", abs(purch['a5_material_waste_tons
 
 # ── Sprint 5 / R11: served demand capacity cap + availability into PKM ──
 pkmfn = ns["b6_served_annual_pkm"]
-# pkm_direct reproduces legacy daily_pax_km·365·1000
-pk_direct, _ = pkmfn({'b6_demand_basis': 'pkm_direct', 'daily_pax_km': 500.0})
-check("R11 pkm_direct == daily_pax_km·1000·365", abs(pk_direct - 500.0 * 1000 * 365) < 1e-6)
+# R22: pkm_direct now also applies availability
+pk_direct, _ = pkmfn({'b6_demand_basis': 'pkm_direct', 'daily_pax_km': 500.0, 'availability': 100.0})
+check("R11 pkm_direct == daily_pax_km·1000·365 (avail 100%)", abs(pk_direct - 500.0 * 1000 * 365) < 1e-6)
+pk_av, _ = pkmfn({'b6_demand_basis': 'pkm_direct', 'daily_pax_km': 500.0, 'availability': 90.0})
+check("R22 pkm_direct applies availability", abs(pk_av - 500.0 * 1000 * 365 * 0.90) < 1e-6)
 # demand capped by capacity: demand 1000 > capacity 600 → served 600
 pk_cap, meta = pkmfn({'b6_demand_basis': 'daily', 'b6_demand': 1000.0, 'b6_capacity': 600.0,
                       'b6_avg_trip_km': 10.0, 'availability': 100.0})
@@ -258,6 +260,27 @@ rmod = rfa({**base, 'include_c1c4': True, 'eol_recycle_steel': 0.6, 'eol_seconda
 check("R19 Module D > 0 yet excluded from gross", rmod['module_d_tons'] > 0
       and abs(rmod['gross_a1_c4_tons'] - (rmod['total_embodied_co2'] + rmod['lca_results']['a4_transport_co2_tons']
               + rmod['a5']['a5_total_tons'] + rmod['i_b2b5_tons'] + rmod['active_b6_tons'] + rmod['i_c1c4_tons'])) < 1e-6)
+
+# ── Batch 1 / R28: contract factor scales CAPEX into the NPV ──
+r_c1 = rfa({**base, 'contract_factor': 1.0})
+r_c2 = rfa({**base, 'contract_factor': 1.2})
+check("R28 contract factor adjusts CAPEX (base×factor)", abs(r_c2['construction_cost'] - r_c2['construction_cost_base'] * 1.2) < 1e-9)
+check("R28 contract factor raises NPV", r_c2['npv_lcc_m'] > r_c1['npv_lcc_m'])
+
+# ── Batch 1 / R21: project-definition metadata threads into params ──
+check("R21 project definition keys present",
+      all(k in base for k in ('project_name', 'route_length_km', 'assessment_lifetime',
+                              'analysis_start_year', 'currency', 'price_year', 'functional_unit')))
+
+# ── Batch 1 / R23: SI reads Benefit-KPI values, not legacy manual inputs ──
+sirow = ns["_scenario_indicator_row"]
+bb = dict(base); bb['benefit_annual_trips'] = 1e6; bb['benefit_time_saved_min'] = 6.0
+bb['benefit_noise_baseline_db'] = 80.0; bb['benefit_noise_monorail_db'] = 65.0; bb['benefit_land_ha'] = 40.0
+row = sirow(bb)
+rk = rfa(bb)['benefit_kpis']
+check("R23 SI time_savings sourced from Benefit KPI", abs(row['time_savings'] - rk['annual_hours_saved'] / 1000.0) < 1e-6)
+check("R23 SI noise sourced from Benefit KPI", abs(row['noise_reduction'] - rk['noise_reduction_db']) < 1e-9)
+check("R23 SI land indicator is ha/Mpkm (lower better)", 'land_ha_per_mpkm' in row)
 
 # ── R1/R20: per-material A1-A3 metadata present in the audit table ──
 audit_cols = set(ns["MATERIAL_FACTOR_AUDIT"].columns)

@@ -23,18 +23,19 @@ st.set_page_config(
 # Journal: Computational Intelligence and Neuroscience (Hindawi)
 # Used ONLY as an external benchmark / reproduction reference.
 # It is NEVER a source of material factors and NEVER a calibration input
-# to the core LCA/LCCA model.
-# NOTE: confirm exact article title from the uploaded Li & Zhu (2022) PDF.
+# to the core LCA/LCCA model. The full bibliographic citation (exact title and
+# any indexing/quartile claim) is given in the manuscript against the DOI below;
+# the tool identifies the work by DOI to avoid carrying unverified metadata.
 # ═══════════════════════════════════════════════════════════════
 
 LIZHU_2022_BENCHMARK = {
     'reference': {
-        'title': '[confirm exact title from uploaded Li & Zhu (2022) PDF]',
+        'cite_as': 'Li & Zhu (2022), DOI 10.1155/2022/3872069 — full citation in manuscript',
         'authors': 'Li and Zhu',
         'journal': 'Computational Intelligence and Neuroscience (Hindawi)',
         'year': 2022,
         'doi': '10.1155/2022/3872069',
-        'indexing': '[verify current indexing/quartile before publication]',
+        'role': 'External benchmark / reproduction reference only — never a factor or calibration source',
         'verification': 'Peer-reviewed scientific publication (benchmark only)'
     },
     'system_parameters': {
@@ -1128,10 +1129,12 @@ def b6_served_annual_pkm(params):
     Returns (annual_pkm, meta).
     """
     basis = params.get('b6_demand_basis', 'pkm_direct')
-    if basis == 'pkm_direct':
-        annual_pkm = params['daily_pax_km'] * 1000 * 365
-        return annual_pkm, {'basis': basis}
     avail = float(params.get('availability', 100.0)) / 100.0
+    if basis == 'pkm_direct':
+        # R22: availability now scales delivered service in pkm_direct too, so the
+        # operating fraction is applied consistently in every B6 demand mode.
+        annual_pkm = params['daily_pax_km'] * 1000 * 365 * avail
+        return annual_pkm, {'basis': basis, 'availability': avail}
     demand = float(params.get('b6_demand', 0.0))
     capacity = float(params.get('b6_capacity', 0.0))
     served = min(demand, capacity) if capacity > 0 else demand
@@ -1432,7 +1435,11 @@ def calculate_core_lca_lcc(params):
     publication_grade_full_lca = bool(publication_grade and shares_ok and module_d_ok)
 
     # Economic (LCCA)
-    construction_cost = params['construction_cost']
+    # R28: contract factor adjusts the base CAPEX before it enters the NPV
+    # (CAPEX_contract = CAPEX_base · contract_factor). Default 1.0 → no change.
+    contract_factor = float(params.get('contract_factor', 1.0))
+    construction_cost_base = params['construction_cost']
+    construction_cost = construction_cost_base * contract_factor
     annual_maintenance = params['maintenance_cost']
     jobs_created = params['jobs_created']
     economic_multiplier = params['economic_multiplier']
@@ -1506,6 +1513,8 @@ def calculate_core_lca_lcc(params):
         'operational_carbon_intensity': operational_carbon_intensity,
         'daily_pax_km': daily_pax_km,
         'construction_cost': construction_cost,
+        'construction_cost_base': construction_cost_base,
+        'contract_factor': contract_factor,
         'annual_maintenance': annual_maintenance,
         'jobs_created': jobs_created,
         'economic_multiplier': economic_multiplier,
@@ -1928,10 +1937,12 @@ def build_indicator_metadata():
         ('lcca_uncertainty_CV', 'Economic', 'lower', 'CV', 0.05, 0.30, 'Phase 4 MC', True, 'cost_robustness'),
         # Operational
         ('availability', 'Operational', 'higher', 'fraction', 0.99, 0.85, 'input', True, 'operational'),
-        ('time_savings', 'Operational', 'higher', '1000h', 5.0, 0.0, 'input', True, 'operational_time'),
-        ('land_use_efficiency', 'Operational', 'higher', 'pass/ha', 6000.0, 1000.0, 'input', True, 'land'),
+        # R23/R13: operational/land/social SI indicators now read the computed Benefit-KPI
+        # module (not legacy manual inputs). Land is expressed as ha per million pkm (lower better).
+        ('time_savings', 'Operational', 'higher', '1000h', 5.0, 0.0, 'Benefit KPI', True, 'operational_time'),
+        ('land_ha_per_mpkm', 'Operational', 'lower', 'ha/Mpkm', 0.5, 5.0, 'Benefit KPI', True, 'land'),
         # Social / urban
-        ('noise_reduction', 'Social', 'higher', 'dB', 15.0, 0.0, 'input', True, 'social'),
+        ('noise_reduction', 'Social', 'higher', 'dB', 15.0, 0.0, 'Benefit KPI', True, 'social'),
     ]
     return pd.DataFrame(rows, columns=['indicator', 'pillar', 'direction', 'unit', 'target',
                                        'worst', 'source', 'include_in_si', 'double_count_group'])
@@ -1945,11 +1956,12 @@ def _scenario_indicator_row(params, uncertainty_n=0, seed=42):
         'energy_per_pax_km': r['energy_per_pax_km'],
         'module_d_recovery_ratio': (r['module_d_tons'] / r['gross_a1_c4_tons']) if r['gross_a1_c4_tons'] else 0.0,
         'npv_lcc_per_pkm': (r['npv_lcc_m'] * 1e6 / pkm) if pkm and np.isfinite(pkm) else np.nan,
-        'jobs_per_million_usd': (r['total_jobs'] / r['construction_cost']) if r['construction_cost'] else 0.0,
+        # R23/R13: jobs / time / land / noise come from the computed Benefit-KPI module.
+        'jobs_per_million_usd': (r['benefit_kpis']['total_jobs'] / r['construction_cost']) if r['construction_cost'] else 0.0,
         'availability': params.get('availability', 0.0) / 100.0,
-        'time_savings': params.get('time_savings', 0.0),
-        'land_use_efficiency': params.get('land_use', 0.0),
-        'noise_reduction': params.get('noise_reduction', 0.0),
+        'time_savings': r['benefit_kpis']['annual_hours_saved'] / 1000.0,
+        'land_ha_per_mpkm': r['benefit_kpis']['land_ha_per_million_pkm'],
+        'noise_reduction': r['benefit_kpis']['noise_reduction_db'],
         'gross_uncertainty_CV': np.nan,
         'lcca_uncertainty_CV': np.nan,
         'publication_grade_full_lca': r.get('publication_grade_full_lca', False),
@@ -2354,6 +2366,18 @@ with st.sidebar:
     with st.form("assessment_form"):
         run_btn = st.form_submit_button("🚀 Run Assessment", type="primary", use_container_width=True)
 
+        # ── R21: Project Definition (scope/metadata for the assessment & report) ──
+        st.markdown("### 🧾 Project Definition")
+        project_name = st.text_input("Project name", value="Cairo Monorail", key="project_name")
+        route_length_km = st.number_input("Route length (km)", value=96.0, min_value=0.0, step=1.0, key="route_length")
+        assessment_lifetime = st.number_input("Assessment lifetime (years)", value=int(ASSESSMENT_LIFETIME_YEARS), min_value=1, step=1, key="lifetime",
+                                              help="Reporting scope. The operative life used by the equations is currently fixed at "
+                                                   f"{int(ASSESSMENT_LIFETIME_YEARS)} y; configurable lifetime is wired in the equations phase.")
+        analysis_start_year = st.number_input("Analysis start year", value=2026, min_value=2000, step=1, key="start_year")
+        currency = st.selectbox("Currency", ["USD", "EGP"], index=0, key="currency")
+        price_year = st.number_input("Price year", value=2026, min_value=2000, step=1, key="price_year")
+        functional_unit = "1 passenger-km"
+
         st.markdown("### 📦 Materials")
         concrete = st.number_input("Concrete (1000 m³)", value=700.0, min_value=0.0, step=10.0, key="concrete")
         steel = st.number_input("Steel (1000 tons)", value=100.0, min_value=0.0, step=5.0, key="steel")
@@ -2416,8 +2440,14 @@ with st.sidebar:
 
         st.markdown("### 🌍 Environmental")
         carbon_intensity_input = st.number_input("Grid carbon (kgCO₂/kWh)", value=0.5, min_value=0.0, step=0.05, key="carbon_int")
-        land_use = st.number_input("Land use (pass/ha)", value=5000.0, min_value=0.0, step=100.0, key="land_use")
-        noise_reduction = st.number_input("Noise reduction (dB)", value=10.0, min_value=0.0, step=1.0, key="noise")
+        # R23/R14/R15: legacy manual land-use and noise figures are developer-only. The
+        # publication-grade land-use and noise co-benefits are computed in the Benefit KPI module.
+        if not publication_mode:
+            land_use = st.number_input("Land use (pass/ha) — legacy", value=5000.0, min_value=0.0, step=100.0, key="land_use")
+            noise_reduction = st.number_input("Noise reduction (dB) — legacy", value=10.0, min_value=0.0, step=1.0, key="noise")
+        else:
+            land_use = 0.0
+            noise_reduction = 0.0
 
         st.markdown("### ⚙️ Operational (B6)")
         energy_per_pax = st.number_input("Energy (kWh/pax-km)", value=0.15, min_value=0.0, step=0.01, format="%.3f", key="energy")
@@ -2433,8 +2463,13 @@ with st.sidebar:
             b6_capacity = st.number_input(f"Max served capacity ({b6_demand_basis}, passengers)", value=0.0, min_value=0.0, step=1000.0, key="b6_capacity",
                                           help="served = min(demand, capacity).")
             b6_avg_trip_km = st.number_input("Average trip length (km)", value=0.0, min_value=0.0, step=1.0, key="b6_avg_trip")
-        time_savings = st.number_input("Time savings (1000h)", value=2.5, min_value=0.0, step=0.1, key="time_sav")
         availability = st.slider("Availability (%)", 0, 100, 98, key="avail")
+        # R23: legacy manual 'time savings' is developer-only; the publication-grade time
+        # saving / value-of-time is computed in the Benefit KPI module.
+        if not publication_mode:
+            time_savings = st.number_input("Time savings (1000h) — legacy", value=2.5, min_value=0.0, step=0.1, key="time_sav")
+        else:
+            time_savings = 0.0
         # R8-CI: grid carbon trajectory + explicit project renewable procurement.
         b6_grid_change_pct = st.number_input("Annual grid CI change (%/yr)", value=0.0, step=0.5, format="%.2f", key="b6_grid_change",
                                              help="CI_grid,t = CI₀·(1+g)^(t-1). 0 = constant grid factor.")
@@ -2562,13 +2597,22 @@ with st.sidebar:
 
         # ── LCCA Costs (R18 order: after the A1-C4 stages) ──
         st.markdown("### 💰 LCCA Costs")
-        construction_cost = st.number_input("Construction ($M)", value=2500.0, min_value=0.0, step=50.0, key="const_cost")
+        construction_cost = st.number_input("Base construction CAPEX ($M)", value=2500.0, min_value=0.0, step=50.0, key="const_cost")
+        # R28: contract factor scales base CAPEX → CAPEX_contract = CAPEX_base · factor.
+        contract_factor = st.number_input("Contract factor", value=1.0, min_value=0.0, step=0.05, format="%.2f", key="contract_factor",
+                                          help="Adjusts base CAPEX for contract conditions. CAPEX used in NPV = base × factor.")
         maintenance_cost = st.number_input("Maintenance ($M/yr)", value=50.0, min_value=0.0, step=5.0, key="maint_cost")
-        jobs_created = st.number_input("Jobs created", value=5000.0, min_value=0.0, step=100.0, key="jobs")
         economic_multiplier = st.number_input("Economic multiplier", value=2.5, min_value=1.0, step=0.1, key="econ_mult")
         discount_rate = st.number_input("Discount rate (%)", value=5.0, min_value=0.0, max_value=20.0, step=0.5, key="discount_rate")
-        annual_energy_cost = st.number_input("Energy cost ($M/yr)", value=0.0, min_value=0.0, step=1.0, key="energy_cost")
+        annual_energy_cost = st.number_input("Energy cost ($M/yr) — fallback only if tariff is 0", value=0.0, min_value=0.0, step=1.0, key="energy_cost",
+                                             help="Used only when the B6 energy tariff is 0; otherwise the kWh×tariff PV is used.")
         residual_value = st.number_input("Residual value ($M)", value=0.0, min_value=0.0, step=10.0, key="residual_value")
+        # R23: 'jobs created' is a legacy manual figure — developer-only. The publication-grade
+        # jobs metric is computed in the Benefit KPI module.
+        if not publication_mode:
+            jobs_created = st.number_input("Jobs created (legacy manual)", value=5000.0, min_value=0.0, step=100.0, key="jobs")
+        else:
+            jobs_created = 0.0
 
         # ── R15: Benefit (co-benefit) KPIs — reported SEPARATELY, never netted into LCA ──
         st.markdown("### 🌱 Benefit KPIs (separate co-benefits)")
@@ -2600,6 +2644,10 @@ with st.sidebar:
 
 # Collect parameters
 current_params = {
+    # R21: project definition (scope/metadata)
+    'project_name': project_name, 'route_length_km': route_length_km,
+    'assessment_lifetime': assessment_lifetime, 'analysis_start_year': analysis_start_year,
+    'currency': currency, 'price_year': price_year, 'functional_unit': functional_unit,
     'concrete': concrete, 'steel': steel, 'aluminum': aluminum,
     'wood': wood, 'frp': frp, 'glass': glass, 'glass_thickness_mm': glass_thickness_mm,
     **{f'recycled_content_{_m}': recycled_content_inputs[_m] for _m in MATERIALS_UI},
@@ -2622,6 +2670,7 @@ current_params = {
     'b6_renewable_change_pct': b6_renewable_change_pct, 'b6_ci_renewable': b6_ci_renewable,
     'b6_energy_tariff': b6_energy_tariff, 'b6_energy_escalation_pct': b6_energy_escalation_pct,
     'construction_cost': construction_cost, 'maintenance_cost': maintenance_cost,
+    'contract_factor': contract_factor,
     'jobs_created': jobs_created, 'economic_multiplier': economic_multiplier,
     'discount_rate': discount_rate, 'annual_energy_cost': annual_energy_cost,
     'residual_value': residual_value,
@@ -3836,7 +3885,7 @@ cradle-to-grave model unless external project calibration/verification data are 
 1. ISO 14040:2006 — Environmental Management — Life Cycle Assessment
 2. ISO 14044:2006 — Environmental Management — Life Cycle Assessment — Requirements and Guidelines
 3. ASTM E917-17 — Standard Practice for Measuring Life-Cycle Costs
-4. Li and Zhu (2022). Monorail transit life-cycle carbon assessment (benchmark). *Computational Intelligence and Neuroscience*, 2022, 3872069. DOI: 10.1155/2022/3872069. [confirm exact title from PDF]
+4. Li and Zhu (2022). *Computational Intelligence and Neuroscience*, 2022, 3872069. DOI: 10.1155/2022/3872069 — external benchmark only (full title/indexing cited in the manuscript).
 5. Nilsson, M., et al. (2016). "Mapping interactions between SDGs." *Nature*, 534, 320-322. Used as conceptual background only.
 
 ---
@@ -3849,6 +3898,7 @@ cradle-to-grave model unless external project calibration/verification data are 
 
 #### DATA SOURCES
 - **Material embodied carbon (PRIMARY):** ICE Database Educational V4.1 (Oct 2025), ICE Summary sheet, A1-A3 Embodied Carbon. Each factor carries its exact `ice_name`, `dqi_score`, boundary and status in the MATERIAL_FACTOR_AUDIT table.
+- **ICE licensing / attribution:** the ICE database (Circular Ecology, Hammond & Jones) is used under its educational terms; ICE-derived factors are attributed to Circular Ecology and remain subject to the ICE licence. Confirm the licence permits redistribution of derived values before publishing the dataset, and cite Circular Ecology accordingly.
 - **Material embodied energy (SECONDARY):** legacy Hammond & Jones (2008) / ICE v2.0 values — explicitly **not** from ICE V4.1; reported as a secondary indicator only.
 - **FRP / GRP:** **UNVERIFIED placeholder** — ICE V4.1 has no published A1-A3 carbon value; a product-specific EPD is required before publication.
 - **Glass mass:** geometric — area × thickness (mm) × 2.5 kg/(mm·m²) (flat-glass 2500 kg/m³).
