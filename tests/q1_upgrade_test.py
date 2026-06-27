@@ -135,6 +135,50 @@ purch = a5fn({'steel': 1000.0}, {'include_a5': True, 'a5_boq_mode': 'purchased',
 check("R10 purchased waste = M·w", abs(purch['waste_mass_total_kg'] - 100.0) < 1e-6)
 check("R10 purchased adds no production term", abs(purch['a5_material_waste_tons']) < 1e-12)
 
+# ── Sprint 5 / R11: served demand capacity cap + availability into PKM ──
+pkmfn = ns["b6_served_annual_pkm"]
+# pkm_direct reproduces legacy daily_pax_km·365·1000
+pk_direct, _ = pkmfn({'b6_demand_basis': 'pkm_direct', 'daily_pax_km': 500.0})
+check("R11 pkm_direct == daily_pax_km·1000·365", abs(pk_direct - 500.0 * 1000 * 365) < 1e-6)
+# demand capped by capacity: demand 1000 > capacity 600 → served 600
+pk_cap, meta = pkmfn({'b6_demand_basis': 'daily', 'b6_demand': 1000.0, 'b6_capacity': 600.0,
+                      'b6_avg_trip_km': 10.0, 'availability': 100.0})
+check("R11 served demand capped by capacity (min(D,C))", meta['served'] == 600.0 and meta['capacity_binding'])
+check("R11 PKM = served·trip·avail·365", abs(pk_cap - 600.0 * 10.0 * 1.0 * 365) < 1e-6)
+# availability scales PKM
+pk_av, _ = pkmfn({'b6_demand_basis': 'annual', 'b6_demand': 1000.0, 'b6_capacity': 2000.0,
+                  'b6_avg_trip_km': 10.0, 'availability': 90.0})
+check("R11 availability reduces PKM", abs(pk_av - 1000.0 * 10.0 * 0.90) < 1e-6)
+
+# ── Sprint 5 / R8-CI: annual CI_t trajectory; renewable only as project procurement ──
+cifn = ns["b6_ci_trajectory"]
+flat = cifn(0.5, 0.0, 3)
+check("R8-CI flat grid → CI_eff constant", all(abs(y['ci_eff'] - 0.5) < 1e-12 for y in flat))
+grow = cifn(0.5, 10.0, 3)
+check("R8-CI grid grows (1+g)^(t-1)", abs(grow[2]['ci_grid'] - 0.5 * 1.1 ** 2) < 1e-12)
+noproj = cifn(0.5, 0.0, 2, project_renewable=False)
+check("R8-CI no (1-renewable) shortcut when no project procurement", all(y['r_proj'] == 0.0 for y in noproj))
+proj = cifn(0.5, 0.0, 1, project_renewable=True, r_proj0=0.4, ci_renewable=0.0)
+check("R8-CI project renewable: CI_eff=(1-r)·CI_grid+r·CI_renew", abs(proj[0]['ci_eff'] - (0.6 * 0.5 + 0.4 * 0.0)) < 1e-12)
+
+# CI_t feeds lifetime B6: growing grid raises lifetime operational CO2
+pg = dict(base); pg['b6_grid_change_pct'] = 5.0
+rg = rfa(pg)
+check("R8-CI growing grid raises lifetime B6 vs flat",
+      rg['lca_results']['lifetime_operational_co2_tons'] > r0['lca_results']['lifetime_operational_co2_tons'])
+# project renewable lowers it
+pr = dict(base); pr['b6_project_renewable'] = True; pr['b6_renewable_share_proj'] = 50.0; pr['b6_ci_renewable'] = 0.0
+rr = rfa(pr)
+check("R8-CI project renewable lowers lifetime B6",
+      rr['lca_results']['lifetime_operational_co2_tons'] < r0['lca_results']['lifetime_operational_co2_tons'])
+
+# ── Sprint 5 / R11: PV energy cost from kWh × tariff ──
+ecfn = ns["b6_energy_pv_cost"]
+pv, undisc = ecfn(1000.0, 0.10, 0.0, 0.0, 3)
+check("R11 energy cost = kWh·tariff (no esc/disc) ×years", abs(undisc - 3 * 100.0) < 1e-9 and abs(pv - 300.0) < 1e-9)
+pv0, _ = ecfn(1000.0, 0.0, 0.0, 5.0, 50)
+check("R11 zero tariff → zero energy cost", pv0 == 0.0)
+
 # ── R1/R20: per-material A1-A3 metadata present in the audit table ──
 audit_cols = set(ns["MATERIAL_FACTOR_AUDIT"].columns)
 check("R1 audit has dqi/source/declared_unit/boundary/status",

@@ -511,8 +511,14 @@ def calculate_a4_transport_co2(material_masses_kg, distance_km, mode, advanced_l
 def calculate_lca_summary(embodied_co2_tons, annual_operational_co2_tons, embodied_energy_mj,
                           annual_operational_energy_kwh, daily_pax_km, lifetime_years,
                           a4_transport_co2_tons=0.0,
-                          module_d_carbon_credit_tons=0.0, module_d_energy_credit_mj=0.0):
-    lifetime_operational_co2_tons = annual_operational_co2_tons * lifetime_years
+                          module_d_carbon_credit_tons=0.0, module_d_energy_credit_mj=0.0,
+                          lifetime_operational_co2_tons_override=None):
+    # R8-CI: when a CI_t-trajectory lifetime is supplied, use it instead of the flat
+    # annual×years product (the two coincide when CI_t is constant → baseline unchanged).
+    if lifetime_operational_co2_tons_override is not None:
+        lifetime_operational_co2_tons = lifetime_operational_co2_tons_override
+    else:
+        lifetime_operational_co2_tons = annual_operational_co2_tons * lifetime_years
     # A1-A3 (gross) + A4 + B6. Module D is NOT added here (EN 15804: separate module).
     total_lifecycle_co2_tons = embodied_co2_tons + a4_transport_co2_tons + lifetime_operational_co2_tons
     lifetime_pax_km = daily_pax_km * 365 * lifetime_years
@@ -1084,6 +1090,68 @@ def update_lca_summary_full(I_A1_A3, I_A4, I_A5, I_B2_B5, I_B6_active, I_C1_C4,
     }
 
 
+def b6_ci_trajectory(ci_grid0, grid_change_pct, years,
+                     project_renewable=False, r_proj0=0.0, r_proj_change_pct=0.0, ci_renewable=0.0):
+    """R8-CI: annual grid carbon-intensity trajectory (kgCO2e/kWh).
+
+    CI_grid,t = CI_grid,0 · (1 + g_grid)^(t-1)
+
+    Renewable is applied ONLY as explicit *project* procurement:
+        CI_eff,t = (1 - r_proj,t)·CI_grid,t + r_proj,t·CI_renewable,t
+    Without project procurement r_proj,t = 0 and CI_eff,t = CI_grid,t — the
+    (1 - renewable_share) grid shortcut is never used.
+    """
+    traj = []
+    for t in range(1, int(years) + 1):
+        ci_grid_t = ci_grid0 * (1.0 + grid_change_pct / 100.0) ** (t - 1)
+        if project_renewable:
+            r_t = min(max(r_proj0 * (1.0 + r_proj_change_pct / 100.0) ** (t - 1), 0.0), 1.0)
+            ci_eff = (1.0 - r_t) * ci_grid_t + r_t * ci_renewable
+        else:
+            r_t = 0.0
+            ci_eff = ci_grid_t
+        traj.append({'year': t, 'ci_grid': ci_grid_t, 'r_proj': r_t, 'ci_eff': ci_eff})
+    return traj
+
+
+def b6_served_annual_pkm(params):
+    """R11: served annual passenger-km.
+
+    - 'pkm_direct' (default): annual PKM = daily_pax_km · 365 (unchanged baseline).
+    - 'daily'/'annual' demand basis: served passengers are capped by capacity,
+        served = min(Demand, Capacity);
+      PKM = served · avg_trip_km · availability  (×365 if the demand is daily).
+    Returns (annual_pkm, meta).
+    """
+    basis = params.get('b6_demand_basis', 'pkm_direct')
+    if basis == 'pkm_direct':
+        annual_pkm = params['daily_pax_km'] * 1000 * 365
+        return annual_pkm, {'basis': basis}
+    avail = float(params.get('availability', 100.0)) / 100.0
+    demand = float(params.get('b6_demand', 0.0))
+    capacity = float(params.get('b6_capacity', 0.0))
+    served = min(demand, capacity) if capacity > 0 else demand
+    trip = float(params.get('b6_avg_trip_km', 0.0))
+    pkm = served * trip * avail
+    if basis == 'daily':
+        pkm *= 365.0
+    return pkm, {'basis': basis, 'demand': demand, 'capacity': capacity, 'served': served,
+                 'avg_trip_km': trip, 'availability': avail, 'capacity_binding': capacity > 0 and demand > capacity}
+
+
+def b6_energy_pv_cost(annual_kwh, tariff_per_kwh, escalation_pct, discount_pct, years):
+    """R11: PV of B6 energy cost from energy × tariff.
+        PV = Σ_t (annual_kwh · tariff · (1+esc)^(t-1)) / (1+disc)^t
+    Returns (pv_cost, undiscounted_cost). With tariff 0 → (0, 0)."""
+    pv = 0.0
+    undisc = 0.0
+    for t in range(1, int(years) + 1):
+        cost_t = annual_kwh * tariff_per_kwh * (1.0 + escalation_pct / 100.0) ** (t - 1)
+        undisc += cost_t
+        pv += cost_t / (1.0 + discount_pct / 100.0) ** t
+    return pv, undisc
+
+
 def calculate_core_lca_lcc(params):
     """SCIENTIFIC CORE — modular gross A1-C4 LCA (A1-A3 + A4 + A5 + B6; B2-B5/C1-C4
     in later sub-phases) + NPV-LCCA. ONLY publication-grade quantities."""
@@ -1114,20 +1182,35 @@ def calculate_core_lca_lcc(params):
 
     # Operational Energy & Carbon (B6)
     energy_per_pax_km = params['energy_per_pax']
-    daily_pax_km = params['daily_pax_km'] * 1000
     carbon_intensity = params['carbon_intensity']
-    renewable_share = params['renewable_share']  # dashboard-only in Phase 1b (see note)
+    renewable_share = params['renewable_share']  # dashboard-only (see note)
 
-    annual_operational_energy = energy_per_pax_km * daily_pax_km * 365
+    # R11: served annual PKM (demand capped by capacity, availability applied).
+    # 'pkm_direct' default reproduces the legacy daily_pax_km·365 figure exactly.
+    annual_pkm, b6_demand_meta = b6_served_annual_pkm(params)
+    daily_pax_km = annual_pkm / 365.0  # effective daily PKM (keeps downstream semantics)
+    annual_operational_energy = energy_per_pax_km * annual_pkm
 
-    # Phase 1b SAFE CHOICE — avoid double-counting renewable penetration.
-    # The user-supplied grid carbon intensity ALREADY reflects the grid mix, so we
-    # do NOT additionally multiply by (1 - renewable_share). Renewable share is kept
-    # as a dashboard-only input here and is deferred to Phase 2, where it will be
-    # defined explicitly as additional project renewable procurement (not grid mix).
-    effective_carbon_intensity = carbon_intensity
+    # R8-CI: annual grid carbon-intensity trajectory. Renewable enters ONLY as explicit
+    # project procurement (CI_eff,t = (1-r)·CI_grid,t + r·CI_renewable,t); the grid
+    # carbon intensity already reflects the grid mix, so no (1-renewable_share) shortcut.
+    ci_trajectory = b6_ci_trajectory(
+        carbon_intensity, params.get('b6_grid_change_pct', 0.0), ASSESSMENT_LIFETIME_YEARS,
+        project_renewable=bool(params.get('b6_project_renewable', False)),
+        r_proj0=float(params.get('b6_renewable_share_proj', 0.0)) / 100.0,
+        r_proj_change_pct=float(params.get('b6_renewable_change_pct', 0.0)),
+        ci_renewable=float(params.get('b6_ci_renewable', 0.0)))
+    effective_carbon_intensity = ci_trajectory[0]['ci_eff']
     operational_carbon_intensity = energy_per_pax_km * effective_carbon_intensity
-    annual_co2_operational = operational_carbon_intensity * daily_pax_km * 365 / 1000
+    annual_co2_operational = operational_carbon_intensity * annual_pkm / 1000
+    # Lifetime B6 CO2 via the CI_t trajectory (Σ_t energy·CI_eff,t). With flat defaults
+    # this equals annual_co2_operational · lifetime, so the baseline is unchanged.
+    lifetime_b6_co2_traj = sum(energy_per_pax_km * annual_pkm * y['ci_eff'] for y in ci_trajectory) / 1000.0
+    # R11: PV of B6 energy cost from energy × tariff (0 tariff → 0; legacy cost input untouched).
+    b6_energy_pv_cost_m, b6_energy_undisc_cost_m = b6_energy_pv_cost(
+        annual_operational_energy, float(params.get('b6_energy_tariff', 0.0)),
+        float(params.get('b6_energy_escalation_pct', 0.0)),
+        float(params.get('discount_rate', 5.0)), ASSESSMENT_LIFETIME_YEARS)
 
     steel_recycle_rate = params['steel_recycle'] / 100.0
     recycling_scenario = params.get("recycling_scenario", "none")
@@ -1204,7 +1287,8 @@ def calculate_core_lca_lcc(params):
         lifetime_years=ASSESSMENT_LIFETIME_YEARS,
         a4_transport_co2_tons=a4_transport_co2_tons,
         module_d_carbon_credit_tons=module_d_carbon_credit_tons,
-        module_d_energy_credit_mj=module_d_energy_credit_mj
+        module_d_energy_credit_mj=module_d_energy_credit_mj,
+        lifetime_operational_co2_tons_override=lifetime_b6_co2_traj
     )
     total_co2 = lca_results["total_lifecycle_co2_tons"]
 
@@ -1393,6 +1477,13 @@ def calculate_core_lca_lcc(params):
         'co2_kg_per_pkm_dynamic': co2_kg_per_pkm_dynamic,
         'sd_params': {'C0': sd_C0, 'delta': sd_delta, 'interval': sd_interval,
                       'rho': sd_rho, 'tau': sd_tau, 'alpha': sd_alpha, 'g_pct': sd_g * 100},
+        # ── R11 / R8-CI: static B6 demand basis, CI_t trajectory, energy-cost PV ──
+        'b6_demand_meta': b6_demand_meta,
+        'b6_annual_pkm': annual_pkm,
+        'b6_ci_trajectory': ci_trajectory,
+        'b6_lifetime_co2_traj_tons': lifetime_b6_co2_traj,
+        'b6_energy_pv_cost_m': b6_energy_pv_cost_m,
+        'b6_energy_undisc_cost_m': b6_energy_undisc_cost_m,
         # ── ACTIVE result (static or dynamic depending on sd_enable) ──
         'active_b6_mode': active_b6_mode,
         'active_b6_tons': active_b6_tons,
@@ -2263,11 +2354,34 @@ with st.sidebar:
         land_use = st.number_input("Land use (pass/ha)", value=5000.0, min_value=0.0, step=100.0, key="land_use")
         noise_reduction = st.number_input("Noise reduction (dB)", value=10.0, min_value=0.0, step=1.0, key="noise")
 
-        st.markdown("### ⚙️ Operational")
+        st.markdown("### ⚙️ Operational (B6)")
         energy_per_pax = st.number_input("Energy (kWh/pax-km)", value=0.15, min_value=0.0, step=0.01, format="%.3f", key="energy")
+        # R11: demand basis. pkm_direct keeps the legacy daily_pax_km·365 figure; daily/annual
+        # compute served PKM = min(demand,capacity) · avg_trip · availability.
+        b6_demand_basis = st.selectbox("B6 demand basis", ["pkm_direct", "daily", "annual"], index=0, key="b6_demand_basis",
+                                       help="pkm_direct: enter passenger-km directly. daily/annual: enter demand, "
+                                            "capacity and trip length; served demand is capped by capacity.")
         daily_pax_km = st.number_input("Daily pax-km (1000)", value=500.0, min_value=0.0, step=10.0, key="daily_pax")
+        b6_demand, b6_capacity, b6_avg_trip_km = 0.0, 0.0, 0.0
+        if b6_demand_basis != "pkm_direct":
+            b6_demand = st.number_input(f"Passenger demand ({b6_demand_basis})", value=0.0, min_value=0.0, step=1000.0, key="b6_demand")
+            b6_capacity = st.number_input(f"Max served capacity ({b6_demand_basis}, passengers)", value=0.0, min_value=0.0, step=1000.0, key="b6_capacity",
+                                          help="served = min(demand, capacity).")
+            b6_avg_trip_km = st.number_input("Average trip length (km)", value=0.0, min_value=0.0, step=1.0, key="b6_avg_trip")
         time_savings = st.number_input("Time savings (1000h)", value=2.5, min_value=0.0, step=0.1, key="time_sav")
         availability = st.slider("Availability (%)", 0, 100, 98, key="avail")
+        # R8-CI: grid carbon trajectory + explicit project renewable procurement.
+        b6_grid_change_pct = st.number_input("Annual grid CI change (%/yr)", value=0.0, step=0.5, format="%.2f", key="b6_grid_change",
+                                             help="CI_grid,t = CI₀·(1+g)^(t-1). 0 = constant grid factor.")
+        b6_project_renewable = st.checkbox("Project renewable procurement (CI_eff = (1−r)·CI_grid + r·CI_renew)", value=False, key="b6_project_renewable")
+        b6_renewable_share_proj, b6_renewable_change_pct, b6_ci_renewable = 0.0, 0.0, 0.0
+        if b6_project_renewable:
+            b6_renewable_share_proj = st.slider("Project renewable share r₀ (%)", 0, 100, 0, key="b6_renew_share")
+            b6_renewable_change_pct = st.number_input("Annual change in r (%/yr)", value=0.0, step=0.5, format="%.2f", key="b6_renew_change")
+            b6_ci_renewable = st.number_input("Renewable CI (kgCO₂/kWh)", value=0.0, min_value=0.0, step=0.01, format="%.3f", key="b6_ci_renew")
+        # R11: energy tariff + escalation → PV energy cost from kWh×tariff (0 = use legacy cost input).
+        b6_energy_tariff = st.number_input("Energy tariff ($/kWh, 0 = off)", value=0.0, min_value=0.0, step=0.01, format="%.3f", key="b6_tariff")
+        b6_energy_escalation_pct = st.number_input("Energy price escalation (%/yr)", value=0.0, step=0.5, format="%.2f", key="b6_escal")
 
         st.markdown("### 💰 Economic")
         construction_cost = st.number_input("Construction ($M)", value=2500.0, min_value=0.0, step=50.0, key="const_cost")
@@ -2416,6 +2530,11 @@ current_params = {
     'land_use': land_use, 'noise_reduction': noise_reduction,
     'energy_per_pax': energy_per_pax, 'daily_pax_km': daily_pax_km,
     'time_savings': time_savings, 'availability': availability,
+    'b6_demand_basis': b6_demand_basis, 'b6_demand': b6_demand, 'b6_capacity': b6_capacity,
+    'b6_avg_trip_km': b6_avg_trip_km, 'b6_grid_change_pct': b6_grid_change_pct,
+    'b6_project_renewable': b6_project_renewable, 'b6_renewable_share_proj': b6_renewable_share_proj,
+    'b6_renewable_change_pct': b6_renewable_change_pct, 'b6_ci_renewable': b6_ci_renewable,
+    'b6_energy_tariff': b6_energy_tariff, 'b6_energy_escalation_pct': b6_energy_escalation_pct,
     'construction_cost': construction_cost, 'maintenance_cost': maintenance_cost,
     'jobs_created': jobs_created, 'economic_multiplier': economic_multiplier,
     'discount_rate': discount_rate, 'annual_energy_cost': annual_energy_cost,
