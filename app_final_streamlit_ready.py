@@ -2010,8 +2010,13 @@ with st.sidebar:
     include_b2b5 = st.checkbox("B2–B5 Use Stage", value=False, key="include_b2b5")
     enable_b4 = st.checkbox("↳ B4 Replacement", value=False, key="enable_b4") if include_b2b5 else False
     include_c1c4 = st.checkbox("C1–C4 End-of-Life", value=False, key="include_c1c4")
-    show_legacy = st.checkbox("Legacy options", value=False, key="show_legacy",
-                              help="Legacy Module-D recycling scenario (used only when C1–C4 is off) + dashboard-only inputs (renewable).")
+    # Legacy generic recycling sliders + renewable dashboard-only are DEVELOPER-ONLY (R2/R7):
+    # never shown in publication mode. A1-A3 recycled content comes from the material factor
+    # mix; Module D comes from C1-C4 EOL flows only.
+    show_legacy = (not publication_mode) and st.checkbox(
+        "Legacy options (developer)", value=False, key="show_legacy",
+        help="Legacy generic Module-D recycling scenario + renewable dashboard-only input. "
+             "Hidden in publication mode by design.")
 
     MATERIALS_UI = ['concrete', 'steel', 'aluminum', 'wood', 'frp', 'glass']
 
@@ -2272,12 +2277,22 @@ with TABS['results']:
             <div class="metric-delta">Jobs: {results['total_jobs']:,.0f}</div>
         </div>""", unsafe_allow_html=True)
     with m5:
-        st.markdown(f"""
-        <div class="metric-card">
-            <div class="metric-value">{params['renewable_share']}%</div>
-            <div class="metric-label">Renewable (dashboard-only)</div>
-            <div class="metric-delta">Grid carbon: {results['effective_carbon_intensity']:.3f} kg/kWh</div>
-        </div>""", unsafe_allow_html=True)
+        if publication_mode:
+            # R7: renewable is a dashboard-only input → hidden in publication mode.
+            # Show the publication-grade net result (Module D reported separately).
+            st.markdown(f"""
+            <div class="metric-card">
+                <div class="metric-value">{results['net_with_module_d_tons']:,.0f}</div>
+                <div class="metric-label">Net A1-C4 incl. Module D (tons)</div>
+                <div class="metric-delta">Module D credit {results['module_d_tons']:,.0f}t reported separately</div>
+            </div>""", unsafe_allow_html=True)
+        else:
+            st.markdown(f"""
+            <div class="metric-card">
+                <div class="metric-value">{params['renewable_share']}%</div>
+                <div class="metric-label">Renewable (dashboard-only)</div>
+                <div class="metric-delta">Grid carbon: {results['effective_carbon_intensity']:.3f} kg/kWh</div>
+            </div>""", unsafe_allow_html=True)
 
     if results.get('sd_enabled'):
         st.info(
