@@ -78,6 +78,32 @@ r2 = rfa(p2)
 check("R6 undocumented secondary EF leaves A1-A3 unchanged",
       abs(r2['total_embodied_co2'] - r0['total_embodied_co2']) < 1e-6)
 
+# ── Sprint 3 / R8+R16: A4 transport simple vs advanced + registry ──
+a4fn = ns["calculate_a4_transport_co2"]
+reg = ns["TRANSPORT_FACTOR_REGISTRY"]
+check("R16 transport registry carries unit/source/scope/status",
+      all({'ef_kgco2e_per_tkm', 'unit', 'source', 'energy_scope', 'status'} <= set(reg[m]) for m in reg))
+check("R8 truck EF not silently changed (still 0.10 default)", reg['truck']['ef_kgco2e_per_tkm'] == 0.10)
+# simple: 1000 t over 100 km by truck = 1000 * 100 * 0.10 / 1000 = 10 t
+simple = a4fn({'x': 1000_000.0}, 100.0, 'truck')
+check("R8 simple A4 = mass·dist·EF", abs(simple - 10.0) < 1e-9)
+# advanced single leg identical inputs → identical result
+adv = a4fn(None, 0.0, 'truck', advanced_legs=[{'material': 'x', 'mass_kg': 1000_000.0, 'distance_km': 100.0, 'mode': 'truck'}])
+check("R8 advanced single-leg == simple", abs(adv - simple) < 1e-9)
+# advanced sum over legs: two legs add
+adv2 = a4fn(None, 0.0, 'truck', advanced_legs=[
+    {'material': 'a', 'mass_kg': 1000_000.0, 'distance_km': 100.0, 'mode': 'truck'},
+    {'material': 'b', 'mass_kg': 500_000.0, 'distance_km': 200.0, 'mode': 'rail'}])
+check("R16 advanced = ΣΣ legs", abs(adv2 - (10.0 + (500.0 * 200.0 * 0.03 / 1000.0))) < 1e-9)
+# per-leg EF override beats registry
+adv_ef = a4fn(None, 0.0, 'truck', advanced_legs=[{'material': 'a', 'mass_kg': 1000_000.0, 'distance_km': 100.0, 'mode': 'truck', 'ef': 0.062}])
+check("R8 documented per-leg EF override applied", abs(adv_ef - (1000.0 * 100.0 * 0.062 / 1000.0)) < 1e-9)
+# end-to-end: advanced mode routes through run_full_assessment
+pa = dict(base); pa['a4_mode'] = 'advanced'
+pa['a4_advanced_legs'] = [{'material': 'steel', 'mass_kg': 1000_000.0, 'distance_km': 100.0, 'mode': 'truck'}]
+ra = rfa(pa)
+check("R8 advanced A4 flows into LCA result", abs(ra['lca_results']['a4_transport_co2_tons'] - 10.0) < 1e-9)
+
 # ── R1/R20: per-material A1-A3 metadata present in the audit table ──
 audit_cols = set(ns["MATERIAL_FACTOR_AUDIT"].columns)
 check("R1 audit has dqi/source/declared_unit/boundary/status",

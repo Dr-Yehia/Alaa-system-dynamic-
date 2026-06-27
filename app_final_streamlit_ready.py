@@ -226,7 +226,38 @@ UNCERTAINTY_FACTORS = {
     "grid_carbon_factor": {"cv": 0.12, "source": "Scenario assumption; replace with grid-factor uncertainty before final statistical claims"}
 }
 
-TRANSPORT_EMISSION_FACTORS = {"truck":0.10,"rail":0.03,"ship":0.015}
+# ═══════════════════════════════════════════════════════════════
+# A4 TRANSPORT FACTOR REGISTRY — every mode carries unit / boundary /
+# vehicle / energy scope / source / status (like MATERIAL_FACTORS).
+# Values are scenario/defaults. Do NOT silently change the truck EF (e.g. to
+# 0.062) without a documented source, unit, boundary, vehicle class and a
+# stated WTW/TTW scope — otherwise the result is not publication-grade.
+# ═══════════════════════════════════════════════════════════════
+TRANSPORT_FACTOR_REGISTRY = {
+    "truck": {
+        "ef_kgco2e_per_tkm": 0.10, "unit": "kgCO2e/tonne-km",
+        "vehicle": "generic road HGV (payload unspecified)", "energy_scope": "TTW (tank-to-wheel)",
+        "boundary": "A4 transport (gate-to-site)",
+        "source": "scenario/default — replace with documented local factor (source, vehicle, payload, WTW/TTW) before publication",
+        "status": "scenario/default",
+    },
+    "rail": {
+        "ef_kgco2e_per_tkm": 0.03, "unit": "kgCO2e/tonne-km",
+        "vehicle": "generic freight rail", "energy_scope": "TTW (tank-to-wheel)",
+        "boundary": "A4 transport (gate-to-site)",
+        "source": "scenario/default — replace with documented local factor before publication",
+        "status": "scenario/default",
+    },
+    "ship": {
+        "ef_kgco2e_per_tkm": 0.015, "unit": "kgCO2e/tonne-km",
+        "vehicle": "generic bulk/cargo vessel", "energy_scope": "TTW (tank-to-wheel)",
+        "boundary": "A4 transport (gate-to-site)",
+        "source": "scenario/default — replace with documented local factor before publication",
+        "status": "scenario/default",
+    },
+}
+# Backward-compatible flat view (EF only) used by the simple A4 path.
+TRANSPORT_EMISSION_FACTORS = {k: v["ef_kgco2e_per_tkm"] for k, v in TRANSPORT_FACTOR_REGISTRY.items()}
 
 # ═══════════════════════════════════════════════════════════════
 # FUEL FACTORS REGISTRY (combustion EFs) — scenario/default values
@@ -449,8 +480,30 @@ def calculate_cross_category_interactions(mat_score, env_score, op_score, econ_s
 ASSESSMENT_LIFETIME_YEARS = 50
 
 
-def calculate_a4_transport_co2(material_masses_kg, distance_km, mode):
-    ef = TRANSPORT_EMISSION_FACTORS.get(mode, TRANSPORT_EMISSION_FACTORS["truck"])
+def calculate_a4_transport_co2(material_masses_kg, distance_km, mode, advanced_legs=None):
+    """A4 transport emissions (tonnes CO2e), reported separately from A1-A3.
+
+    Simple mode:   I_A4 = (Σ M_j / 1000) · D · EF_mode / 1000
+    Advanced mode: I_A4 = ΣΣ_legs (M_j / 1000) · D_jm · EF_m / 1000
+
+    `advanced_legs` (when given) is a list of dicts with keys
+    {material, mass_kg, distance_km, mode, ef}. A per-leg `ef` (kgCO2e/tonne-km)
+    overrides the registry; if None/blank/non-finite the mode's registry EF is used.
+    Mass is converted kg→tonne, distance is tonne-km, EF is kgCO2e/tonne-km, and
+    the final /1000 converts kgCO2e→tonnes CO2e.
+    """
+    if advanced_legs:
+        total = 0.0
+        for leg in advanced_legs:
+            m_kg = float(leg.get('mass_kg', 0.0) or 0.0)
+            d = float(leg.get('distance_km', 0.0) or 0.0)
+            lm = leg.get('mode', 'truck')
+            ef = leg.get('ef', None)
+            if ef is None or not np.isfinite(float(ef)) or float(ef) <= 0.0:
+                ef = TRANSPORT_FACTOR_REGISTRY.get(lm, TRANSPORT_FACTOR_REGISTRY["truck"])["ef_kgco2e_per_tkm"]
+            total += (m_kg / 1000.0) * d * float(ef) / 1000.0
+        return total
+    ef = TRANSPORT_FACTOR_REGISTRY.get(mode, TRANSPORT_FACTOR_REGISTRY["truck"])["ef_kgco2e_per_tkm"]
     total_mass_tons = sum(material_masses_kg.values()) / 1000.0
     return total_mass_tons * distance_km * ef / 1000.0
 
@@ -971,7 +1024,11 @@ def calculate_core_lca_lcc(params):
     glass_kg = glass_m2 * glass_thickness_mm * 2.5
 
     material_masses_kg = {"concrete": concrete_kg, "steel": steel_kg, "aluminum": aluminum_kg, "wood": wood_kg, "frp": frp_kg, "glass": glass_kg}
-    a4_transport_co2_tons = calculate_a4_transport_co2(material_masses_kg, params.get("transport_distance_km", 0.0), params.get("transport_mode", "truck"))
+    a4_mode = params.get("a4_mode", "simple")
+    a4_legs = params.get("a4_advanced_legs") if a4_mode == "advanced" else None
+    a4_transport_co2_tons = calculate_a4_transport_co2(
+        material_masses_kg, params.get("transport_distance_km", 0.0),
+        params.get("transport_mode", "truck"), advanced_legs=a4_legs)
 
     # Operational Energy & Carbon (B6)
     energy_per_pax_km = params['energy_per_pax']
@@ -2088,8 +2145,36 @@ with st.sidebar:
                 ef_secondary_inputs[_m] = sec_ef if sec_ef > 0.0 else None
 
         st.markdown("### 🚚 Transport (A4)")
+        a4_mode = st.selectbox("A4 method", ["simple", "advanced"], index=0, key="a4_mode",
+                               help="simple: total mass × distance × mode EF. "
+                                    "advanced: per-material legs (mass, distance, mode, optional documented EF).")
         transport_distance_km = st.number_input("Transport distance (km)", value=50.0, min_value=0.0, step=10.0, key="transport_distance")
         transport_mode = st.selectbox("Transport mode", ["truck", "rail", "ship"], index=0, key="transport_mode")
+        a4_advanced_legs = None
+        if a4_mode == "advanced":
+            _pref_t = {
+                'concrete': concrete * DENSITIES['concrete'], 'steel': steel * 1000.0,
+                'aluminum': aluminum * 1000.0, 'wood': wood * DENSITIES['wood'],
+                'frp': frp * 1000.0, 'glass': glass * glass_thickness_mm * 2.5,
+            }
+            a4_df0 = pd.DataFrame({
+                'material': MATERIALS_UI,
+                'mass_tonnes': [round(_pref_t[m], 3) for m in MATERIALS_UI],
+                'distance_km': [transport_distance_km] * len(MATERIALS_UI),
+                'mode': [transport_mode] * len(MATERIALS_UI),
+                'ef_override': [0.0] * len(MATERIALS_UI),
+            })
+            a4_edit = st.data_editor(a4_df0, hide_index=True, use_container_width=True, key="a4_editor",
+                                     disabled=['material'])
+            a4_advanced_legs = []
+            for _, _r in pd.DataFrame(a4_edit).iterrows():
+                _ef = float(_r['ef_override'])
+                a4_advanced_legs.append({
+                    'material': _r['material'], 'mass_kg': float(_r['mass_tonnes']) * 1000.0,
+                    'distance_km': float(_r['distance_km']), 'mode': _r['mode'],
+                    'ef': (_ef if _ef > 0.0 else None)})
+            st.caption("Advanced A4: per-material legs. EF override 0 → registry mode factor. "
+                       "I_A4 = ΣΣ (M/1000)·D·EF / 1000 [t CO₂e].")
 
         st.markdown("### 🌍 Environmental")
         carbon_intensity_input = st.number_input("Grid carbon (kgCO₂/kWh)", value=0.5, min_value=0.0, step=0.05, key="carbon_int")
@@ -2212,6 +2297,7 @@ current_params = {
     **{f'ef_secondary_{_m}': ef_secondary_inputs[_m] for _m in MATERIALS_UI},
     'steel_recycle': steel_recycle, 'aluminum_recycle': aluminum_recycle, 'recycling_scenario': recycling_scenario,
     'transport_distance_km': transport_distance_km, 'transport_mode': transport_mode,
+    'a4_mode': a4_mode, 'a4_advanced_legs': a4_advanced_legs,
     'carbon_intensity': carbon_intensity_input, 'renewable_share': renewable_share,
     'land_use': land_use, 'noise_reduction': noise_reduction,
     'energy_per_pax': energy_per_pax, 'daily_pax_km': daily_pax_km,
