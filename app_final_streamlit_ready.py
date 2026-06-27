@@ -2390,10 +2390,10 @@ with st.sidebar:
                                         "Turn off (Developer mode) to also see illustrative/legacy visualizations.")
 
     # ── Reactive module toggles (OUTSIDE the form → conditional visibility) ──
-    st.markdown("#### 🧩 Modules")
-    sd_enable = st.checkbox("Dynamic B6 (System Dynamics)", value=False, key="sd_enable")
+    st.markdown("#### 🧩 Optional lifecycle modules")
     include_a5 = st.checkbox("A5 Construction", value=False, key="include_a5")
-    include_b2b5 = st.checkbox("B2–B5 Use Stage", value=False, key="include_b2b5")
+    sd_enable = st.checkbox("Dynamic B6 (System Dynamics)", value=False, key="sd_enable")
+    include_b2b5 = st.checkbox("B2–B5 Maintenance & Replacement", value=False, key="include_b2b5")
     enable_b4 = st.checkbox("↳ B4 Replacement", value=False, key="enable_b4") if include_b2b5 else False
     include_c1c4 = st.checkbox("C1–C4 End-of-Life", value=False, key="include_c1c4")
     # Legacy generic recycling sliders + renewable dashboard-only are DEVELOPER-ONLY (R2/R7):
@@ -2411,6 +2411,7 @@ with st.sidebar:
 
         # ── R21: Project Definition (scope/metadata for the assessment & report) ──
         st.markdown("### 🧾 Project Definition")
+        st.info("Sidebar follows EN 15804 lifecycle order: A1-A3 → A4 → A5 → B6 → B2-B5 → C1-C4 → Module D.")
         project_name = st.text_input("Project name", value="Cairo Monorail", key="project_name")
         route_length_km = st.number_input("Route length (km)", value=96.0, min_value=0.0, step=1.0, key="route_length")
         # P3: lifetime is shown as a fixed value (not an editable operational input) to avoid the
@@ -2467,6 +2468,12 @@ with st.sidebar:
                 st.warning("A secondary EF was entered without a source → it is NOT applied and the A1-A3 "
                            "recycled-content result is not publication-grade until a source is provided.")
 
+        with st.expander("🔍 A1-A3 factor audit (ICE V4.1 traceability)", expanded=False):
+            st.dataframe(MATERIAL_FACTOR_AUDIT[['material', 'gwp_kgco2e_per_kg',
+                         'ee_mj_per_kg (legacy)', 'carbon_source', 'status']], use_container_width=True)
+            st.caption("Each A1-A3 factor is traced to the ICE Database Educational V4.1 (Oct 2025). "
+                       "FRP has NO verified ICE V4.1 value — keep qty = 0 or supply a product EPD.")
+
         st.markdown("### 🚚 Transport (A4)")
         a4_mode = st.selectbox("A4 method", ["simple", "advanced"], index=0, key="a4_mode",
                                help="simple: total mass × distance × mode EF. "
@@ -2475,6 +2482,8 @@ with st.sidebar:
         transport_mode = st.selectbox("Transport mode", ["truck", "rail", "ship"], index=0, key="transport_mode")
         a4_advanced_legs = None
         if a4_mode == "advanced":
+            st.caption("↑ Distance and mode above are **default values for table prefill only**; "
+                       "edit each row in the table below.")
             _pref_t = {
                 'concrete': concrete * DENSITIES['concrete'], 'steel': steel * 1000.0,
                 'aluminum': aluminum * 1000.0, 'wood': wood * DENSITIES['wood'],
@@ -2501,7 +2510,65 @@ with st.sidebar:
                        "ship + truck; split the mass across a material's legs). EF override 0 → registry mode "
                        "factor. I_A4 = ΣΣ (M/1000)·D·EF / 1000 [t CO₂e].")
 
-        st.markdown("### 🌍 Environmental")
+        # ── A5 Construction (lifecycle order: after A4, before B6) ──
+        a5_boq_mode, a5_diesel_l = 'installed', 0.0
+        a5_diesel_ef = FUEL_FACTORS['diesel']['ef_kgco2e_per_l']
+        a5_elec_kwh, a5_waste_rate, a5_waste_transport_km, a5_waste_treatment_ef = 0.0, 0.0, 0.0, 0.0
+        a5_diesel_mode, a5_equipment = 'simple', None
+        a5_waste_rates, a5_treatment_shares, a5_waste_routes = None, None, None
+        if include_a5:
+            st.markdown("### 🏗️ A5 Construction")
+            st.caption("Scenario / user inputs. A5 is reported separately from A4.")
+            a5_boq_mode = st.selectbox("BOQ basis", ["installed", "purchased"], index=0, key="a5_boq_mode",
+                                       help="installed: extra waste production added here. purchased: production already in A1-A3.")
+            a5_diesel_ef = st.number_input("Diesel EF (kgCO₂e/L)", value=FUEL_FACTORS['diesel']['ef_kgco2e_per_l'],
+                                           min_value=0.0, step=0.01, format="%.2f", key="a5_diesel_ef")
+            a5_diesel_mode = st.selectbox("Diesel method", ["simple", "equipment"], index=0, key="a5_diesel_mode",
+                                          help="simple: total litres. equipment: Σ N·FC·LF·CCF·H·D/(1−PL).")
+            if a5_diesel_mode == "equipment":
+                eq0 = pd.DataFrame({'equipment': ['excavator', 'crane'], 'N': [0.0, 0.0],
+                                    'FC_L_per_h': [0.0, 0.0], 'LF': [0.6, 0.5], 'CCF': [1.0, 1.0],
+                                    'H_per_day': [8.0, 8.0], 'days': [0.0, 0.0], 'PL': [0.0, 0.0]})
+                eq_edit = st.data_editor(eq0, hide_index=True, use_container_width=True, key="a5_equipment_editor",
+                                         num_rows="dynamic")
+                a5_equipment = [{'N': float(_r['N']), 'FC': float(_r['FC_L_per_h']), 'LF': float(_r['LF']),
+                                 'CCF': float(_r['CCF']), 'H': float(_r['H_per_day']), 'D': float(_r['days']),
+                                 'PL': float(_r['PL'])} for _, _r in pd.DataFrame(eq_edit).iterrows()]
+                st.caption("CCF (climate correction) and PL (heat-stress productivity loss) are WBGT "
+                           "scenario parameters — not validated unless calibrated.")
+            else:
+                a5_diesel_l = st.number_input("Construction diesel (L)", value=0.0, min_value=0.0, step=1000.0, key="a5_diesel_l")
+            a5_elec_kwh = st.number_input("Construction electricity (kWh)", value=0.0, min_value=0.0, step=1000.0, key="a5_elec_kwh")
+            a5_waste_rate = st.number_input("Global waste rate w (0–1, fallback)", value=0.0, min_value=0.0, max_value=0.95, step=0.01, format="%.2f", key="a5_waste_rate",
+                                            help="Used for any material without a per-material rate below.")
+            a5_waste_transport_km = st.number_input("Waste transport (km, fallback)", value=0.0, min_value=0.0, step=10.0, key="a5_waste_km")
+            a5_waste_treatment_ef = st.number_input("Waste treatment EF (kgCO₂e/kg, fallback landfill)", value=0.0, min_value=0.0, step=0.01, format="%.3f", key="a5_waste_ef")
+            a5_waste_routes = None
+            with st.expander("♻️ Per-material A5 waste (rates + shares + routes/factors)", expanded=False):
+                _n = len(MATERIALS_UI)
+                wdf0 = pd.DataFrame({'material': MATERIALS_UI, 'waste_rate': [a5_waste_rate] * _n,
+                                     'reuse': [0.0] * _n, 'recycle': [0.0] * _n, 'landfill': [1.0] * _n,
+                                     'transport_km': [a5_waste_transport_km] * _n,
+                                     'transport_ef': [TRANSPORT_EMISSION_FACTORS['truck']] * _n,
+                                     'ef_reuse': [0.0] * _n, 'ef_recycle': [0.0] * _n,
+                                     'ef_landfill': [a5_waste_treatment_ef] * _n, 'source': [''] * _n})
+                wedit = st.data_editor(wdf0, hide_index=True, use_container_width=True, key="a5_waste_editor",
+                                       disabled=['material'])
+                a5_waste_rates, a5_treatment_shares, a5_waste_routes = {}, {}, {}
+                for _, _r in pd.DataFrame(wedit).iterrows():
+                    _m = _r['material']
+                    a5_waste_rates[_m] = float(_r['waste_rate'])
+                    a5_treatment_shares[_m] = {'reuse': float(_r['reuse']), 'recycle': float(_r['recycle']),
+                                               'landfill': float(_r['landfill'])}
+                    a5_waste_routes[_m] = {
+                        'transport_km': float(_r['transport_km']), 'transport_ef': float(_r['transport_ef']),
+                        'ef_reuse': float(_r['ef_reuse']), 'ef_recycle': float(_r['ef_recycle']),
+                        'ef_landfill': float(_r['ef_landfill']), 'source': str(_r['source'])}
+                st.caption("W_j = M_j·w/(1−w) [installed] or M_j·w [purchased]. "
+                           "reuse + recycle + landfill must equal 1. Treatment EF = Σ share·EF_route; "
+                           "transport = (W/1000)·km·EF. Provide a source for each route before publication.")
+
+        st.markdown("### 🌍 B6 Operation — Energy, Grid Carbon, and Service Demand")
         carbon_intensity_input = st.number_input("Grid carbon (kgCO₂/kWh)", value=0.5, min_value=0.0, step=0.05, key="carbon_int")
         # R23/R14/R15: legacy manual land-use and noise figures are developer-only. The
         # publication-grade land-use and noise co-benefits are computed in the Benefit KPI module.
@@ -2512,7 +2579,6 @@ with st.sidebar:
             land_use = 0.0
             noise_reduction = 0.0
 
-        st.markdown("### ⚙️ Operational (B6)")
         energy_per_pax = st.number_input("Energy (kWh/pax-km)", value=0.15, min_value=0.0, step=0.01, format="%.3f", key="energy")
         # R11: demand basis. pkm_direct keeps the legacy daily_pax_km·365 figure; daily/annual
         # compute served PKM = min(demand,capacity) · avg_trip · availability.
@@ -2550,7 +2616,7 @@ with st.sidebar:
         sd_C0, sd_delta, sd_maint_interval = 1.0, 0.005, 5
         sd_rho, sd_tau, sd_alpha, sd_growth_pct = 0.05, 1, 0.10, 0.0
         if sd_enable:
-            st.markdown("### 🔧 System Dynamics (B6)")
+            st.markdown("### 🔧 Dynamic B6 — System Dynamics option")
             st.caption("Scenario — not validated unless calibrated.")
             sd_C0 = st.number_input("Initial condition C₀", value=1.0, min_value=0.0, max_value=1.0, step=0.05, key="sd_C0")
             sd_delta = st.number_input("Degradation δ (/yr)", value=0.005, min_value=0.0, step=0.005, format="%.3f", key="sd_delta")
@@ -2560,65 +2626,6 @@ with st.sidebar:
             sd_alpha = st.number_input("Energy penalty α", value=0.10, min_value=0.0, step=0.05, format="%.2f", key="sd_alpha")
             sd_growth_pct = st.number_input("Demand growth g (%)", value=0.0, min_value=0.0, step=0.5, key="sd_growth")
 
-        a5_boq_mode, a5_diesel_l = 'installed', 0.0
-        a5_diesel_ef = FUEL_FACTORS['diesel']['ef_kgco2e_per_l']
-        a5_elec_kwh, a5_waste_rate, a5_waste_transport_km, a5_waste_treatment_ef = 0.0, 0.0, 0.0, 0.0
-        a5_diesel_mode, a5_equipment = 'simple', None
-        a5_waste_rates, a5_treatment_shares, a5_waste_routes = None, None, None
-        if include_a5:
-            st.markdown("### 🏗️ A5 Construction")
-            st.caption("Scenario / user inputs. A5 is reported separately from A4.")
-            a5_boq_mode = st.selectbox("BOQ basis", ["installed", "purchased"], index=0, key="a5_boq_mode",
-                                       help="installed: extra waste production added here. purchased: production already in A1-A3.")
-            a5_diesel_ef = st.number_input("Diesel EF (kgCO₂e/L)", value=FUEL_FACTORS['diesel']['ef_kgco2e_per_l'],
-                                           min_value=0.0, step=0.01, format="%.2f", key="a5_diesel_ef")
-            # R9: simple total-litres OR equipment-fleet diesel (mutually exclusive)
-            a5_diesel_mode = st.selectbox("Diesel method", ["simple", "equipment"], index=0, key="a5_diesel_mode",
-                                          help="simple: total litres. equipment: Σ N·FC·LF·CCF·H·D/(1−PL).")
-            if a5_diesel_mode == "equipment":
-                eq0 = pd.DataFrame({'equipment': ['excavator', 'crane'], 'N': [0.0, 0.0],
-                                    'FC_L_per_h': [0.0, 0.0], 'LF': [0.6, 0.5], 'CCF': [1.0, 1.0],
-                                    'H_per_day': [8.0, 8.0], 'days': [0.0, 0.0], 'PL': [0.0, 0.0]})
-                eq_edit = st.data_editor(eq0, hide_index=True, use_container_width=True, key="a5_equipment_editor",
-                                         num_rows="dynamic")
-                a5_equipment = [{'N': float(_r['N']), 'FC': float(_r['FC_L_per_h']), 'LF': float(_r['LF']),
-                                 'CCF': float(_r['CCF']), 'H': float(_r['H_per_day']), 'D': float(_r['days']),
-                                 'PL': float(_r['PL'])} for _, _r in pd.DataFrame(eq_edit).iterrows()]
-                st.caption("CCF (climate correction) and PL (heat-stress productivity loss) are WBGT "
-                           "scenario parameters — not validated unless calibrated.")
-            else:
-                a5_diesel_l = st.number_input("Construction diesel (L)", value=0.0, min_value=0.0, step=1000.0, key="a5_diesel_l")
-            a5_elec_kwh = st.number_input("Construction electricity (kWh)", value=0.0, min_value=0.0, step=1000.0, key="a5_elec_kwh")
-            a5_waste_rate = st.number_input("Global waste rate w (0–1, fallback)", value=0.0, min_value=0.0, max_value=0.95, step=0.01, format="%.2f", key="a5_waste_rate",
-                                            help="Used for any material without a per-material rate below.")
-            a5_waste_transport_km = st.number_input("Waste transport (km, fallback)", value=0.0, min_value=0.0, step=10.0, key="a5_waste_km")
-            a5_waste_treatment_ef = st.number_input("Waste treatment EF (kgCO₂e/kg, fallback landfill)", value=0.0, min_value=0.0, step=0.01, format="%.3f", key="a5_waste_ef")
-            # R10/R26: per-material waste rates + treatment shares + transport/treatment routes
-            a5_waste_routes = None
-            with st.expander("♻️ Per-material A5 waste (rates + shares + routes/factors)", expanded=False):
-                _n = len(MATERIALS_UI)
-                wdf0 = pd.DataFrame({'material': MATERIALS_UI, 'waste_rate': [a5_waste_rate] * _n,
-                                     'reuse': [0.0] * _n, 'recycle': [0.0] * _n, 'landfill': [1.0] * _n,
-                                     'transport_km': [a5_waste_transport_km] * _n,
-                                     'transport_ef': [TRANSPORT_EMISSION_FACTORS['truck']] * _n,
-                                     'ef_reuse': [0.0] * _n, 'ef_recycle': [0.0] * _n,
-                                     'ef_landfill': [a5_waste_treatment_ef] * _n, 'source': [''] * _n})
-                wedit = st.data_editor(wdf0, hide_index=True, use_container_width=True, key="a5_waste_editor",
-                                       disabled=['material'])
-                a5_waste_rates, a5_treatment_shares, a5_waste_routes = {}, {}, {}
-                for _, _r in pd.DataFrame(wedit).iterrows():
-                    _m = _r['material']
-                    a5_waste_rates[_m] = float(_r['waste_rate'])
-                    a5_treatment_shares[_m] = {'reuse': float(_r['reuse']), 'recycle': float(_r['recycle']),
-                                               'landfill': float(_r['landfill'])}
-                    a5_waste_routes[_m] = {
-                        'transport_km': float(_r['transport_km']), 'transport_ef': float(_r['transport_ef']),
-                        'ef_reuse': float(_r['ef_reuse']), 'ef_recycle': float(_r['ef_recycle']),
-                        'ef_landfill': float(_r['ef_landfill']), 'source': str(_r['source'])}
-                st.caption("W_j = M_j·w/(1−w) [installed] or M_j·w [purchased]. "
-                           "reuse + recycle + landfill must equal 1. Treatment EF = Σ share·EF_route; "
-                           "transport = (W/1000)·km·EF. Provide a source for each route before publication.")
-
         b2_use_sd_schedule, b2_interval, b2_material_pct = True, 5, 0.05
         b2_diesel_l, b2_elec_kwh, b2_transport_km, b2_cost_per_event_m = 0.0, 0.0, 0.0, 0.0
         b4_years, b4_frac_steel, b4_frac_concrete = "", 0.0, 0.0
@@ -2626,7 +2633,7 @@ with st.sidebar:
         b4_table = None
         lcca_maint_mode = 'simple_annual'
         if include_b2b5:
-            st.markdown("### 🔁 B2–B5 Use Stage")
+            st.markdown("### 🔁 B2–B5 Maintenance & Replacement")
             st.caption("Activity-based scenario unless project records are supplied.")
             b2_use_sd_schedule = st.checkbox("Link B2 to SD schedule", value=True, key="b2_use_sd")
             b2_interval = st.number_input("B2 interval (yr)", value=5, min_value=0, step=1, key="b2_interval")
