@@ -701,47 +701,129 @@ def compute_effective_ef(virgin_ef, recycled_content, secondary_ef):
     return float((1.0 - rc) * float(virgin_ef) + rc * float(secondary_ef)), True
 
 
+def calculate_a5_diesel_equipment(equipment_list, diesel_ef):
+    """R9 equipment-based A5 diesel (mutually exclusive with the simple total-litres mode):
+
+        L = Σ_i  N_i · FC_i · LF_i · CCF_i · H_i · D_i / (1 - PL_i)
+        CO2 = L · EF_diesel               [kgCO2e → tonnes]
+
+    N number of units, FC rated fuel consumption (L/h), LF load factor, CCF climate
+    correction factor (WBGT-driven — scenario unless calibrated), H hours/day, D days,
+    PL productivity-loss fraction (heat-stress downtime). Returns (tonnes CO2e, litres).
+    """
+    total_l = 0.0
+    for e in (equipment_list or []):
+        N = float(e.get('N', 0.0) or 0.0); FC = float(e.get('FC', 0.0) or 0.0)
+        LF = float(e.get('LF', 1.0) or 0.0); CCF = float(e.get('CCF', 1.0) or 0.0)
+        H = float(e.get('H', 0.0) or 0.0); D = float(e.get('D', 0.0) or 0.0)
+        PL = float(e.get('PL', 0.0) or 0.0)
+        denom = (1.0 - PL) if PL < 1.0 else 1.0
+        total_l += N * FC * LF * CCF * H * D / denom
+    return total_l * float(diesel_ef) / 1000.0, total_l
+
+
+def validate_a5_treatment_shares(shares):
+    """R10: per-material A5 waste treatment shares reuse + recycle + landfill = 1.
+    `shares` is a dict material -> {reuse, recycle, landfill}. Returns valid flag,
+    errors and a normalised view (landfill defaults to 1 - reuse - recycle)."""
+    errors, table, valid = [], [], True
+    for mat, s in (shares or {}).items():
+        reuse = float(s.get('reuse', 0.0)); recycle = float(s.get('recycle', 0.0))
+        landfill = float(s.get('landfill', 1.0 - reuse - recycle))
+        total = reuse + recycle + landfill
+        ok = (reuse >= 0 and recycle >= 0 and landfill >= -1e-9 and abs(total - 1.0) <= 1e-6)
+        if not ok:
+            valid = False
+            errors.append(f"{mat}: reuse+recycle+landfill = {total:.3f} ≠ 1")
+        table.append({'material': mat, 'reuse': reuse, 'recycle': recycle,
+                      'landfill': max(landfill, 0.0), 'sum': total})
+    return {'valid': valid, 'errors': errors, 'share_table': table}
+
+
 def calculate_a5_construction(masses_kg, params, CI0):
     """A5 construction/installation emissions (tCO2e), reported SEPARATELY from A4.
+
+    Diesel (R9): mutually-exclusive simple (total litres) OR equipment-based fleet.
+    Waste (R10): per-material waste rates w_j, per-material treatment shares
+    (reuse+recycle+landfill=1) and per-material transport/treatment routes.
     BOQ mode prevents double counting of material-production waste:
-      - 'installed'  : core masses are installed quantities; extra purchased waste
-                       (mass*w/(1-w)) is produced and its A1-A3 production IS added here.
-      - 'purchased'  : core masses are purchased quantities; production already in A1-A3,
-                       so NO production term is added (only transport + treatment of waste)."""
+      - 'installed' : core masses are installed quantities; extra purchased waste
+                      W_j = M_j·w_j/(1-w_j) is produced and its A1-A3 production IS added here.
+      - 'purchased' : core masses are purchased quantities; production already in A1-A3,
+                      so NO production term is added (W_j = M_j·w_j; only transport + treatment).
+    """
     if not params.get('include_a5', False):
         return {'included': False, 'a5_total_tons': 0.0, 'a5_fuel_tons': 0.0,
                 'a5_electricity_tons': 0.0, 'a5_material_waste_tons': 0.0,
                 'a5_waste_transport_tons': 0.0, 'a5_waste_treatment_tons': 0.0,
-                'waste_mass_total_kg': 0.0}
+                'waste_mass_total_kg': 0.0, 'a5_diesel_mode': 'simple', 'a5_diesel_litres': 0.0,
+                'a5_waste_by_material': [], 'a5_treatment_shares_valid': True}
 
     mode = params.get('a5_boq_mode', 'installed')
-    w = float(params.get('a5_waste_rate', 0.0))
+    w_global = float(params.get('a5_waste_rate', 0.0))
+    waste_rates = params.get('a5_waste_rates') or {}
+    treat_shares = params.get('a5_treatment_shares') or {}
+    routes = params.get('a5_waste_routes') or {}
     truck_ef = TRANSPORT_EMISSION_FACTORS['truck']
 
     diesel_ef = params.get('a5_diesel_ef', FUEL_FACTORS['diesel']['ef_kgco2e_per_l'])
-    diesel_t = params.get('a5_diesel_l', 0.0) * diesel_ef / 1000.0
+    # R9: simple total-litres mode vs equipment-fleet mode (mutually exclusive).
+    diesel_mode = params.get('a5_diesel_mode', 'simple')
+    if diesel_mode == 'equipment':
+        diesel_t, diesel_l = calculate_a5_diesel_equipment(params.get('a5_equipment', []), diesel_ef)
+    else:
+        diesel_l = float(params.get('a5_diesel_l', 0.0))
+        diesel_t = diesel_l * diesel_ef / 1000.0
     elec_t = params.get('a5_elec_kwh', 0.0) * CI0 / 1000.0
 
+    shares_valid = validate_a5_treatment_shares(treat_shares)['valid'] if treat_shares else True
+
     waste_prod_kg = 0.0
+    waste_transport_kgco2 = 0.0
+    waste_treatment_kgco2 = 0.0
     waste_mass_total_kg = 0.0
+    by_material = []
     for mat, M in masses_kg.items():
+        w_j = float(waste_rates.get(mat, w_global))
         if mode == 'installed':
-            waste_mass = M * (w / (1.0 - w)) if 0.0 <= w < 1.0 else 0.0
+            Wj = M * (w_j / (1.0 - w_j)) if 0.0 <= w_j < 1.0 else 0.0
             # Production of the EXTRA waste is NOT yet in A1-A3 (which used installed mass)
-            waste_prod_kg += waste_mass * MATERIAL_FACTORS[MATERIAL_KEY_MAP[mat]]['gwp_kgco2e_per_kg'] * params.get(f'unc_ef_mult_{mat}', 1.0)
+            prod = Wj * MATERIAL_FACTORS[MATERIAL_KEY_MAP[mat]]['gwp_kgco2e_per_kg'] * params.get(f'unc_ef_mult_{mat}', 1.0)
+            waste_prod_kg += prod
         else:  # purchased: production already counted in A1-A3 -> no production term
-            waste_mass = M * w
-        waste_mass_total_kg += waste_mass
+            Wj = M * w_j
+        route = routes.get(mat, {})
+        t_km = float(route.get('transport_km', params.get('a5_waste_transport_km', 0.0)))
+        t_ef = float(route.get('transport_ef', truck_ef))
+        trans = (Wj / 1000.0) * t_km * t_ef  # kgCO2e
+        # Treatment: per-material shares × per-route EFs, else a single per-material/global EF.
+        s = treat_shares.get(mat)
+        if s:
+            reuse = float(s.get('reuse', 0.0)); recycle = float(s.get('recycle', 0.0))
+            landfill = float(s.get('landfill', 1.0 - reuse - recycle))
+            treat_ef = (reuse * float(route.get('ef_reuse', 0.0))
+                        + recycle * float(route.get('ef_recycle', 0.0))
+                        + landfill * float(route.get('ef_landfill', params.get('a5_waste_treatment_ef', 0.0))))
+        else:
+            treat_ef = float(route.get('treatment_ef', params.get('a5_waste_treatment_ef', 0.0)))
+        treat = Wj * treat_ef  # kgCO2e
+        waste_transport_kgco2 += trans
+        waste_treatment_kgco2 += treat
+        waste_mass_total_kg += Wj
+        by_material.append({'material': mat, 'waste_rate': w_j, 'waste_kg': Wj,
+                            'transport_tco2': trans / 1000.0, 'treatment_tco2': treat / 1000.0})
 
     waste_prod_t = waste_prod_kg / 1000.0
-    waste_transport_t = (waste_mass_total_kg / 1000.0) * params.get('a5_waste_transport_km', 0.0) * truck_ef / 1000.0
-    waste_treatment_t = waste_mass_total_kg * params.get('a5_waste_treatment_ef', 0.0) / 1000.0
+    waste_transport_t = waste_transport_kgco2 / 1000.0
+    waste_treatment_t = waste_treatment_kgco2 / 1000.0
 
     a5_total = diesel_t + elec_t + waste_prod_t + waste_transport_t + waste_treatment_t
     return {'included': True, 'a5_total_tons': a5_total, 'a5_fuel_tons': diesel_t,
             'a5_electricity_tons': elec_t, 'a5_material_waste_tons': waste_prod_t,
             'a5_waste_transport_tons': waste_transport_t, 'a5_waste_treatment_tons': waste_treatment_t,
-            'waste_mass_total_kg': waste_mass_total_kg}
+            'waste_mass_total_kg': waste_mass_total_kg, 'a5_diesel_mode': diesel_mode,
+            'a5_diesel_litres': diesel_l, 'a5_waste_by_material': by_material,
+            'a5_treatment_shares_valid': shares_valid}
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -2213,19 +2295,51 @@ with st.sidebar:
         a5_boq_mode, a5_diesel_l = 'installed', 0.0
         a5_diesel_ef = FUEL_FACTORS['diesel']['ef_kgco2e_per_l']
         a5_elec_kwh, a5_waste_rate, a5_waste_transport_km, a5_waste_treatment_ef = 0.0, 0.0, 0.0, 0.0
+        a5_diesel_mode, a5_equipment = 'simple', None
+        a5_waste_rates, a5_treatment_shares = None, None
         if include_a5:
             st.markdown("### 🏗️ A5 Construction")
             st.caption("Scenario / user inputs. A5 is reported separately from A4.")
             a5_boq_mode = st.selectbox("BOQ basis", ["installed", "purchased"], index=0, key="a5_boq_mode",
                                        help="installed: extra waste production added here. purchased: production already in A1-A3.")
-            a5_diesel_l = st.number_input("Construction diesel (L)", value=0.0, min_value=0.0, step=1000.0, key="a5_diesel_l")
             a5_diesel_ef = st.number_input("Diesel EF (kgCO₂e/L)", value=FUEL_FACTORS['diesel']['ef_kgco2e_per_l'],
                                            min_value=0.0, step=0.01, format="%.2f", key="a5_diesel_ef")
+            # R9: simple total-litres OR equipment-fleet diesel (mutually exclusive)
+            a5_diesel_mode = st.selectbox("Diesel method", ["simple", "equipment"], index=0, key="a5_diesel_mode",
+                                          help="simple: total litres. equipment: Σ N·FC·LF·CCF·H·D/(1−PL).")
+            if a5_diesel_mode == "equipment":
+                eq0 = pd.DataFrame({'equipment': ['excavator', 'crane'], 'N': [0.0, 0.0],
+                                    'FC_L_per_h': [0.0, 0.0], 'LF': [0.6, 0.5], 'CCF': [1.0, 1.0],
+                                    'H_per_day': [8.0, 8.0], 'days': [0.0, 0.0], 'PL': [0.0, 0.0]})
+                eq_edit = st.data_editor(eq0, hide_index=True, use_container_width=True, key="a5_equipment_editor",
+                                         num_rows="dynamic")
+                a5_equipment = [{'N': float(_r['N']), 'FC': float(_r['FC_L_per_h']), 'LF': float(_r['LF']),
+                                 'CCF': float(_r['CCF']), 'H': float(_r['H_per_day']), 'D': float(_r['days']),
+                                 'PL': float(_r['PL'])} for _, _r in pd.DataFrame(eq_edit).iterrows()]
+                st.caption("CCF (climate correction) and PL (heat-stress productivity loss) are WBGT "
+                           "scenario parameters — not validated unless calibrated.")
+            else:
+                a5_diesel_l = st.number_input("Construction diesel (L)", value=0.0, min_value=0.0, step=1000.0, key="a5_diesel_l")
             a5_elec_kwh = st.number_input("Construction electricity (kWh)", value=0.0, min_value=0.0, step=1000.0, key="a5_elec_kwh")
-            a5_waste_rate = st.number_input("Waste rate w (0–1)", value=0.0, min_value=0.0, max_value=0.95, step=0.01, format="%.2f", key="a5_waste_rate",
-                                            help="Global scenario waste rate (per-material recommended before publication).")
-            a5_waste_transport_km = st.number_input("Waste transport (km)", value=0.0, min_value=0.0, step=10.0, key="a5_waste_km")
-            a5_waste_treatment_ef = st.number_input("Waste treatment EF (kgCO₂e/kg)", value=0.0, min_value=0.0, step=0.01, format="%.3f", key="a5_waste_ef")
+            a5_waste_rate = st.number_input("Global waste rate w (0–1, fallback)", value=0.0, min_value=0.0, max_value=0.95, step=0.01, format="%.2f", key="a5_waste_rate",
+                                            help="Used for any material without a per-material rate below.")
+            a5_waste_transport_km = st.number_input("Waste transport (km, fallback)", value=0.0, min_value=0.0, step=10.0, key="a5_waste_km")
+            a5_waste_treatment_ef = st.number_input("Waste treatment EF (kgCO₂e/kg, fallback landfill)", value=0.0, min_value=0.0, step=0.01, format="%.3f", key="a5_waste_ef")
+            # R10: per-material waste rates + treatment shares (reuse+recycle+landfill=1)
+            with st.expander("♻️ Per-material A5 waste (rates + treatment shares)", expanded=False):
+                wdf0 = pd.DataFrame({'material': MATERIALS_UI, 'waste_rate': [a5_waste_rate] * len(MATERIALS_UI),
+                                     'reuse': [0.0] * len(MATERIALS_UI), 'recycle': [0.0] * len(MATERIALS_UI),
+                                     'landfill': [1.0] * len(MATERIALS_UI)})
+                wedit = st.data_editor(wdf0, hide_index=True, use_container_width=True, key="a5_waste_editor",
+                                       disabled=['material'])
+                a5_waste_rates, a5_treatment_shares = {}, {}
+                for _, _r in pd.DataFrame(wedit).iterrows():
+                    a5_waste_rates[_r['material']] = float(_r['waste_rate'])
+                    a5_treatment_shares[_r['material']] = {'reuse': float(_r['reuse']),
+                                                           'recycle': float(_r['recycle']),
+                                                           'landfill': float(_r['landfill'])}
+                st.caption("W_j = M_j·w/(1−w) [installed] or M_j·w [purchased]. "
+                           "reuse + recycle + landfill must equal 1 per material.")
 
         b2_use_sd_schedule, b2_interval, b2_material_pct = True, 5, 0.05
         b2_diesel_l, b2_elec_kwh, b2_transport_km, b2_cost_per_event_m = 0.0, 0.0, 0.0, 0.0
@@ -2312,6 +2426,8 @@ current_params = {
     'include_a5': include_a5, 'a5_boq_mode': a5_boq_mode, 'a5_diesel_l': a5_diesel_l,
     'a5_diesel_ef': a5_diesel_ef, 'a5_elec_kwh': a5_elec_kwh, 'a5_waste_rate': a5_waste_rate,
     'a5_waste_transport_km': a5_waste_transport_km, 'a5_waste_treatment_ef': a5_waste_treatment_ef,
+    'a5_diesel_mode': a5_diesel_mode, 'a5_equipment': a5_equipment,
+    'a5_waste_rates': a5_waste_rates, 'a5_treatment_shares': a5_treatment_shares,
     'include_b2b5': include_b2b5, 'b2_use_sd_schedule': b2_use_sd_schedule, 'b2_interval': b2_interval,
     'b2_material_pct': b2_material_pct, 'b2_diesel_l': b2_diesel_l, 'b2_elec_kwh': b2_elec_kwh,
     'b2_transport_km': b2_transport_km, 'b2_cost_per_event_m': b2_cost_per_event_m,

@@ -104,6 +104,37 @@ pa['a4_advanced_legs'] = [{'material': 'steel', 'mass_kg': 1000_000.0, 'distance
 ra = rfa(pa)
 check("R8 advanced A4 flows into LCA result", abs(ra['lca_results']['a4_transport_co2_tons'] - 10.0) < 1e-9)
 
+# ── Sprint 4 / R9: A5 diesel simple vs equipment (mutually exclusive) ──
+a5fn = ns["calculate_a5_construction"]
+eqfn = ns["calculate_a5_diesel_equipment"]
+diesel_ef = ns["FUEL_FACTORS"]["diesel"]["ef_kgco2e_per_l"]
+# equipment: 2 units, 10 L/h, LF 0.5, CCF 1, 8 h/day, 10 days, PL 0 → 2*10*0.5*1*8*10 = 800 L
+t_eq, l_eq = eqfn([{'N': 2, 'FC': 10, 'LF': 0.5, 'CCF': 1.0, 'H': 8, 'D': 10, 'PL': 0.0}], diesel_ef)
+check("R9 equipment litres = ΣN·FC·LF·CCF·H·D/(1-PL)", abs(l_eq - 800.0) < 1e-9)
+check("R9 equipment CO2 = litres·EF", abs(t_eq - 800.0 * diesel_ef / 1000.0) < 1e-9)
+# PL raises consumption: PL=0.2 → /0.8
+_, l_pl = eqfn([{'N': 1, 'FC': 10, 'LF': 1.0, 'CCF': 1.0, 'H': 1, 'D': 1, 'PL': 0.2}], diesel_ef)
+check("R9 productivity loss inflates fuel (1/(1-PL))", abs(l_pl - (10.0 / 0.8)) < 1e-9)
+masses = {m: 1000_000.0 for m in ['concrete', 'steel', 'aluminum', 'wood', 'frp', 'glass']}
+a5_simple = a5fn(masses, {'include_a5': True, 'a5_diesel_mode': 'simple', 'a5_diesel_l': 1000.0}, 0.5)
+a5_equip = a5fn(masses, {'include_a5': True, 'a5_diesel_mode': 'equipment',
+                         'a5_equipment': [{'N': 1, 'FC': 1000, 'LF': 1.0, 'CCF': 1.0, 'H': 1, 'D': 1, 'PL': 0.0}]}, 0.5)
+check("R9 simple uses litres only (equipment ignored)", abs(a5_simple['a5_fuel_tons'] - 1000.0 * diesel_ef / 1000.0) < 1e-9)
+check("R9 equipment mode flagged + fuel from fleet", a5_equip['a5_diesel_mode'] == 'equipment' and abs(a5_equip['a5_diesel_litres'] - 1000.0) < 1e-9)
+
+# ── Sprint 4 / R10: per-material waste shares sum to 1 + W_j formula ──
+valfn = ns["validate_a5_treatment_shares"]
+check("R10 valid shares (0.2+0.3+0.5=1)", valfn({'steel': {'reuse': 0.2, 'recycle': 0.3, 'landfill': 0.5}})['valid'])
+check("R10 invalid shares (sum≠1) rejected", not valfn({'steel': {'reuse': 0.5, 'recycle': 0.6, 'landfill': 0.0}})['valid'])
+# installed waste W = M·w/(1-w); purchased W = M·w
+inst = a5fn({'steel': 1000.0}, {'include_a5': True, 'a5_boq_mode': 'installed',
+            'a5_waste_rates': {'steel': 0.1}, 'a5_waste_treatment_ef': 0.0}, 0.5)
+check("R10 installed waste = M·w/(1-w)", abs(inst['waste_mass_total_kg'] - 1000.0 * (0.1 / 0.9)) < 1e-6)
+purch = a5fn({'steel': 1000.0}, {'include_a5': True, 'a5_boq_mode': 'purchased',
+             'a5_waste_rates': {'steel': 0.1}}, 0.5)
+check("R10 purchased waste = M·w", abs(purch['waste_mass_total_kg'] - 100.0) < 1e-6)
+check("R10 purchased adds no production term", abs(purch['a5_material_waste_tons']) < 1e-12)
+
 # ── R1/R20: per-material A1-A3 metadata present in the audit table ──
 audit_cols = set(ns["MATERIAL_FACTOR_AUDIT"].columns)
 check("R1 audit has dqi/source/declared_unit/boundary/status",
