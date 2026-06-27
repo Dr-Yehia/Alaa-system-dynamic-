@@ -239,10 +239,37 @@ check("R15 benefits do NOT change net LCA", abs(rb['net_with_module_d_tons'] - r
 check("R15 benefit KPIs exposed separately in results", 'benefit_kpis' in rb and rb['benefit_kpis']['annual_co2_avoided_tons'] > 0)
 check("R15 zero inputs → zero co-benefits", bkfn({}, 1e6, 50)['total_jobs'] == 0.0)
 
+# ── Sprint 8 / R17-energycost: tariff-based energy PV flows into LCCA NPV ──
+r_notariff = rfa(base)
+r_tariff = rfa({**base, 'b6_energy_tariff': 0.10})
+check("R17 energy tariff raises LCCA NPV", r_tariff['npv_lcc_m'] > r_notariff['npv_lcc_m'])
+check("R17 tariff energy PV exposed (kWh×tariff)", r_tariff['b6_energy_pv_cost_m'] > 0)
+# escalation increases it further
+r_escal = rfa({**base, 'b6_energy_tariff': 0.10, 'b6_energy_escalation_pct': 3.0})
+check("R17 energy escalation raises energy PV", r_escal['b6_energy_pv_cost_m'] > r_tariff['b6_energy_pv_cost_m'])
+
+# ── Sprint 8 / R18: final tab order ends Uncertainty→SI→Benchmark→Methodology ──
+sci = ns["_SCI_ORDER"]
+check("R18 tab order ends with uncertainty/si/benchmark/about",
+      sci[-4:] == ['uncertainty', 'si', 'benchmark', 'about'])
+
+# ── Sprint 8 / R14+R19: Module D always separate (never inside gross) ──
+rmod = rfa({**base, 'include_c1c4': True, 'eol_recycle_steel': 0.6, 'eol_secondary_ef_steel': 0.4})
+check("R19 Module D > 0 yet excluded from gross", rmod['module_d_tons'] > 0
+      and abs(rmod['gross_a1_c4_tons'] - (rmod['total_embodied_co2'] + rmod['lca_results']['a4_transport_co2_tons']
+              + rmod['a5']['a5_total_tons'] + rmod['i_b2b5_tons'] + rmod['active_b6_tons'] + rmod['i_c1c4_tons'])) < 1e-6)
+
 # ── R1/R20: per-material A1-A3 metadata present in the audit table ──
 audit_cols = set(ns["MATERIAL_FACTOR_AUDIT"].columns)
 check("R1 audit has dqi/source/declared_unit/boundary/status",
       {'dqi_score', 'carbon_source', 'declared_unit', 'boundary', 'status'} <= audit_cols)
+
+# ── R0/R2/R19: publication mode hides illustrative/legacy tabs ──
+ns_pub = build_ns(publication_mode=True)
+ns_dev = build_ns(publication_mode=False)
+legacy = set(ns_pub["_LEGACY_ORDER"])
+check("R0 publication mode excludes all legacy/illustrative tabs",
+      not (legacy & set(ns_pub["_order"])) and legacy <= set(ns_dev["_order"]))
 
 print("\nQ1 UPGRADE TESTS PASSED" if ok else "\nQ1 UPGRADE TESTS FAILED")
 sys.exit(0 if ok else 1)

@@ -552,7 +552,7 @@ def calculate_lca_summary(embodied_co2_tons, annual_operational_co2_tons, embodi
 
 def calculate_lcc_npv(construction_cost_m, annual_maintenance_m, annual_energy_cost_m=0.0,
                       replacement_costs=None, end_of_life_cost_m=0.0, residual_value_m=0.0,
-                      discount_rate_pct=5.0, lifetime_years=50):
+                      discount_rate_pct=5.0, lifetime_years=50, energy_pv_cost_override_m=None):
     r = discount_rate_pct / 100.0
     n = lifetime_years
     replacement_costs = replacement_costs or {}
@@ -563,7 +563,8 @@ def calculate_lcc_npv(construction_cost_m, annual_maintenance_m, annual_energy_c
     upv = (1 - (1 + r) ** (-n)) / r if r > 0 else n
 
     pv_maintenance = annual_maintenance_m * upv
-    pv_energy = annual_energy_cost_m * upv
+    # R17-energycost: prefer the tariff-based escalating energy PV when supplied.
+    pv_energy = energy_pv_cost_override_m if energy_pv_cost_override_m is not None else annual_energy_cost_m * upv
     pv_replacement = sum(pv_single(cost, year) for year, cost in replacement_costs.items())
     pv_end_of_life = pv_single(end_of_life_cost_m, n)
     pv_residual = pv_single(residual_value_m, n)
@@ -948,7 +949,8 @@ def update_material_mass_balance(initial_masses_kg, added_kg, removed_kg):
 def calculate_lcc_npv_activity_based(construction_cost_m, annual_energy_cost_m, maintenance_mode,
                                      annual_maintenance_m, b2b3b5_costs_by_year, replacement_costs_by_year,
                                      end_of_life_cost_m=0.0, residual_value_m=0.0,
-                                     discount_rate_pct=5.0, lifetime_years=ASSESSMENT_LIFETIME_YEARS):
+                                     discount_rate_pct=5.0, lifetime_years=ASSESSMENT_LIFETIME_YEARS,
+                                     energy_pv_cost_override_m=None):
     """LCCA with a maintenance mode that prevents double counting:
       simple_annual : routine cost = annual_maintenance (NO activity routine costs)
       activity_based: routine cost = Σ B2/B3/B5 activity costs (NO annual_maintenance)
@@ -961,7 +963,9 @@ def calculate_lcc_npv_activity_based(construction_cost_m, annual_energy_cost_m, 
         return cost / ((1 + r) ** year) if r > 0 else cost
 
     upv = (1 - (1 + r) ** (-n)) / r if r > 0 else n
-    pv_energy = annual_energy_cost_m * upv
+    # R17-energycost: when a tariff-based escalating energy PV is supplied (kWh×tariff),
+    # use it instead of the flat annual_energy_cost·UPV (mutually exclusive — no double count).
+    pv_energy = energy_pv_cost_override_m if energy_pv_cost_override_m is not None else annual_energy_cost_m * upv
     if maintenance_mode == 'activity_based':
         pv_routine = sum(pv(c, y) for y, c in (b2b3b5_costs_by_year or {}).items())
     else:
@@ -1446,10 +1450,15 @@ def calculate_core_lca_lcc(params):
                             for row in b2b5_schedule if row['B2_count'] and b2_cost_per_event}
     # EOL cost enters the LCCA exactly once (only when C1-C4 is included).
     eol_cost_m = params.get('eol_cost_m', 0.0) if include_c1c4 else 0.0
+    # R17-energycost: a B6 energy tariff (>0) replaces the flat annual energy cost with the
+    # escalating, discounted PV from kWh×tariff (the two are mutually exclusive).
+    use_energy_tariff = float(params.get('b6_energy_tariff', 0.0)) > 0.0
+    energy_pv_override = (b6_energy_pv_cost_m / 1e6) if use_energy_tariff else None  # $ → $M
+    annual_energy_cost_m = 0.0 if use_energy_tariff else params.get("annual_energy_cost", 0.0)
     if b2b5['included']:
         lcc_results = calculate_lcc_npv_activity_based(
             construction_cost_m=construction_cost,
-            annual_energy_cost_m=params.get("annual_energy_cost", 0.0),
+            annual_energy_cost_m=annual_energy_cost_m,
             maintenance_mode=lcca_maint_mode,
             annual_maintenance_m=annual_maintenance,
             b2b3b5_costs_by_year=b2b3b5_costs_by_year,
@@ -1457,16 +1466,18 @@ def calculate_core_lca_lcc(params):
             end_of_life_cost_m=eol_cost_m,
             residual_value_m=params.get("residual_value", 0.0),
             discount_rate_pct=params.get("discount_rate", 5.0),
-            lifetime_years=ASSESSMENT_LIFETIME_YEARS)
+            lifetime_years=ASSESSMENT_LIFETIME_YEARS,
+            energy_pv_cost_override_m=energy_pv_override)
     else:
         lcc_results = calculate_lcc_npv(
             construction_cost_m=construction_cost,
             annual_maintenance_m=annual_maintenance,
-            annual_energy_cost_m=params.get("annual_energy_cost", 0.0),
+            annual_energy_cost_m=annual_energy_cost_m,
             end_of_life_cost_m=eol_cost_m,
             residual_value_m=params.get("residual_value", 0.0),
             discount_rate_pct=params.get("discount_rate", 5.0),
-            lifetime_years=ASSESSMENT_LIFETIME_YEARS)
+            lifetime_years=ASSESSMENT_LIFETIME_YEARS,
+            energy_pv_cost_override_m=energy_pv_override)
 
     return {
         'total_co2': total_co2,
@@ -2437,30 +2448,6 @@ with st.sidebar:
         b6_energy_tariff = st.number_input("Energy tariff ($/kWh, 0 = off)", value=0.0, min_value=0.0, step=0.01, format="%.3f", key="b6_tariff")
         b6_energy_escalation_pct = st.number_input("Energy price escalation (%/yr)", value=0.0, step=0.5, format="%.2f", key="b6_escal")
 
-        st.markdown("### 💰 Economic")
-        construction_cost = st.number_input("Construction ($M)", value=2500.0, min_value=0.0, step=50.0, key="const_cost")
-        maintenance_cost = st.number_input("Maintenance ($M/yr)", value=50.0, min_value=0.0, step=5.0, key="maint_cost")
-        jobs_created = st.number_input("Jobs created", value=5000.0, min_value=0.0, step=100.0, key="jobs")
-        economic_multiplier = st.number_input("Economic multiplier", value=2.5, min_value=1.0, step=0.1, key="econ_mult")
-        discount_rate = st.number_input("Discount rate (%)", value=5.0, min_value=0.0, max_value=20.0, step=0.5, key="discount_rate")
-        annual_energy_cost = st.number_input("Energy cost ($M/yr)", value=0.0, min_value=0.0, step=1.0, key="energy_cost")
-        residual_value = st.number_input("Residual value ($M)", value=0.0, min_value=0.0, step=10.0, key="residual_value")
-
-        # ── R15: Benefit (co-benefit) KPIs — reported SEPARATELY, never netted into LCA ──
-        st.markdown("### 🌱 Benefit KPIs (separate co-benefits)")
-        st.caption("Societal co-benefits, computed from documented equations and reported "
-                   "alongside the LCA. They are NEVER subtracted from gross or net carbon.")
-        benefit_baseline_ci_pkm = st.number_input("Displaced-mode CI (kgCO₂e/pkm)", value=0.0, min_value=0.0, step=0.01, format="%.3f", key="ben_base_ci",
-                                                  help="CO₂ avoided = max(EF_baseline − EF_monorail, 0) · PKM.")
-        benefit_annual_trips = st.number_input("Annual trips", value=0.0, min_value=0.0, step=1000.0, key="ben_trips")
-        benefit_time_saved_min = st.number_input("Time saved per trip (min)", value=0.0, min_value=0.0, step=1.0, key="ben_dt")
-        benefit_value_of_time = st.number_input("Value of time ($/h)", value=0.0, min_value=0.0, step=1.0, key="ben_vot")
-        benefit_jobs_per_musd = st.number_input("Construction jobs per $M capex", value=0.0, min_value=0.0, step=0.1, key="ben_jobs_musd")
-        benefit_operational_jobs = st.number_input("Operational jobs", value=0.0, min_value=0.0, step=10.0, key="ben_op_jobs")
-        benefit_land_ha = st.number_input("Project land footprint (ha)", value=0.0, min_value=0.0, step=1.0, key="ben_land")
-        benefit_noise_baseline_db = st.number_input("Baseline noise (dB)", value=0.0, min_value=0.0, step=1.0, key="ben_noise_base")
-        benefit_noise_monorail_db = st.number_input("Monorail noise (dB)", value=0.0, min_value=0.0, step=1.0, key="ben_noise_mono")
-
         # ── Advanced module fields (defaults; rendered only when the module is on) ──
         sd_C0, sd_delta, sd_maint_interval = 1.0, 0.005, 5
         sd_rho, sd_tau, sd_alpha, sd_growth_pct = 0.05, 1, 0.10, 0.0
@@ -2572,6 +2559,31 @@ with st.sidebar:
             for _, _r in pd.DataFrame(eol_edit).iterrows():
                 eol_table[_r['material']] = {'reuse': float(_r['reuse']), 'recycle': float(_r['recycle']),
                                              'secondary_ef': float(_r['secondary_EF'])}
+
+        # ── LCCA Costs (R18 order: after the A1-C4 stages) ──
+        st.markdown("### 💰 LCCA Costs")
+        construction_cost = st.number_input("Construction ($M)", value=2500.0, min_value=0.0, step=50.0, key="const_cost")
+        maintenance_cost = st.number_input("Maintenance ($M/yr)", value=50.0, min_value=0.0, step=5.0, key="maint_cost")
+        jobs_created = st.number_input("Jobs created", value=5000.0, min_value=0.0, step=100.0, key="jobs")
+        economic_multiplier = st.number_input("Economic multiplier", value=2.5, min_value=1.0, step=0.1, key="econ_mult")
+        discount_rate = st.number_input("Discount rate (%)", value=5.0, min_value=0.0, max_value=20.0, step=0.5, key="discount_rate")
+        annual_energy_cost = st.number_input("Energy cost ($M/yr)", value=0.0, min_value=0.0, step=1.0, key="energy_cost")
+        residual_value = st.number_input("Residual value ($M)", value=0.0, min_value=0.0, step=10.0, key="residual_value")
+
+        # ── R15: Benefit (co-benefit) KPIs — reported SEPARATELY, never netted into LCA ──
+        st.markdown("### 🌱 Benefit KPIs (separate co-benefits)")
+        st.caption("Societal co-benefits, computed from documented equations and reported "
+                   "alongside the LCA. They are NEVER subtracted from gross or net carbon.")
+        benefit_baseline_ci_pkm = st.number_input("Displaced-mode CI (kgCO₂e/pkm)", value=0.0, min_value=0.0, step=0.01, format="%.3f", key="ben_base_ci",
+                                                  help="CO₂ avoided = max(EF_baseline − EF_monorail, 0) · PKM.")
+        benefit_annual_trips = st.number_input("Annual trips", value=0.0, min_value=0.0, step=1000.0, key="ben_trips")
+        benefit_time_saved_min = st.number_input("Time saved per trip (min)", value=0.0, min_value=0.0, step=1.0, key="ben_dt")
+        benefit_value_of_time = st.number_input("Value of time ($/h)", value=0.0, min_value=0.0, step=1.0, key="ben_vot")
+        benefit_jobs_per_musd = st.number_input("Construction jobs per $M capex", value=0.0, min_value=0.0, step=0.1, key="ben_jobs_musd")
+        benefit_operational_jobs = st.number_input("Operational jobs", value=0.0, min_value=0.0, step=10.0, key="ben_op_jobs")
+        benefit_land_ha = st.number_input("Project land footprint (ha)", value=0.0, min_value=0.0, step=1.0, key="ben_land")
+        benefit_noise_baseline_db = st.number_input("Baseline noise (dB)", value=0.0, min_value=0.0, step=1.0, key="ben_noise_base")
+        benefit_noise_monorail_db = st.number_input("Monorail noise (dB)", value=0.0, min_value=0.0, step=1.0, key="ben_noise_mono")
 
         steel_recycle, aluminum_recycle, recycling_scenario, renewable_share = 70, 85, 'none', 20
         if show_legacy:
@@ -2685,7 +2697,9 @@ _TAB_LABELS = {
     'surface3d': "🗄️ 3D Surface (illustrative)", 'urban': "🗄️ Urban 3D (illustrative)",
     'interaction': "🗄️ Interaction Net (illustrative)",
 }
-_SCI_ORDER = ['results', 'oat', 'uncertainty', 'si', 'sd', 'benchmark', 'about']
+# R18 final tab order: Results → Sensitivity → System Dynamics (B6) →
+# Uncertainty → Sustainability Index → External Benchmarking → Methodology.
+_SCI_ORDER = ['results', 'oat', 'sd', 'uncertainty', 'si', 'benchmark', 'about']
 _LEGACY_ORDER = ['pareto', 'twelve', 'surface3d', 'urban', 'interaction']
 _order = _SCI_ORDER if publication_mode else (_SCI_ORDER + _LEGACY_ORDER)
 _created = st.tabs([_TAB_LABELS[k] for k in _order])
