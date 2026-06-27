@@ -628,6 +628,26 @@ MATERIAL_KEY_MAP = {
 }
 
 
+def compute_effective_ef(virgin_ef, recycled_content, secondary_ef):
+    """R6 / EN 15804 recycled-content as an *effective* A1-A3 emission factor.
+
+        EF_eff = (1 - RC)·EF_virgin + RC·EF_secondary
+
+    Applied ONLY when BOTH a recycled-content fraction (RC > 0) AND a documented
+    secondary (recycled-route) EF are supplied. Otherwise the virgin EF is used
+    unchanged — recycled content is NOT credited inside A1-A3, because the
+    end-of-life recovery benefit is reported separately in Module D (EN 15804).
+    Keeping the two mechanisms mutually exclusive prevents double counting.
+
+    Returns (ef_effective, applied: bool).
+    """
+    rc = float(recycled_content or 0.0)
+    if rc <= 0.0 or secondary_ef is None or not np.isfinite(float(secondary_ef)):
+        return float(virgin_ef), False
+    rc = min(max(rc, 0.0), 1.0)
+    return float((1.0 - rc) * float(virgin_ef) + rc * float(secondary_ef)), True
+
+
 def calculate_a5_construction(masses_kg, params, CI0):
     """A5 construction/installation emissions (tCO2e), reported SEPARATELY from A4.
     BOQ mode prevents double counting of material-production waste:
@@ -992,12 +1012,24 @@ def calculate_core_lca_lcc(params):
     # consistently across A1-A3, A5, B2-B5 and Module D.
     ef_mult = {m: params.get(f'unc_ef_mult_{m}', 1.0)
                for m in ('concrete', 'steel', 'aluminum', 'wood', 'frp', 'glass')}
-    carbon_concrete = concrete_kg * MATERIAL_FACTORS['concrete_32_40']['gwp_kgco2e_per_kg'] * ef_mult['concrete']
-    carbon_steel = steel_kg * MATERIAL_FACTORS['steel_section']['gwp_kgco2e_per_kg'] * ef_mult['steel']
-    carbon_aluminum = aluminum_kg * MATERIAL_FACTORS['aluminum_general']['gwp_kgco2e_per_kg'] * ef_mult['aluminum']
-    carbon_wood = wood_kg * MATERIAL_FACTORS['wood_general']['gwp_kgco2e_per_kg'] * ef_mult['wood']
-    carbon_frp = frp_kg * MATERIAL_FACTORS['frp_general']['gwp_kgco2e_per_kg'] * ef_mult['frp']
-    carbon_glass = glass_kg * MATERIAL_FACTORS['glass_primary']['gwp_kgco2e_per_kg'] * ef_mult['glass']
+    # R6 recycled content → effective A1-A3 EF (EN 15804). Per material, the virgin
+    # ICE V4.1 factor is replaced by EF_eff = (1-RC)·EF_virgin + RC·EF_secondary ONLY
+    # when both a recycled-content fraction and a documented secondary EF are supplied;
+    # otherwise the virgin factor is used and recycled content is left to Module D.
+    _virgin_ef = {m: MATERIAL_FACTORS[MATERIAL_KEY_MAP[m]]['gwp_kgco2e_per_kg']
+                  for m in ('concrete', 'steel', 'aluminum', 'wood', 'frp', 'glass')}
+    eff_ef, rc_applied, rc_fraction = {}, {}, {}
+    for m in ('concrete', 'steel', 'aluminum', 'wood', 'frp', 'glass'):
+        rc = params.get(f'recycled_content_{m}', 0.0)
+        sec = params.get(f'ef_secondary_{m}', None)
+        e, applied = compute_effective_ef(_virgin_ef[m], rc, sec)
+        eff_ef[m], rc_applied[m], rc_fraction[m] = e, applied, (float(rc or 0.0) if applied else 0.0)
+    carbon_concrete = concrete_kg * eff_ef['concrete'] * ef_mult['concrete']
+    carbon_steel = steel_kg * eff_ef['steel'] * ef_mult['steel']
+    carbon_aluminum = aluminum_kg * eff_ef['aluminum'] * ef_mult['aluminum']
+    carbon_wood = wood_kg * eff_ef['wood'] * ef_mult['wood']
+    carbon_frp = frp_kg * eff_ef['frp'] * ef_mult['frp']
+    carbon_glass = glass_kg * eff_ef['glass'] * ef_mult['glass']
 
     # A1-A3 GROSS embodied carbon (kg) — Module D credit is reported SEPARATELY below
     total_carbon_raw = (carbon_concrete + carbon_steel + carbon_aluminum +
@@ -1167,6 +1199,10 @@ def calculate_core_lca_lcc(params):
         'total_embodied_co2': total_embodied_co2,
         'total_embodied_co2_excl_frp': total_embodied_co2_excl_frp,
         'publication_grade': publication_grade,
+        'recycled_content_applied': rc_applied,
+        'recycled_content_fraction': rc_fraction,
+        'effective_a1a3_ef': eff_ef,
+        'virgin_a1a3_ef': _virgin_ef,
         'module_d_carbon_credit_tons': module_d_carbon_credit_tons,
         'module_d_energy_credit_mj': module_d_energy_credit_mj,
         'effective_carbon_intensity': effective_carbon_intensity,
@@ -2034,6 +2070,23 @@ with st.sidebar:
         glass_thickness_mm = st.number_input("Glass thickness (mm)", value=12.0, min_value=1.0, step=1.0, key="glass_thickness",
                                              help="Glass mass = area × thickness × 2.5 kg/(mm·m²).")
 
+        # R6 recycled content → effective A1-A3 EF (EN 15804). Takes effect ONLY when a
+        # material has BOTH a recycled-content fraction > 0 AND a documented secondary EF.
+        # Otherwise the virgin ICE V4.1 factor is used and the EOL benefit stays in Module D.
+        recycled_content_inputs, ef_secondary_inputs = {}, {}
+        with st.expander("♻️ Recycled content (effective A1-A3 EF — EN 15804)", expanded=False):
+            st.caption("EF_eff = (1−RC)·EF_virgin + RC·EF_secondary. Applied per material only when "
+                       "BOTH a recycled-content % and a *documented* secondary emission factor are given; "
+                       "otherwise the virgin factor is kept and no A1-A3 credit is taken (the end-of-life "
+                       "recovery benefit is reported separately in Module D — no double counting).")
+            for _m in MATERIALS_UI:
+                rc_pct = st.number_input(f"{_m.capitalize()} recycled content (%)", value=0.0,
+                                         min_value=0.0, max_value=100.0, step=5.0, key=f"rc_{_m}")
+                sec_ef = st.number_input(f"{_m.capitalize()} documented secondary EF (kgCO₂e/kg, 0 = none)",
+                                         value=0.0, min_value=0.0, step=0.01, format="%.4f", key=f"secef_{_m}")
+                recycled_content_inputs[_m] = rc_pct / 100.0
+                ef_secondary_inputs[_m] = sec_ef if sec_ef > 0.0 else None
+
         st.markdown("### 🚚 Transport (A4)")
         transport_distance_km = st.number_input("Transport distance (km)", value=50.0, min_value=0.0, step=10.0, key="transport_distance")
         transport_mode = st.selectbox("Transport mode", ["truck", "rail", "ship"], index=0, key="transport_mode")
@@ -2155,6 +2208,8 @@ with st.sidebar:
 current_params = {
     'concrete': concrete, 'steel': steel, 'aluminum': aluminum,
     'wood': wood, 'frp': frp, 'glass': glass, 'glass_thickness_mm': glass_thickness_mm,
+    **{f'recycled_content_{_m}': recycled_content_inputs[_m] for _m in MATERIALS_UI},
+    **{f'ef_secondary_{_m}': ef_secondary_inputs[_m] for _m in MATERIALS_UI},
     'steel_recycle': steel_recycle, 'aluminum_recycle': aluminum_recycle, 'recycling_scenario': recycling_scenario,
     'transport_distance_km': transport_distance_km, 'transport_mode': transport_mode,
     'carbon_intensity': carbon_intensity_input, 'renewable_share': renewable_share,
