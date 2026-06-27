@@ -301,6 +301,25 @@ p_undoc = dict(base); p_undoc['recycled_secondary_documented_ok'] = False
 r_undoc = rfa(p_undoc)
 check("R27 missing source → not publication-grade", not r_undoc['publication_grade_full_lca'])
 
+# ── Batch 3 / R24: B4 replacement works per material (e.g. aluminum), not just steel/concrete ──
+p_b4 = dict(base)
+p_b4.update({'include_b2b5': True, 'enable_b4': True, 'b4_years': '25',
+             'b4_table': {'aluminum': {'replacement_fraction': 0.2, 'waste_ef': 0.0, 'transport_km': 0.0}}})
+r_b4 = rfa(p_b4)
+alu_rows = [x for x in r_b4['mass_balance']['mass_balance_by_material'] if x['material'] == 'aluminum']
+check("R24 B4 per-material applies to aluminum", alu_rows and alu_rows[0]['added_B4_B5_kg'] > 0
+      and abs(alu_rows[0]['added_B4_B5_kg'] - alu_rows[0]['removed_B4_B5_kg']) < 1e-6)
+check("R24 B4 aluminum replacement produces B4 emissions", r_b4['b2b5']['b4_tons'] > 0)
+
+# ── Batch 3 / R25: C2 per-material/per-mode routes (multi-leg ΣΣ) ──
+cp2 = {'include_c1c4': True, 'c1_diesel_l': 0.0, 'c1_elec_kwh': 0.0,
+       'c2_routes': {'steel': [{'mode': 'ship', 'distance_km': 200.0, 'ef': 0.0, 'share': 0.5},
+                               {'mode': 'truck', 'distance_km': 50.0, 'ef': 0.0, 'share': 0.5}]}}
+rc2 = c1c4fn({'steel': 1000.0}, cp2, 0.5, 2.68, 0.10)
+# ship ef 0.015, truck ef 0.10: C2 = (1000*0.5/1000)*200*0.015/1000 + (1000*0.5/1000)*50*0.10/1000
+exp_c2 = (1000*0.5/1000)*200*0.015/1000 + (1000*0.5/1000)*50*0.10/1000
+check("R25 C2 = ΣΣ (M·share/1000)·D·EF_mode / 1000", abs(rc2['c2_tons'] - exp_c2) < 1e-12)
+
 # ── R1/R20: per-material A1-A3 metadata present in the audit table ──
 audit_cols = set(ns["MATERIAL_FACTOR_AUDIT"].columns)
 check("R1 audit has dqi/source/declared_unit/boundary/status",

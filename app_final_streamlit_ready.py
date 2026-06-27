@@ -895,6 +895,17 @@ def calculate_b2_b5_use_stage(schedule, masses_kg, total_embodied_carbon_kg, tot
     ef_steel = MATERIAL_FACTORS['steel_section']['gwp_kgco2e_per_kg'] * params.get('unc_ef_mult_steel', 1.0)
     ef_concrete = MATERIAL_FACTORS['concrete_32_40']['gwp_kgco2e_per_kg'] * params.get('unc_ef_mult_concrete', 1.0)
     b2_mat_frac = params.get('b2_material_pct', 0.0) / 100.0
+    # R24: B4 replacement is now per material. A b4_table {material: {replacement_fraction,
+    # waste_ef, transport_km}} covers every material; if absent, fall back to the legacy
+    # steel/concrete fractions so existing scenarios are unchanged.
+    b4_table = params.get('b4_table')
+    if not b4_table:
+        b4_table = {
+            'steel': {'replacement_fraction': params.get('b4_frac_steel', 0.0),
+                      'waste_ef': params.get('b4_waste_ef', 0.0), 'transport_km': params.get('b4_transport_km', 0.0)},
+            'concrete': {'replacement_fraction': params.get('b4_frac_concrete', 0.0),
+                         'waste_ef': params.get('b4_waste_ef', 0.0), 'transport_km': params.get('b4_transport_km', 0.0)},
+        }
     added = {k: 0.0 for k in masses_kg}
     removed = {k: 0.0 for k in masses_kg}
     b2_tons = b4_tons = 0.0
@@ -910,19 +921,23 @@ def calculate_b2_b5_use_stage(schedule, masses_kg, total_embodied_carbon_kg, tot
             trans = (b2_mat_frac * total_mass_kg / 1000.0) * params.get('b2_transport_km', 0.0) * truck_ef
             b2_kg = row['B2_count'] * (mat + dies + ele + trans)
         b2_tons += b2_kg / 1000.0
-        # B4 replacement (like-for-like): new material production + removed-material waste
+        # B4 replacement (like-for-like): new material production + removed-material waste,
+        # summed over every material in the per-material B4 table.
         b4_kg = 0.0
         if row['B4_count']:
-            rs = params.get('b4_frac_steel', 0.0) * masses_kg.get('steel', 0.0)
-            rc = params.get('b4_frac_concrete', 0.0) * masses_kg.get('concrete', 0.0)
-            new_mat = rs * ef_steel + rc * ef_concrete
-            waste_treat = (rs + rc) * params.get('b4_waste_ef', 0.0)
-            waste_trans = ((rs + rc) / 1000.0) * params.get('b4_transport_km', 0.0) * truck_ef
+            new_mat = waste_treat = waste_trans = 0.0
+            for _mat, _spec in b4_table.items():
+                frac = float(_spec.get('replacement_fraction', 0.0) or 0.0)
+                if frac <= 0.0 or _mat not in masses_kg:
+                    continue
+                r_j = frac * masses_kg.get(_mat, 0.0)
+                ef_j = MATERIAL_FACTORS[MATERIAL_KEY_MAP[_mat]]['gwp_kgco2e_per_kg'] * params.get(f'unc_ef_mult_{_mat}', 1.0)
+                new_mat += r_j * ef_j
+                waste_treat += r_j * float(_spec.get('waste_ef', 0.0) or 0.0)
+                waste_trans += (r_j / 1000.0) * float(_spec.get('transport_km', 0.0) or 0.0) * truck_ef
+                added[_mat] += row['B4_count'] * r_j
+                removed[_mat] += row['B4_count'] * r_j
             b4_kg = row['B4_count'] * (new_mat + waste_treat + waste_trans)
-            added['steel'] += row['B4_count'] * rs
-            added['concrete'] += row['B4_count'] * rc
-            removed['steel'] += row['B4_count'] * rs
-            removed['concrete'] += row['B4_count'] * rc
         b4_tons += b4_kg / 1000.0
         yearly.append({'year': t, 'B2_count': row['B2_count'], 'B4_count': row['B4_count'],
                        'B2_tCO2e': b2_kg / 1000.0, 'B4_tCO2e': b4_kg / 1000.0})
@@ -1019,6 +1034,10 @@ def calculate_c1_c4_end_of_life(remaining_masses, params, CI_T, diesel_ef, truck
     reuse_ef = params.get('eol_reuse_ef', 0.0)
     recycle_ef = params.get('eol_recycle_ef', 0.0)
     disposal_ef = params.get('eol_disposal_ef', 0.0)
+    # R25: per-material / per-mode C2 routes. c2_routes maps material → list of legs
+    # [{mode, distance_km, ef, share}]; C2 = ΣΣ (M_j·share/1000)·D_jm·EF_m / 1000.
+    # If a material has no route, the single legacy distance × truck EF is used.
+    c2_routes = params.get('c2_routes') or {}
     c2 = c3 = c4 = 0.0
     rows = []
     for m in materials:
@@ -1026,7 +1045,19 @@ def calculate_c1_c4_end_of_life(remaining_masses, params, CI_T, diesel_ef, truck
         reuse = params.get(f'eol_reuse_{m}', 0.0)
         recycle = params.get(f'eol_recycle_{m}', 0.0)
         disposal = max(1.0 - reuse - recycle, 0.0)
-        c2_m = (M / 1000.0) * km * truck_ef / 1000.0
+        legs = c2_routes.get(m)
+        if legs:
+            c2_m = 0.0
+            for leg in legs:
+                d = float(leg.get('distance_km', 0.0) or 0.0)
+                sh = float(leg.get('share', 1.0) or 0.0)
+                ef = float(leg.get('ef', 0.0) or 0.0)
+                if ef <= 0.0:
+                    ef = TRANSPORT_FACTOR_REGISTRY.get(leg.get('mode', 'truck'),
+                                                       TRANSPORT_FACTOR_REGISTRY['truck'])['ef_kgco2e_per_tkm']
+                c2_m += (M * sh / 1000.0) * d * ef / 1000.0
+        else:
+            c2_m = (M / 1000.0) * km * truck_ef / 1000.0
         c3_m = M * (reuse * reuse_ef + recycle * recycle_ef) / 1000.0
         c4_m = M * disposal * disposal_ef / 1000.0
         c2 += c2_m; c3 += c3_m; c4 += c4_m
@@ -2577,6 +2608,7 @@ with st.sidebar:
         b2_diesel_l, b2_elec_kwh, b2_transport_km, b2_cost_per_event_m = 0.0, 0.0, 0.0, 0.0
         b4_years, b4_frac_steel, b4_frac_concrete = "", 0.0, 0.0
         b4_cost_per_event_m, b4_waste_ef, b4_transport_km = 0.0, 0.0, 0.0
+        b4_table = None
         lcca_maint_mode = 'simple_annual'
         if include_b2b5:
             st.markdown("### 🔁 B2–B5 Use Stage")
@@ -2592,16 +2624,29 @@ with st.sidebar:
                                            help="simple_annual: annual maintenance only. activity_based: B2/B3/B5 activity costs only. B4 cost added in both.")
             if enable_b4:
                 b4_years = st.text_input("B4 years (e.g. 25,40)", value="", key="b4_years")
-                b4_frac_steel = st.number_input("B4 fraction — steel", value=0.0, min_value=0.0, max_value=1.0, step=0.05, format="%.2f", key="b4_frac_steel")
-                b4_frac_concrete = st.number_input("B4 fraction — concrete", value=0.0, min_value=0.0, max_value=1.0, step=0.05, format="%.2f", key="b4_frac_concrete")
                 b4_cost_per_event_m = st.number_input("B4 cost/event ($M)", value=0.0, min_value=0.0, step=1.0, key="b4_cost_event")
-                b4_waste_ef = st.number_input("B4 waste EF (kgCO₂e/kg)", value=0.0, min_value=0.0, step=0.01, format="%.3f", key="b4_waste_ef")
-                b4_transport_km = st.number_input("B4 waste transport (km)", value=0.0, min_value=0.0, step=10.0, key="b4_transport_km")
+                # R24: per-material B4 replacement table (all materials, not just steel/concrete).
+                _bn = len(MATERIALS_UI)
+                b4_df0 = pd.DataFrame({'material': MATERIALS_UI, 'replacement_fraction': [0.0] * _bn,
+                                       'waste_ef': [0.0] * _bn, 'transport_km': [0.0] * _bn})
+                b4_edit = st.data_editor(b4_df0, hide_index=True, use_container_width=True,
+                                         disabled=['material'], key="b4_editor")
+                b4_table = {}
+                for _, _r in pd.DataFrame(b4_edit).iterrows():
+                    b4_table[_r['material']] = {'replacement_fraction': float(_r['replacement_fraction']),
+                                                'waste_ef': float(_r['waste_ef']),
+                                                'transport_km': float(_r['transport_km'])}
+                b4_frac_steel = b4_table.get('steel', {}).get('replacement_fraction', 0.0)
+                b4_frac_concrete = b4_table.get('concrete', {}).get('replacement_fraction', 0.0)
+                st.caption("B4 like-for-like replacement per material: added = removed = fraction × installed mass. "
+                           "New-material A1-A3 + removed-material waste transport/treatment are counted; "
+                           "mass balance stays neutral (added = removed).")
 
         c1_diesel_l, c1_elec_kwh, eol_transport_km = 0.0, 0.0, 50.0
         eol_reuse_ef, eol_recycle_ef, eol_disposal_ef = 0.0, 0.0, 0.0
         eol_recovery_eta, eol_cost_m = 1.0, 0.0
         eol_table = {m: {'reuse': 0.0, 'recycle': 0.0, 'secondary_ef': 0.0} for m in MATERIALS_UI}
+        c2_routes = None
         if include_c1c4:
             st.markdown("### ♻️ C1–C4 End-of-Life")
             st.caption("EOL scenario. Treatment shares must sum to 1 (uses remaining masses after B4/B5).")
@@ -2621,6 +2666,20 @@ with st.sidebar:
             for _, _r in pd.DataFrame(eol_edit).iterrows():
                 eol_table[_r['material']] = {'reuse': float(_r['reuse']), 'recycle': float(_r['recycle']),
                                              'secondary_ef': float(_r['secondary_EF'])}
+            # R25: per-material / per-mode C2 transport routes (multi-leg via dynamic rows).
+            with st.expander("🚛 C2 EOL transport routes (per material / per mode)", expanded=False):
+                c2_df0 = pd.DataFrame({'material': MATERIALS_UI, 'mode': ['truck'] * len(MATERIALS_UI),
+                                       'distance_km': [eol_transport_km] * len(MATERIALS_UI),
+                                       'ef': [0.0] * len(MATERIALS_UI), 'share': [1.0] * len(MATERIALS_UI)})
+                c2_edit = st.data_editor(c2_df0, hide_index=True, use_container_width=True, key="c2_editor",
+                                         num_rows="dynamic")
+                c2_routes = {}
+                for _, _r in pd.DataFrame(c2_edit).iterrows():
+                    c2_routes.setdefault(_r['material'], []).append({
+                        'mode': _r['mode'], 'distance_km': float(_r['distance_km']),
+                        'ef': float(_r['ef']), 'share': float(_r['share'])})
+                st.caption("Add rows for multi-leg/multi-mode routes per material. EF 0 → registry mode factor. "
+                           "C2 = ΣΣ (M·share/1000)·D·EF / 1000. No route → single EOL distance × truck EF.")
 
         # ── LCCA Costs (R18 order: after the A1-C4 stages) ──
         st.markdown("### 💰 LCCA Costs")
@@ -2718,10 +2777,12 @@ current_params = {
     'b2_transport_km': b2_transport_km, 'b2_cost_per_event_m': b2_cost_per_event_m,
     'enable_b4': enable_b4, 'b4_years': b4_years, 'b4_frac_steel': b4_frac_steel,
     'b4_frac_concrete': b4_frac_concrete, 'b4_cost_per_event_m': b4_cost_per_event_m,
-    'b4_waste_ef': b4_waste_ef, 'b4_transport_km': b4_transport_km, 'lcca_maint_mode': lcca_maint_mode,
+    'b4_waste_ef': b4_waste_ef, 'b4_transport_km': b4_transport_km, 'b4_table': b4_table,
+    'lcca_maint_mode': lcca_maint_mode,
     'include_c1c4': include_c1c4, 'c1_diesel_l': c1_diesel_l, 'c1_elec_kwh': c1_elec_kwh,
     'eol_transport_km': eol_transport_km, 'eol_reuse_ef': eol_reuse_ef, 'eol_recycle_ef': eol_recycle_ef,
     'eol_disposal_ef': eol_disposal_ef, 'eol_recovery_eta': eol_recovery_eta, 'eol_cost_m': eol_cost_m,
+    'c2_routes': c2_routes,
     **{f'eol_reuse_{_m}': eol_table[_m]['reuse'] for _m in eol_table},
     **{f'eol_recycle_{_m}': eol_table[_m]['recycle'] for _m in eol_table},
     **{f'eol_secondary_ef_{_m}': eol_table[_m]['secondary_ef'] for _m in eol_table},
