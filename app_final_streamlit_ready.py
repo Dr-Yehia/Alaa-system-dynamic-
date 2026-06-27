@@ -1152,6 +1152,58 @@ def b6_energy_pv_cost(annual_kwh, tariff_per_kwh, escalation_pct, discount_pct, 
     return pv, undisc
 
 
+def calculate_benefit_kpis(params, annual_pkm, lifetime_years=ASSESSMENT_LIFETIME_YEARS):
+    """R15: SEPARATE societal co-benefit KPIs. These are reported ALONGSIDE the LCA
+    and are NEVER subtracted from gross or net LCA carbon. Every KPI is a documented
+    equation rather than a hand-entered figure. All defaults are 0 → no co-benefit
+    claimed unless inputs are supplied."""
+    # 1) Operational CO2 avoided vs a displaced baseline mode (car/bus), per pkm.
+    ef_base = float(params.get('benefit_baseline_ci_pkm', 0.0))            # kgCO2e/pkm displaced mode
+    ef_mono = float(params.get('energy_per_pax', 0.0)) * float(params.get('carbon_intensity', 0.0))  # kgCO2e/pkm monorail B6
+    annual_co2_avoided_t = max(ef_base - ef_mono, 0.0) * annual_pkm / 1000.0
+    lifetime_co2_avoided_t = annual_co2_avoided_t * lifetime_years
+
+    # 2) Time saving + value of time saved (VoTS).
+    annual_trips = float(params.get('benefit_annual_trips', 0.0))          # trips/yr
+    dt_min = float(params.get('benefit_time_saved_min', 0.0))             # minutes saved per trip vs baseline
+    annual_hours_saved = annual_trips * dt_min / 60.0
+    vot = float(params.get('benefit_value_of_time', 0.0))                 # $/h
+    annual_vots_m = annual_hours_saved * vot / 1e6
+    lifetime_vots_m = annual_vots_m * lifetime_years
+
+    # 3) Jobs supported (capex-driven construction jobs + operational jobs).
+    capex = float(params.get('construction_cost', 0.0))                   # $M
+    jobs_construction = float(params.get('benefit_jobs_per_musd', 0.0)) * capex
+    jobs_operational = float(params.get('benefit_operational_jobs', 0.0))
+    total_jobs = jobs_construction + jobs_operational
+
+    # 4) Economic impact (output multiplier on capital investment).
+    economic_impact_m = capex * float(params.get('economic_multiplier', 1.0))
+
+    # 5) Land-use efficiency (project footprint per million pkm/yr).
+    land_ha = float(params.get('benefit_land_ha', 0.0))
+    land_ha_per_mpkm = (land_ha / (annual_pkm / 1e6)) if annual_pkm > 0 else float('nan')
+
+    # 6) Noise reduction ratio vs baseline mode.
+    n_base = float(params.get('benefit_noise_baseline_db', 0.0))
+    n_mono = float(params.get('benefit_noise_monorail_db', 0.0))
+    noise_reduction_db = n_base - n_mono
+    noise_reduction_ratio = (noise_reduction_db / n_base) if n_base > 0 else 0.0
+
+    return {
+        'note': 'Co-benefits reported SEPARATELY (EN 15804 module-independent); never netted into LCA gross/net.',
+        'annual_co2_avoided_tons': annual_co2_avoided_t,
+        'lifetime_co2_avoided_tons': lifetime_co2_avoided_t,
+        'baseline_ci_pkm': ef_base, 'monorail_ci_pkm': ef_mono,
+        'annual_hours_saved': annual_hours_saved,
+        'annual_vots_musd': annual_vots_m, 'lifetime_vots_musd': lifetime_vots_m,
+        'jobs_construction': jobs_construction, 'jobs_operational': jobs_operational,
+        'total_jobs': total_jobs, 'economic_impact_musd': economic_impact_m,
+        'land_ha_per_million_pkm': land_ha_per_mpkm,
+        'noise_reduction_db': noise_reduction_db, 'noise_reduction_ratio': noise_reduction_ratio,
+    }
+
+
 def calculate_core_lca_lcc(params):
     """SCIENTIFIC CORE — modular gross A1-C4 LCA (A1-A3 + A4 + A5 + B6; B2-B5/C1-C4
     in later sub-phases) + NPV-LCCA. ONLY publication-grade quantities."""
@@ -1477,6 +1529,8 @@ def calculate_core_lca_lcc(params):
         'co2_kg_per_pkm_dynamic': co2_kg_per_pkm_dynamic,
         'sd_params': {'C0': sd_C0, 'delta': sd_delta, 'interval': sd_interval,
                       'rho': sd_rho, 'tau': sd_tau, 'alpha': sd_alpha, 'g_pct': sd_g * 100},
+        # ── R15: societal co-benefit KPIs (separate; never netted into LCA) ──
+        'benefit_kpis': calculate_benefit_kpis(params, annual_pkm, ASSESSMENT_LIFETIME_YEARS),
         # ── R11 / R8-CI: static B6 demand basis, CI_t trajectory, energy-cost PV ──
         'b6_demand_meta': b6_demand_meta,
         'b6_annual_pkm': annual_pkm,
@@ -2392,6 +2446,21 @@ with st.sidebar:
         annual_energy_cost = st.number_input("Energy cost ($M/yr)", value=0.0, min_value=0.0, step=1.0, key="energy_cost")
         residual_value = st.number_input("Residual value ($M)", value=0.0, min_value=0.0, step=10.0, key="residual_value")
 
+        # ── R15: Benefit (co-benefit) KPIs — reported SEPARATELY, never netted into LCA ──
+        st.markdown("### 🌱 Benefit KPIs (separate co-benefits)")
+        st.caption("Societal co-benefits, computed from documented equations and reported "
+                   "alongside the LCA. They are NEVER subtracted from gross or net carbon.")
+        benefit_baseline_ci_pkm = st.number_input("Displaced-mode CI (kgCO₂e/pkm)", value=0.0, min_value=0.0, step=0.01, format="%.3f", key="ben_base_ci",
+                                                  help="CO₂ avoided = max(EF_baseline − EF_monorail, 0) · PKM.")
+        benefit_annual_trips = st.number_input("Annual trips", value=0.0, min_value=0.0, step=1000.0, key="ben_trips")
+        benefit_time_saved_min = st.number_input("Time saved per trip (min)", value=0.0, min_value=0.0, step=1.0, key="ben_dt")
+        benefit_value_of_time = st.number_input("Value of time ($/h)", value=0.0, min_value=0.0, step=1.0, key="ben_vot")
+        benefit_jobs_per_musd = st.number_input("Construction jobs per $M capex", value=0.0, min_value=0.0, step=0.1, key="ben_jobs_musd")
+        benefit_operational_jobs = st.number_input("Operational jobs", value=0.0, min_value=0.0, step=10.0, key="ben_op_jobs")
+        benefit_land_ha = st.number_input("Project land footprint (ha)", value=0.0, min_value=0.0, step=1.0, key="ben_land")
+        benefit_noise_baseline_db = st.number_input("Baseline noise (dB)", value=0.0, min_value=0.0, step=1.0, key="ben_noise_base")
+        benefit_noise_monorail_db = st.number_input("Monorail noise (dB)", value=0.0, min_value=0.0, step=1.0, key="ben_noise_mono")
+
         # ── Advanced module fields (defaults; rendered only when the module is on) ──
         sd_C0, sd_delta, sd_maint_interval = 1.0, 0.005, 5
         sd_rho, sd_tau, sd_alpha, sd_growth_pct = 0.05, 1, 0.10, 0.0
@@ -2530,6 +2599,11 @@ current_params = {
     'land_use': land_use, 'noise_reduction': noise_reduction,
     'energy_per_pax': energy_per_pax, 'daily_pax_km': daily_pax_km,
     'time_savings': time_savings, 'availability': availability,
+    'benefit_baseline_ci_pkm': benefit_baseline_ci_pkm, 'benefit_annual_trips': benefit_annual_trips,
+    'benefit_time_saved_min': benefit_time_saved_min, 'benefit_value_of_time': benefit_value_of_time,
+    'benefit_jobs_per_musd': benefit_jobs_per_musd, 'benefit_operational_jobs': benefit_operational_jobs,
+    'benefit_land_ha': benefit_land_ha, 'benefit_noise_baseline_db': benefit_noise_baseline_db,
+    'benefit_noise_monorail_db': benefit_noise_monorail_db,
     'b6_demand_basis': b6_demand_basis, 'b6_demand': b6_demand, 'b6_capacity': b6_capacity,
     'b6_avg_trip_km': b6_avg_trip_km, 'b6_grid_change_pct': b6_grid_change_pct,
     'b6_project_renewable': b6_project_renewable, 'b6_renewable_share_proj': b6_renewable_share_proj,
@@ -2763,6 +2837,23 @@ with TABS['results']:
         (st.success if flag else st.error)(
             f"publication_grade_full_lca = {flag} "
             + ("" if flag else "(FRP without EPD, invalid treatment shares, or incomplete Module D)."))
+
+    # ── R15: Benefit KPIs (co-benefits) — reported SEPARATELY from the LCA ──
+    with st.expander("🌱 Benefit KPIs (societal co-benefits — separate from LCA carbon)", expanded=False):
+        bk = results['benefit_kpis']
+        st.caption(bk['note'])
+        bk_df = pd.DataFrame([
+            {'KPI': 'CO₂ avoided (annual)', 'Value': f"{bk['annual_co2_avoided_tons']:,.1f}", 'Unit': 't CO₂e/yr'},
+            {'KPI': 'CO₂ avoided (lifetime)', 'Value': f"{bk['lifetime_co2_avoided_tons']:,.1f}", 'Unit': 't CO₂e'},
+            {'KPI': 'Time saved (annual)', 'Value': f"{bk['annual_hours_saved']:,.0f}", 'Unit': 'h/yr'},
+            {'KPI': 'Value of time saved (annual)', 'Value': f"{bk['annual_vots_musd']:,.2f}", 'Unit': '$M/yr'},
+            {'KPI': 'Jobs supported (total)', 'Value': f"{bk['total_jobs']:,.0f}", 'Unit': 'jobs'},
+            {'KPI': 'Economic impact', 'Value': f"{bk['economic_impact_musd']:,.0f}", 'Unit': '$M'},
+            {'KPI': 'Land use', 'Value': f"{bk['land_ha_per_million_pkm']:,.3f}", 'Unit': 'ha / Mpkm·yr'},
+            {'KPI': 'Noise reduction', 'Value': f"{bk['noise_reduction_db']:,.1f} ({bk['noise_reduction_ratio']*100:,.0f}%)", 'Unit': 'dB'},
+        ])
+        st.dataframe(bk_df, use_container_width=True, hide_index=True)
+        st.info("These co-benefits are **not** part of the A1–C4 gross/net carbon and are never subtracted from it.")
 
     st.markdown("---")
 

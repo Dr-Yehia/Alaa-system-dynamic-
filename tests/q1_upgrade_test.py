@@ -217,6 +217,28 @@ check("R14 gross = Σ stages (A1A3+A4+A5+B2B5+B6+C1C4)",
       abs(r_lo['gross_a1_c4_tons'] - (r_lo['total_embodied_co2'] + r_lo['lca_results']['a4_transport_co2_tons']
           + r_lo['a5']['a5_total_tons'] + r_lo['i_b2b5_tons'] + r_lo['active_b6_tons'] + r_lo['i_c1c4_tons'])) < 1e-6)
 
+# ── Sprint 7 / R15: benefit KPIs separate, computed, never netted into LCA ──
+bkfn = ns["calculate_benefit_kpis"]
+bp = {'energy_per_pax': 0.15, 'carbon_intensity': 0.5, 'benefit_baseline_ci_pkm': 0.20,
+      'benefit_annual_trips': 1_000_000.0, 'benefit_time_saved_min': 12.0, 'benefit_value_of_time': 10.0,
+      'benefit_jobs_per_musd': 2.0, 'construction_cost': 2500.0, 'benefit_operational_jobs': 500.0,
+      'economic_multiplier': 2.5, 'benefit_land_ha': 50.0,
+      'benefit_noise_baseline_db': 80.0, 'benefit_noise_monorail_db': 65.0}
+bk = bkfn(bp, 3_650_000_000.0, 50)
+# CO2 avoided = max(0.20 - 0.15*0.5, 0)·PKM/1000 = 0.125·3.65e9/1000
+check("R15 CO2 avoided = (EF_base - EF_mono)·PKM", abs(bk['annual_co2_avoided_tons'] - 0.125 * 3_650_000_000.0 / 1000.0) < 1e-3)
+check("R15 hours saved = trips·min/60", abs(bk['annual_hours_saved'] - 1_000_000.0 * 12.0 / 60.0) < 1e-6)
+check("R15 VoTS = hours·VoT", abs(bk['annual_vots_musd'] - (200000.0 * 10.0 / 1e6)) < 1e-9)
+check("R15 jobs = per_musd·capex + operational", abs(bk['total_jobs'] - (2.0 * 2500.0 + 500.0)) < 1e-9)
+check("R15 economic impact = capex·multiplier", abs(bk['economic_impact_musd'] - 2500.0 * 2.5) < 1e-9)
+check("R15 noise reduction ratio = (base-mono)/base", abs(bk['noise_reduction_ratio'] - (15.0 / 80.0)) < 1e-9)
+# never subtracted from LCA: enabling benefits leaves gross/net unchanged
+rb = rfa({**base, 'benefit_baseline_ci_pkm': 0.20, 'benefit_annual_trips': 1e6, 'benefit_value_of_time': 10.0})
+check("R15 benefits do NOT change gross LCA", abs(rb['gross_a1_c4_tons'] - r0['gross_a1_c4_tons']) < 1e-9)
+check("R15 benefits do NOT change net LCA", abs(rb['net_with_module_d_tons'] - r0['net_with_module_d_tons']) < 1e-9)
+check("R15 benefit KPIs exposed separately in results", 'benefit_kpis' in rb and rb['benefit_kpis']['annual_co2_avoided_tons'] > 0)
+check("R15 zero inputs → zero co-benefits", bkfn({}, 1e6, 50)['total_jobs'] == 0.0)
+
 # ── R1/R20: per-material A1-A3 metadata present in the audit table ──
 audit_cols = set(ns["MATERIAL_FACTOR_AUDIT"].columns)
 check("R1 audit has dqi/source/declared_unit/boundary/status",
