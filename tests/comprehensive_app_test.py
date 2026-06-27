@@ -98,9 +98,15 @@ for pub in (True, False):
         check("[PUBLICATION] report has NO dashboard score", "DASHBOARD DISPLAY SCORE" not in report_txt and "Dashboard Display Score" not in report_txt)
         check("[PUBLICATION] exports have NO dashboard score", "Dashboard Display Score" not in csv_txt)
         check("[PUBLICATION] report has NO heuristic category scores", "INTEGRATED SCORING" not in report_txt and "Material Efficiency Score" not in report_txt)
+        # P2: report cleanup
+        check("[PUBLICATION] report has NO renewable dashboard-only line", "Renewable Share" not in report_txt)
+        check("[PUBLICATION] report shows base CAPEX + contract factor + CAPEX in NPV",
+              "Base CAPEX" in report_txt and "Contract factor" in report_txt and "CAPEX used in NPV" in report_txt)
+        check("[PUBLICATION] report jobs come from Benefit KPI", "Jobs supported (Benefit KPI" in report_txt)
     else:
         check("[DEVELOPER] legacy dashboard appendix present", "LEGACY DASHBOARD" in report_txt)
         check("[DEVELOPER] export includes dashboard score", "Dashboard Display Score" in csv_txt)
+        check("[DEVELOPER] report keeps renewable dashboard-only line", "Renewable Share" in report_txt)
 
 print("\nALL COMPREHENSIVE TESTS PASSED" if ok else "\nSOME TESTS FAILED")
 sys.exit(0 if ok else 1)

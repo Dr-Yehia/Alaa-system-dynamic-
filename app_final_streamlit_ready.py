@@ -1331,9 +1331,17 @@ def calculate_core_lca_lcc(params):
     _virgin_ef = {m: MATERIAL_FACTORS[MATERIAL_KEY_MAP[m]]['gwp_kgco2e_per_kg']
                   for m in ('concrete', 'steel', 'aluminum', 'wood', 'frp', 'glass')}
     eff_ef, rc_applied, rc_fraction = {}, {}, {}
+    rc_basis_conflict = False
     for m in ('concrete', 'steel', 'aluminum', 'wood', 'frp', 'glass'):
         rc = params.get(f'recycled_content_{m}', 0.0)
         sec = params.get(f'ef_secondary_{m}', None)
+        # P1/R27: the recycled-content substitution is valid ONLY on a virgin EF basis.
+        # A market-average factor already embeds recycled/scrap content, so applying RC
+        # again would double-count → block the adjustment and flag not publication-grade.
+        basis = params.get(f'factor_basis_{m}', 'virgin')
+        if basis != 'virgin' and float(rc or 0.0) > 0.0:
+            sec = None
+            rc_basis_conflict = True
         e, applied = compute_effective_ef(_virgin_ef[m], rc, sec)
         eff_ef[m], rc_applied[m], rc_fraction[m] = e, applied, (float(rc or 0.0) if applied else 0.0)
     carbon_concrete = concrete_kg * eff_ef['concrete'] * ef_mult['concrete']
@@ -1465,7 +1473,8 @@ def calculate_core_lca_lcc(params):
     # Module D is reported with a missing secondary factor, or a recycled-content
     # secondary EF was supplied without a source (R27).
     recycled_secondary_ok = bool(params.get('recycled_secondary_documented_ok', True))
-    publication_grade_full_lca = bool(publication_grade and shares_ok and module_d_ok and recycled_secondary_ok)
+    publication_grade_full_lca = bool(publication_grade and shares_ok and module_d_ok
+                                      and recycled_secondary_ok and not rc_basis_conflict)
 
     # Economic (LCCA)
     # R28: contract factor adjusts the base CAPEX before it enters the NPV
@@ -1527,6 +1536,7 @@ def calculate_core_lca_lcc(params):
         'publication_grade': publication_grade,
         'recycled_content_applied': rc_applied,
         'recycled_content_fraction': rc_fraction,
+        'recycled_basis_conflict': rc_basis_conflict,
         'effective_a1a3_ef': eff_ef,
         'virgin_a1a3_ef': _virgin_ef,
         'module_d_carbon_credit_tons': module_d_carbon_credit_tons,
@@ -2403,9 +2413,12 @@ with st.sidebar:
         st.markdown("### 🧾 Project Definition")
         project_name = st.text_input("Project name", value="Cairo Monorail", key="project_name")
         route_length_km = st.number_input("Route length (km)", value=96.0, min_value=0.0, step=1.0, key="route_length")
-        assessment_lifetime = st.number_input("Assessment lifetime (years)", value=int(ASSESSMENT_LIFETIME_YEARS), min_value=1, step=1, key="lifetime",
-                                              help="Reporting scope. The operative life used by the equations is currently fixed at "
-                                                   f"{int(ASSESSMENT_LIFETIME_YEARS)} y; configurable lifetime is wired in the equations phase.")
+        # P3: lifetime is shown as a fixed value (not an editable operational input) to avoid the
+        # misleading case where a user enters a different life that the equations do not yet use.
+        # Configurable lifetime is wired in the equations-review phase.
+        assessment_lifetime = int(ASSESSMENT_LIFETIME_YEARS)
+        st.caption(f"Assessment lifetime: **{assessment_lifetime} years** (fixed; configurable lifetime "
+                   "is wired in the equations phase).")
         analysis_start_year = st.number_input("Analysis start year", value=2026, min_value=2000, step=1, key="start_year")
         currency = st.selectbox("Currency", ["USD", "EGP"], index=0, key="currency")
         price_year = st.number_input("Price year", value=2026, min_value=2000, step=1, key="price_year")
@@ -2474,8 +2487,9 @@ with st.sidebar:
                 'mode': [transport_mode] * len(MATERIALS_UI),
                 'ef_override': [0.0] * len(MATERIALS_UI),
             })
+            # P4: dynamic rows → a material can have multiple legs/modes (e.g. ship + truck).
             a4_edit = st.data_editor(a4_df0, hide_index=True, use_container_width=True, key="a4_editor",
-                                     disabled=['material'])
+                                     num_rows="dynamic")
             a4_advanced_legs = []
             for _, _r in pd.DataFrame(a4_edit).iterrows():
                 _ef = float(_r['ef_override'])
@@ -2483,8 +2497,9 @@ with st.sidebar:
                     'material': _r['material'], 'mass_kg': float(_r['mass_tonnes']) * 1000.0,
                     'distance_km': float(_r['distance_km']), 'mode': _r['mode'],
                     'ef': (_ef if _ef > 0.0 else None)})
-            st.caption("Advanced A4: per-material legs. EF override 0 → registry mode factor. "
-                       "I_A4 = ΣΣ (M/1000)·D·EF / 1000 [t CO₂e].")
+            st.caption("Advanced A4: per-material legs (add rows for multi-leg/multi-mode routes, e.g. "
+                       "ship + truck; split the mass across a material's legs). EF override 0 → registry mode "
+                       "factor. I_A4 = ΣΣ (M/1000)·D·EF / 1000 [t CO₂e].")
 
         st.markdown("### 🌍 Environmental")
         carbon_intensity_input = st.number_input("Grid carbon (kgCO₂/kWh)", value=0.5, min_value=0.0, step=0.05, key="carbon_int")
@@ -3114,6 +3129,10 @@ with TABS['results']:
 
     # Full Report Text
     with st.expander("📄 Full Assessment Report", expanded=False):
+        # P2: dashboard-only renewable line is developer-only (hidden in publication mode).
+        _renewable_line = ("" if publication_mode else
+                           f"\n   • Renewable Share (dashboard-only, NOT applied to core LCA): {params['renewable_share']:.1f}%")
+        _bk = results['benefit_kpis']
         _legacy_block = ""
         if not publication_mode:
             _legacy_block = f"""
@@ -3154,8 +3173,7 @@ Synergy-to-Trade-off ratio: {results['synergy_ratio']:.2f}
    • Module D recycling credit (separate, NOT in gross): -{results['module_d_tons']:.1f} tons
    • Net incl. Module D (supplementary): {results['net_with_module_d_tons']:.1f} tons
    • Grid Carbon Intensity (applied to core B6): {results['effective_carbon_intensity']:.3f} kg CO₂/kWh
-   • Total Embodied Energy: {results['total_ee']:.0f} MJ
-   • Renewable Share (dashboard-only, NOT applied to core LCA in Phase 1b): {params['renewable_share']:.1f}%
+   • Total Embodied Energy: {results['total_ee']:.0f} MJ{_renewable_line}
 
 ⚡ OPERATIONAL ASSESSMENT
    • Energy per Passenger-km: {params['energy_per_pax']:.3f} kWh
@@ -3163,9 +3181,11 @@ Synergy-to-Trade-off ratio: {results['synergy_ratio']:.2f}
    • System Availability: {params['availability']:.1f}%
 
 💰 ECONOMIC ASSESSMENT
-   • Construction Cost: ${params['construction_cost']:.1f} million
+   • Base CAPEX: ${results['construction_cost_base']:.1f} million
+   • Contract factor: {results['contract_factor']:.2f}
+   • CAPEX used in NPV: ${results['construction_cost']:.1f} million
    • Annual Maintenance: ${params['maintenance_cost']:.1f} million
-   • Total Jobs Created: {results['total_jobs']:.0f}
+   • Jobs supported (Benefit KPI, total): {_bk['total_jobs']:.0f}
    • 50-Year Maintenance (undiscounted): ${results['total_maintenance_cost']:.1f} million
 
 {_legacy_block}

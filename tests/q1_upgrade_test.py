@@ -320,6 +320,19 @@ rc2 = c1c4fn({'steel': 1000.0}, cp2, 0.5, 2.68, 0.10)
 exp_c2 = (1000*0.5/1000)*200*0.015/1000 + (1000*0.5/1000)*50*0.10/1000
 check("R25 C2 = ΣΣ (M·share/1000)·D·EF_mode / 1000", abs(rc2['c2_tons'] - exp_c2) < 1e-12)
 
+# ── P1 / R27: market-average factor basis blocks the recycled-content substitution ──
+p_virgin = dict(base); p_virgin['recycled_content_steel'] = 0.5
+p_virgin['ef_secondary_steel'] = 0.4; p_virgin['factor_basis_steel'] = 'virgin'
+r_virgin = rfa(p_virgin)
+check("P1 virgin basis → RC applied", r_virgin['recycled_content_applied']['steel'] and not r_virgin['recycled_basis_conflict'])
+p_market = dict(p_virgin); p_market['factor_basis_steel'] = 'market-average'
+r_market = rfa(p_market)
+check("P1 market-average basis blocks RC (no double count)", not r_market['recycled_content_applied']['steel'])
+check("P1 market-average + RC flags conflict / not publication-grade",
+      r_market['recycled_basis_conflict'] and not r_market['publication_grade_full_lca'])
+check("P1 market-average A1-A3 == virgin factor (unchanged)",
+      abs(r_market['total_embodied_co2'] - r0['total_embodied_co2']) < 1e-6)
+
 # ── R1/R20: per-material A1-A3 metadata present in the audit table ──
 audit_cols = set(ns["MATERIAL_FACTOR_AUDIT"].columns)
 check("R1 audit has dqi/source/declared_unit/boundary/status",
