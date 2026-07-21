@@ -433,5 +433,44 @@ check("publication_readiness has the 7 required criteria",
        "stage_applicability_complete", "project_specific_data_complete", "uncertainty_complete"}
       <= set(_r_lf["publication_readiness"]))
 
+# ── 13. A4 validation hardening (acceptance tests 1,3,4,5) + closure gate ──────
+def _a4leg(**k):
+    d = {"material": "steel", "route_id": "1", "route_share": 1.0, "segment_no": 1,
+         "distance_km": 10.0, "mode": "rail", "distance_source": "s"}
+    d.update(k); return d
+_a4base = {"a4_scope": "wtw", "boq_source": "BOQ", "a4_mode": "advanced"}
+_ms1 = {"steel": ProjectQuantity(1e6, "kg", "BOQ", "x")}
+check("A4 route_share outside 0..1 fails (−0.2+1.2 must NOT pass)",
+      _b4a({**_a4base, "a4_advanced_legs": [_a4leg(route_id="1", route_share=-0.2),
+            _a4leg(route_id="2", route_share=1.2, segment_no=1)]}, _ms1)[1] == "validation_failed")
+check("A4 inconsistent route_share across a route's segments fails",
+      _b4a({**_a4base, "a4_advanced_legs": [_a4leg(route_id="1", route_share=1.0, segment_no=1),
+            _a4leg(route_id="1", route_share=0.9, segment_no=2)]}, _ms1)[1] == "validation_failed")
+check("A4 duplicate segment_no fails",
+      _b4a({**_a4base, "a4_advanced_legs": [_a4leg(segment_no=1), _a4leg(segment_no=1)]},
+           _ms1)[1] == "validation_failed")
+check("A4 advanced has NO global source fallback (empty segment source → incomplete)",
+      _b4a({**_a4base, "a4_advanced_legs": [_a4leg(distance_source="")]}, _ms1)[1] == "incomplete_sources")
+check("A4 negative distance fails",
+      _b4a({**_a4base, "a4_advanced_legs": [_a4leg(distance_km=-5.0)]}, _ms1)[1] == "validation_failed")
+
+# closure gate: three levels, all False in the current (B2-B5/C1-C4 unwired) state.
+_gate = _r_lf["closure_gate"]
+check("closure gate has three levels",
+      {"full_wlca_calculation_complete", "standards_reporting_complete", "q1_evidence_ready"} == set(_gate))
+check("full_wlca_calculation_complete False while B2-B5/C1-C4 unwired",
+      _gate["full_wlca_calculation_complete"] is False)
+check("q1_evidence_ready False (constant grid + uncertainty pending)",
+      _gate["q1_evidence_ready"] is False)
+check("old boolean aliases calculation-complete (not proxy/scope-blind True)",
+      _r_lf["publication_grade_full_wlca"] == _gate["full_wlca_calculation_complete"])
+
+# acceptance: reported gross == Σ reported stages; GWP == gross*1000/PKM.
+_repsum = sum(_r_lf["reported_stage_tco2e"].values())
+check("gross == Σ reported stage totals",
+      abs(_r_lf["gross_A_C_tCO2e"] - _repsum) < 1e-6)
+check("GWP == gross*1000/lifetime_pkm (reported)",
+      abs(_r_lf["GWP_kgCO2e_per_pkm"] - _r_lf["gross_A_C_tCO2e"] * 1000.0 / _r_lf["lifetime_pkm"]) < 1e-9)
+
 print("\nALL SCIENTIFIC CORE TESTS PASSED" if ok else "\nSOME TESTS FAILED")
 sys.exit(0 if ok else 1)

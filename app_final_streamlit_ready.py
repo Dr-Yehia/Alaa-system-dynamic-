@@ -3393,15 +3393,26 @@ if 'sci_lca' in TABS:
                     for s in _diag]), use_container_width=True, hide_index=True)
             st.caption(f"**Grid CI basis:** {scientific_lca.get('grid_basis', '?')}.")
 
-            f1, f2 = st.columns(2)
-            with f1:
-                st.markdown(f"**Partial-scope grade:** "
-                            f"{'🟢 sourced' if _partial else '🟡 sources open'} "
-                            "(connected stages only)")
-            with f2:
-                st.markdown(f"**Full WLCA grade:** "
-                            f"{'🟢 publication-grade' if _full else '🔴 not yet'} "
-                            "(needs A4+A5+B2-B5+C1-C4 all wired & sourced)")
+            st.markdown(f"**Partial-scope grade:** "
+                        f"{'🟢 sourced' if _partial else '🟡 sources open'} (connected stages only)")
+            _gate = scientific_lca.get("closure_gate", {})
+            g1, g2, g3 = st.columns(3)
+            with g1:
+                st.markdown(f"**Full-WLCA calculation:** "
+                            f"{'🟢' if _gate.get('full_wlca_calculation_complete') else '🔴'} "
+                            f"{_gate.get('full_wlca_calculation_complete', False)}")
+            with g2:
+                st.markdown(f"**Standards reporting:** "
+                            f"{'🟢' if _gate.get('standards_reporting_complete') else '🔴'} "
+                            f"{_gate.get('standards_reporting_complete', False)}")
+            with g3:
+                st.markdown(f"**Q1 evidence ready:** "
+                            f"{'🟢' if _gate.get('q1_evidence_ready') else '🔴'} "
+                            f"{_gate.get('q1_evidence_ready', False)}")
+            st.caption("Three-level gate: calculation-complete (all A1-C4 connected/N-A, mass "
+                       "balance ok) → standards-complete (all sources documented, Module D "
+                       "separate) → Q1-ready (project-specific annual data + uncertainty). Currently "
+                       "False by design until B2-B5/C1-C4 are wired and project data supplied.")
             for _iss in _chk.get("issues", []):
                 st.markdown(f"- 🔴 {_iss}")
             for _warn in _chk.get("warnings", []):

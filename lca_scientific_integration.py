@@ -4,6 +4,8 @@ Use this file as a guide for replacing the existing LCA core. It assumes that
 lca_scientific_core.py is in the same directory as the Streamlit app.
 """
 
+import math
+
 from lca_scientific_core import (
     B6_ENERGY_INTENSITY,
     WASTE_EF,
@@ -365,12 +367,15 @@ def build_a4_scientific_legs(params, masses):
     payload = str(params.get("a4_payload_assumption", "")).strip()
     route_source = str(params.get("a4_route_source", "")).strip()
 
-    if not route_source:
-        if entered:
-            return ([], "incomplete_sources",
-                    "A4 distance/mode were set but no route/distance source was given → "
-                    "A4 is EXCLUDED from the result (not counted as a measured zero).", [])
-        return [], "unconnected", "No A4 transport entered.", []
+    # In SIMPLE mode the single global route source attests the one distance. In ADVANCED
+    # mode there is NO global fallback — every segment must carry its own distance source.
+    if not advanced_present:
+        if not route_source:
+            if simple_entered:
+                return ([], "incomplete_sources",
+                        "A4 distance/mode were set but no route/distance source was given → "
+                        "A4 is EXCLUDED from the result (not counted as a measured zero).", [])
+            return [], "unconnected", "No A4 transport entered.", []
 
     # Assemble routes. A material's transport is split across one or more ROUTES
     # (route_share per route must sum to 1). Each route can have several SEQUENTIAL
@@ -381,16 +386,37 @@ def build_a4_scientific_legs(params, masses):
         for row in advanced:
             m = row.get("material", "not specified")
             rid = str(row.get("route_id", "1"))
-            routes.setdefault(m, {}).setdefault(rid, {"share": None, "segments": []})
-            # route_share is per route; take the first non-None value seen for the route.
             rs = float(row.get("route_share", 1.0))
-            if routes[m][rid]["share"] is None:
-                routes[m][rid]["share"] = rs
-            routes[m][rid]["segments"].append({
-                "segment_no": int(row.get("segment_no", len(routes[m][rid]["segments"]) + 1)),
+            # route_share must be within [0,1] (so -0.2 + 1.2 = 1 cannot pass).
+            if not (0.0 <= rs <= 1.0):
+                return ([], "validation_failed",
+                        f"A4 route_share for '{m}' route {rid} = {rs} is outside [0,1].", [])
+            seg_no = int(row.get("segment_no", 1))
+            if seg_no <= 0:
+                return ([], "validation_failed",
+                        f"A4 segment_no for '{m}' route {rid} must be positive (got {seg_no}).", [])
+            dist = float(row.get("distance_km", 0.0))
+            if not math.isfinite(dist) or dist < 0.0:
+                return ([], "validation_failed",
+                        f"A4 distance for '{m}' route {rid} seg {seg_no} must be finite and ≥ 0.", [])
+            rec = routes.setdefault(m, {}).setdefault(rid, {"share": None, "segments": [], "seg_nos": set()})
+            # route_share must be IDENTICAL across all segments of the same route.
+            if rec["share"] is None:
+                rec["share"] = rs
+            elif abs(rec["share"] - rs) > 1e-9:
+                return ([], "validation_failed",
+                        f"A4 route_share differs between segments of '{m}' route {rid} "
+                        f"({rec['share']} vs {rs}); it must be identical.", [])
+            if seg_no in rec["seg_nos"]:
+                return ([], "validation_failed",
+                        f"A4 duplicate segment_no {seg_no} in '{m}' route {rid}.", [])
+            rec["seg_nos"].add(seg_no)
+            rec["segments"].append({
+                "segment_no": seg_no,
                 "mode": str(row.get("mode", mode_default)).lower(),
-                "distance_km": float(row.get("distance_km", 0.0)),
-                "distance_source": str(row.get("distance_source", "")).strip() or route_source,
+                "distance_km": dist,
+                # NO global fallback in advanced mode.
+                "distance_source": str(row.get("distance_source", "")).strip(),
             })
     else:
         for material, quantity in masses.items():
@@ -997,10 +1023,8 @@ def run_scientific_lca_from_app_params(params):
     # full whole-life grade additionally requires EVERY optional stage done (connected
     # or justified not_applicable). incomplete_sources / unconnected keep it False.
     required_full = ["A4", "A5", "B2-B5", "C1-C4"]
-    publication_grade_full_wlca = (
-        publication_grade_partial_scope
-        and all(stage_status[s] in _DONE for s in required_full)
-    )
+    _all_stages_done = all(stage_status[s] in _DONE for s in required_full)
+    _no_validation_failed = "validation_failed" not in stage_status.values()
 
     connected = [s for s, st in stage_status.items() if st == "connected"]
     scope_included = [s for s, st in stage_status.items() if st in _DONE]
@@ -1036,8 +1060,34 @@ def run_scientific_lca_from_app_params(params):
         "uncertainty_complete": False,  # Phase-4 MC wiring for the scientific engine is pending
     }
 
+    # ── Three-level closure gate (replaces the single misleading boolean) ────────
+    # 1) full_wlca_calculation_complete: every applicable A1-C4 stage connected or
+    #    justified N/A, mass balance valid, no validation failures.
+    full_wlca_calculation_complete = bool(
+        publication_grade_partial_scope and _all_stages_done
+        and _no_validation_failed and mass_balance_valid)
+    # 2) standards_reporting_complete: also all factor/activity sources documented
+    #    (no OPEN factor / no open issues), Module D kept separate.
+    standards_reporting_complete = bool(
+        full_wlca_calculation_complete and not checks.get("issues"))
+    # 3) q1_evidence_ready: also project-specific (annual grid, no undisclosed proxy)
+    #    and uncertainty complete.
+    q1_evidence_ready = bool(
+        standards_reporting_complete
+        and publication_readiness["project_specific_data_complete"]
+        and publication_readiness["uncertainty_complete"])
+    closure_gate = {
+        "full_wlca_calculation_complete": full_wlca_calculation_complete,
+        "standards_reporting_complete": standards_reporting_complete,
+        "q1_evidence_ready": q1_evidence_ready,
+    }
+    # Backward-compatible alias: the old boolean now means "calculation complete", and
+    # it can only be True when the calculation really is complete (never on proxy/scope gaps).
+    publication_grade_full_wlca = full_wlca_calculation_complete
+
     final_lca["publication_checks"] = checks
     final_lca["publication_readiness"] = publication_readiness
+    final_lca["closure_gate"] = closure_gate
     final_lca["publication_grade_partial_scope"] = publication_grade_partial_scope
     final_lca["publication_grade_full_wlca"] = publication_grade_full_wlca
     final_lca["stage_status"] = stage_status
