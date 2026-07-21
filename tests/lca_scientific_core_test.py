@@ -159,5 +159,100 @@ z_mass = _ctl([{"material": "steel", "mass_kg": 0.0, "distance_km": 100.0, "mode
                 "scope": "wtw", "mass_source": "BOQ", "distance_source": "route"}], "A4")
 check("A4 zero mass → zero carbon", abs(z_mass["total_tco2e"]) < 1e-12)
 
+# A4 entered but no route source → incomplete_sources (NOT a silent measured zero).
+a4_nosrc = dict(full)
+a4_nosrc.update({"a4_mode": "simple", "transport_distance_km": 50.0, "transport_mode": "truck"})
+r_ns = run_scientific_lca_from_app_params(a4_nosrc)
+check("A4 entered w/o source → incomplete_sources",
+      r_ns["stage_status"]["A4"] == "incomplete_sources")
+check("A4 incomplete listed (not counted as measured zero)",
+      "A4" in r_ns["incomplete_source_stages"])
+
+# Advanced rows do not double-count the simple route.
+from lca_scientific_integration import build_a4_scientific_legs as _b4a
+_masses_stub = {"steel": ProjectQuantity(1e6, "kg", "BOQ", "x")}
+adv_params = {"a4_route_source": "route", "a4_scope": "wtw", "boq_source": "BOQ",
+              "transport_distance_km": 50.0, "transport_mode": "truck", "a4_mode": "advanced",
+              "a4_advanced_legs": [{"material": "steel", "mass_kg": 5e5, "distance_km": 20.0, "mode": "rail"}]}
+_legs, _st, _ = _b4a(adv_params, _masses_stub)
+check("advanced A4 rows used, simple route NOT added (no double count)",
+      len(_legs) == 1 and _legs[0]["mode"] == "rail" and abs(_legs[0]["distance_km"] - 20.0) < 1e-9)
+
+# ── 10. A5 five-component wiring ───────────────────────────────────────────────
+from lca_scientific_core import calculate_a5 as _ca5, calculate_fuel as _cf
+
+# diesel direct vs wtw
+_dl = ProjectQuantity(100000.0, "L", "site fuel log", "diesel")
+_fd = _cf(_dl, "A5", "direct")["tco2e"]
+_fw = _cf(_dl, "A5", "wtw")["tco2e"]
+check("A5 diesel direct = L*2.57082/1000", abs(_fd - 100000.0 * 2.57082 / 1000.0) < 1e-6)
+check("A5 diesel wtw = L*3.18183/1000", abs(_fw - 100000.0 * 3.18183 / 1000.0) < 1e-6)
+
+# tonne-based treatment + transport conversion via calculate_a5
+grid1 = GridCarbonYear(1, 0.40, 0.03, 0.05, "Egypt table", "y1", "Egypt")
+a5r = _ca5(
+    diesel_litres=_dl, diesel_scope="wtw",
+    electricity_kwh=ProjectQuantity(2_000_000.0, "kWh", "site meter", "elec"), grid=grid1,
+    extra_waste_materials_kg={"concrete": ProjectQuantity(1_000_000.0, "kg", "waste plan", "W")},
+    waste_factor_overrides=None,
+    waste_delivery_legs=[{"material": "concrete", "mass_kg": 1_000_000.0, "distance_km": 30.0,
+                          "mode": "truck", "scope": "wtw", "mass_source": "wp", "distance_source": "haul"}],
+    waste_treatment_items=[{"material": "concrete", "waste_kg": 1_000_000.0, "waste_source": "wp",
+                            "factor_code": "mineral_landfill"}])
+check("A5 electricity uses supplied grid CI (0.48)",
+      abs(a5r["electricity_tco2e"] - 2_000_000.0 * 0.48 / 1000.0) < 1e-6)
+# treatment: 1e6 kg = 1000 t * 1.26338 kgCO2e/t = 1263.38 kg = 1.26338 t
+check("A5 treatment per-tonne (1000 t * 1.26338 → 1.26338 t)",
+      abs(a5r["waste_treatment_tco2e"] - (1_000_000.0 / 1000.0) * 1.26338 / 1000.0) < 1e-9)
+# transport: (1e6/1000) t * 30 km * 0.12522 / 1000
+check("A5 waste transport conversion",
+      abs(a5r["waste_transport_tco2e"] - (1_000_000.0 / 1000.0) * 30.0 * 0.12522 / 1000.0) < 1e-9)
+_sum5 = (a5r["fuel_tco2e"] + a5r["electricity_tco2e"] + a5r["extra_waste_product_tco2e"]
+         + a5r["waste_transport_tco2e"] + a5r["waste_treatment_tco2e"])
+check("A5 total == sum of five components", abs(_sum5 - a5r["total_tco2e"]) < 1e-9)
+
+# installed vs purchased waste formula + no double counting
+from lca_scientific_integration import _a5_waste_mass_kg as _wm
+check("A5 installed waste W = M*WR/(1-WR)",
+      abs(_wm(1_000_000.0, 0.05, "installed") - 1_000_000.0 * 0.05 / 0.95) < 1e-6)
+check("A5 purchased waste W = M*WR",
+      abs(_wm(1_000_000.0, 0.05, "purchased") - 1_000_000.0 * 0.05) < 1e-6)
+
+# integration-level A5: on/off, missing source, purchased no-production, unsupported route
+_a5base = dict(full)
+_a5base.update({"a4_route_source": "route survey"})  # A4 connected too
+_a5on = dict(_a5base)
+_a5on.update(include_a5=True, a5_boq_mode="installed",
+             a5_diesel_l=100000.0, a5_diesel_mode="simple", a5_diesel_scope="wtw",
+             a5_diesel_source="fuel log", a5_elec_kwh=2_000_000.0, a5_electricity_source="meter",
+             a5_waste_rates={"concrete": 0.05}, a5_waste_routes={"concrete": {"transport_km": 30.0}},
+             a5_treatment_shares={"concrete": {"reuse": 0.0, "recycle": 0.0, "landfill": 1.0}},
+             a5_waste_transport_km=30.0, a5_waste_source="waste plan", a5_waste_route_source="haul")
+_r_on = run_scientific_lca_from_app_params(_a5on)
+check("A5 connects when fully sourced", _r_on["stage_status"]["A5"] == "connected")
+check("A5 in connected scope label", "A5" in _r_on["connected_stages"])
+
+_r_off = run_scientific_lca_from_app_params(dict(_a5base))
+check("A5 off → unconnected", _r_off["stage_status"]["A5"] == "unconnected")
+
+_a5_missrc = dict(_a5on); _a5_missrc["a5_diesel_source"] = ""
+_r_ms = run_scientific_lca_from_app_params(_a5_missrc)
+check("A5 missing diesel source → incomplete_sources",
+      _r_ms["stage_status"]["A5"] == "incomplete_sources")
+
+_a5_pur = dict(_a5on); _a5_pur["a5_boq_mode"] = "purchased"
+_r_pur = run_scientific_lca_from_app_params(_a5_pur)
+check("A5 purchased basis → no waste-production double count",
+      abs(_r_pur["modules"]["A5"]["extra_waste_product_tco2e"]) < 1e-9)
+
+_a5_glass = dict(_a5on)
+_a5_glass["a5_waste_rates"] = {"glass": 0.05}  # glass has NO verified waste factor
+_r_gl = run_scientific_lca_from_app_params(_a5_glass)
+check("A5 unsupported treatment route (glass) → incomplete_sources",
+      _r_gl["stage_status"]["A5"] == "incomplete_sources")
+
+check("full_wlca STILL False after A4+A5 (B2-B5/C1-C4 unwired)",
+      _r_on["publication_grade_full_wlca"] is False)
+
 print("\nALL SCIENTIFIC CORE TESTS PASSED" if ok else "\nSOME TESTS FAILED")
 sys.exit(0 if ok else 1)

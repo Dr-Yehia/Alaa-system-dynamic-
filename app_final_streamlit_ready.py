@@ -3320,13 +3320,28 @@ if 'sci_lca' in TABS:
                           f"{scientific_lca['GWP_kgCO2e_per_pkm']:.5f}")
             with s3:
                 st.metric("Module D (tCO₂e, separate)", f"{scientific_lca['module_D1_signed_tCO2e_separate']:,.1f}")
+            _incomplete = scientific_lca.get("incomplete_source_stages", [])
             st.caption(f"**Connected stages:** {', '.join(_connected)}. "
                        f"**Not yet connected (reported as 0 because unwired, NOT because negligible):** "
                        f"{', '.join(_unconnected) if _unconnected else 'none'}. "
                        "This is NOT a full Gross A–C until every stage is wired. Module D is "
                        "supplementary and is NEVER added to or subtracted from the headline.")
-            if scientific_lca.get("a4_note"):
-                st.caption(f"A4 status: {scientific_lca['a4_note']}")
+
+            _sstat = scientific_lca.get("stage_status", {})
+            _STATUS_ICON = {"connected": "🟢", "not_applicable": "⚪", "unconnected": "⚫",
+                            "incomplete_sources": "🟡", "validation_failed": "🔴"}
+            st.markdown("#### Stage connection status")
+            _stat_df = pd.DataFrame(
+                [{"stage": s, "status": _sstat[s], "": _STATUS_ICON.get(_sstat[s], "")}
+                 for s in _sstat])
+            st.dataframe(_stat_df, use_container_width=True, hide_index=True)
+            if _incomplete:
+                st.warning("🟡 **Entered but EXCLUDED for missing sources (not a measured zero):** "
+                           + ", ".join(_incomplete) + ". See stage notes below.")
+            for _stg in ("A4", "A5"):
+                _mod = scientific_lca.get("modules", {}).get(_stg.replace("-", "_"))
+                if isinstance(_mod, dict) and _mod.get("note"):
+                    st.caption(f"{_stg} note: {_mod['note']}")
 
             f1, f2 = st.columns(2)
             with f1:
@@ -3345,6 +3360,32 @@ if 'sci_lca' in TABS:
             st.markdown("#### Stage contribution (connected scope)")
             st.dataframe(pd.DataFrame(scientific_lca['stage_contribution']),
                          use_container_width=True, hide_index=True)
+
+            _a4mod = scientific_lca.get("modules", {}).get("A4", {})
+            if _a4mod.get("by_material") or _a4mod.get("by_mode"):
+                with st.expander("🚚 A4 breakdown (per material / per mode)", expanded=False):
+                    if _a4mod.get("by_material"):
+                        st.markdown("**Per material (tCO₂e)**")
+                        st.dataframe(pd.DataFrame(
+                            [{"material": k, "tCO2e": v} for k, v in _a4mod["by_material"].items()]),
+                            use_container_width=True, hide_index=True)
+                    if _a4mod.get("by_mode"):
+                        st.markdown("**Per mode (tCO₂e)**")
+                        st.dataframe(pd.DataFrame(
+                            [{"mode": k, "tCO2e": v} for k, v in _a4mod["by_mode"].items()]),
+                            use_container_width=True, hide_index=True)
+
+            _a5mod = scientific_lca.get("modules", {}).get("A5", {})
+            if _a5mod.get("total_tco2e", 0.0) or _a5mod.get("status") == "connected":
+                with st.expander("🏗️ A5 five-component breakdown", expanded=False):
+                    st.dataframe(pd.DataFrame([
+                        {"component": "A5.1 fuel", "tCO2e": _a5mod.get("fuel_tco2e", 0.0)},
+                        {"component": "A5.2 electricity", "tCO2e": _a5mod.get("electricity_tco2e", 0.0)},
+                        {"component": "A5.4 waste production", "tCO2e": _a5mod.get("extra_waste_product_tco2e", 0.0)},
+                        {"component": "A5.5 waste transport", "tCO2e": _a5mod.get("waste_transport_tco2e", 0.0)},
+                        {"component": "A5.6 waste treatment", "tCO2e": _a5mod.get("waste_treatment_tco2e", 0.0)},
+                        {"component": "A5 total", "tCO2e": _a5mod.get("total_tco2e", 0.0)},
+                    ]), use_container_width=True, hide_index=True)
 
             _mb = scientific_lca.get("mass_balance", {}).get("rows")
             if _mb:

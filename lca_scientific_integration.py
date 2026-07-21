@@ -6,6 +6,8 @@ lca_scientific_core.py is in the same directory as the Streamlit app.
 
 from lca_scientific_core import (
     B6_ENERGY_INTENSITY,
+    WASTE_EF,
+    Evidence,
     GridCarbonYear,
     ProjectQuantity,
     ScientificInputError,
@@ -17,6 +19,7 @@ from lca_scientific_core import (
     calculate_module_d1,
     calculate_transport_legs,
     combine_lca_modules,
+    make_project_evidence,
     publication_checks,
     render_lca_audit_streamlit,
     update_mass_balance,
@@ -150,6 +153,24 @@ def add_lca_source_inputs(st, assessment_lifetime_default=50):
         key="lca_a4_payload",
     )
 
+    st.markdown("#### A5 construction provenance")
+    st.caption(
+        "A5 uses the A5 editor quantities (diesel, site electricity, per-material waste "
+        "rates/routes). Each non-zero part needs its own source. Waste treatment uses the "
+        "verified per-tonne GHG-2025 factors; the construction-year grid CI drives A5 electricity."
+    )
+    a5_diesel_scope = st.selectbox(
+        "A5 diesel scope", ["wtw", "direct", "wtt"], index=0, key="lca_a5_diesel_scope",
+        help="wtw = 3.18183, direct = 2.57082 kgCO2e/L (GHG 2025).")
+    a5_diesel_source = st.text_input(
+        "A5 site-diesel quantity source", value="", key="lca_a5_diesel_source")
+    a5_electricity_source = st.text_input(
+        "A5 site-electricity quantity source", value="", key="lca_a5_electricity_source")
+    a5_waste_source = st.text_input(
+        "A5 waste-generation source (rates/quantities)", value="", key="lca_a5_waste_source")
+    a5_waste_route_source = st.text_input(
+        "A5 waste-transport route/distance source", value="", key="lca_a5_waste_route_source")
+
     return {
         "assessment_lifetime": int(assessment_lifetime),
         "assessment_lifetime_source": assessment_lifetime_source,
@@ -172,6 +193,11 @@ def add_lca_source_inputs(st, assessment_lifetime_default=50):
         "a4_route_source": a4_route_source,
         "a4_scope": a4_scope,
         "a4_payload_assumption": a4_payload_assumption,
+        "a5_diesel_scope": a5_diesel_scope,
+        "a5_diesel_source": a5_diesel_source,
+        "a5_electricity_source": a5_electricity_source,
+        "a5_waste_source": a5_waste_source,
+        "a5_waste_route_source": a5_waste_route_source,
     }
 
 
@@ -260,27 +286,41 @@ def build_material_masses_from_app_params(params):
 def build_a4_scientific_legs(params, masses):
     """Build A4 transport legs from the existing app A4 editor / simple inputs.
 
-    Returns (legs, connected, note). A4 only connects when an A4 route/distance
-    source is supplied: in publication we never invent an unsourced 50 km distance.
-    The distance value itself is attested by the route source; masses reuse the BOQ
-    source. EF comes from the registry mode/scope factor (WTW preferred).
-    """
-    route_source = str(params.get("a4_route_source", "")).strip()
-    if not route_source:
-        return [], False, "A4 route/distance source is open → A4 not connected (no fabricated distance)."
+    Returns (legs, status, note) where status is one of:
+      "connected"          route source present → legs built from the sourced masses;
+      "incomplete_sources" the user set A4 distance/mode but gave no route/distance
+                           source → A4 is EXCLUDED (not a silent measured zero);
+      "unconnected"        no A4 transport was entered at all.
 
+    Rules enforced:
+      * Advanced multi-leg rows take priority; the simple route is NOT added on top
+        (no double counting).
+      * Leg masses come from the scientific A1-A3 masses (same masses as A1-A3).
+      * No fabricated 50 km distance in publication: a distance is used only with a
+        route source that attests it. WTW is preferred and is a single factor (the
+        core never adds WTT twice).
+    """
     scope = str(params.get("a4_scope", "wtw")).lower()
     boq_source = str(params.get("boq_source", "")).strip()
     mode_default = str(params.get("transport_mode", "truck")).lower()
     dist_default = float(params.get("transport_distance_km", 0.0))
     a4_mode = str(params.get("a4_mode", "simple")).lower()
+    advanced = params.get("a4_advanced_legs")
+    advanced_present = (a4_mode == "advanced") and bool(advanced)
+    simple_entered = dist_default > 0.0
+    entered = advanced_present or simple_entered
+
+    route_source = str(params.get("a4_route_source", "")).strip()
+    if not route_source:
+        if entered:
+            return ([], "incomplete_sources",
+                    "A4 distance/mode were set but no route/distance source was given → "
+                    "A4 is EXCLUDED from the result (not counted as a measured zero).")
+        return [], "unconnected", "No A4 transport entered."
 
     legs = []
-    advanced = params.get("a4_advanced_legs")
-    if a4_mode == "advanced" and advanced:
-        # Per-material / multi-leg rows from the advanced editor. A float ef override
-        # in the UI is intentionally NOT used as a scientific factor (no source); the
-        # sourced registry mode/scope factor is used instead.
+    if advanced_present:
+        # Advanced rows win; simple route is ignored → no double counting.
         for row in advanced:
             legs.append({
                 "material": row.get("material", "not specified"),
@@ -306,7 +346,188 @@ def build_a4_scientific_legs(params, masses):
                 "mass_source": boq_source or quantity.source,
                 "distance_source": route_source,
             })
-    return legs, True, ""
+    return legs, "connected", ""
+
+
+def _a4_breakdown(a4_result):
+    """Aggregate A4 legs into per-material and per-mode tCO2e for reviewer audit."""
+    by_material, by_mode = {}, {}
+    for leg in a4_result.get("legs", []):
+        by_material[leg["material"]] = by_material.get(leg["material"], 0.0) + float(leg["tCO2e"])
+        by_mode[leg["mode"]] = by_mode.get(leg["mode"], 0.0) + float(leg["tCO2e"])
+    return by_material, by_mode
+
+
+# ── A5 construction: verified per-tonne waste routes by material class ─────────
+# Only materials with a defensible verified GHG-2025 waste factor are auto-routed.
+# glass and wood have NO verified waste factor in the uploaded set → their waste
+# treatment must be supplied as a documented override, otherwise it is flagged
+# incomplete (never silently mapped to a mineral/metal factor).
+_A5_WASTE_ROUTE = {
+    "concrete": {"landfill": "mineral_landfill", "recycle": "mineral_open_loop"},
+    "steel":    {"landfill": "metal_landfill",   "recycle": None},
+    "aluminum": {"landfill": "metal_landfill",   "recycle": None},
+    "frp":      {"landfill": "plastic_landfill_proxy", "recycle": None},
+}
+
+
+def _a5_waste_mass_kg(installed_or_purchased_mass_kg, waste_rate, boq_basis):
+    """E8 / purchased-basis waste mass.
+
+    installed basis: W = M_installed * WR / (1 - WR)  (extra purchased over installed)
+    purchased basis: W = M_purchased * WR             (already inside A1-A3)
+    """
+    wr = float(waste_rate)
+    m = float(installed_or_purchased_mass_kg)
+    if wr <= 0.0 or m <= 0.0:
+        return 0.0
+    if wr >= 1.0:
+        raise ScientificInputError("A5 waste rate must satisfy 0 <= WR < 1.")
+    if boq_basis == "installed":
+        return m * wr / (1.0 - wr)
+    return m * wr
+
+
+def build_a5_scientific_activity(params, masses, grid_construction):
+    """Build the arguments for calculate_a5 from the existing app A5 editors.
+
+    Returns (a5_kwargs_or_None, status, note). A5 is made of five separate parts:
+    fuel, site electricity, production of wasted material, waste transport and waste
+    treatment. Every non-zero part must carry its own source; an entered-but-unsourced
+    part is EXCLUDED and sets status="incomplete_sources" (never a silent zero).
+
+    Key accounting rule: production of wasted material is added ONLY when the BOQ is
+    on an *installed* basis (A1-A3 did not yet include the waste). On a *purchased*
+    basis the waste material is already inside A1-A3, so it is NOT added again.
+    """
+    if not bool(params.get("include_a5", False)):
+        return None, "unconnected", "A5 module is off."
+
+    boq_basis = str(params.get("a5_boq_mode", "installed")).lower()
+    diesel_l = float(params.get("a5_diesel_l", 0.0))
+    diesel_mode = str(params.get("a5_diesel_mode", "simple")).lower()
+    diesel_scope = str(params.get("a5_diesel_scope", "wtw")).lower()
+    diesel_source = str(params.get("a5_diesel_source", "")).strip()
+    elec_kwh = float(params.get("a5_elec_kwh", 0.0))
+    elec_source = str(params.get("a5_electricity_source", "")).strip()
+    waste_source = str(params.get("a5_waste_source", "")).strip()
+    waste_route_source = str(params.get("a5_waste_route_source", "")).strip()
+    waste_rates = params.get("a5_waste_rates") or {}
+    global_rate = float(params.get("a5_waste_rate", 0.0))
+    routes_ui = params.get("a5_waste_routes") or {}
+    shares_ui = params.get("a5_treatment_shares") or {}
+    default_dist = float(params.get("a5_waste_transport_km", 0.0))
+
+    status = "connected"
+    notes = []
+    entered = False
+
+    # ── A5.1 fuel ──────────────────────────────────────────────────────────────
+    diesel_litres = None
+    if diesel_mode == "equipment":
+        if params.get("a5_equipment"):
+            entered = True
+            status = "incomplete_sources"
+            notes.append("A5 diesel is in equipment-fleet mode; the scientific core needs total "
+                         "litres. Provide simple total litres or the litres are excluded.")
+    elif diesel_l > 0.0:
+        entered = True
+        if diesel_source:
+            diesel_litres = ProjectQuantity(diesel_l, "L", diesel_source, "site diesel")
+        else:
+            status = "incomplete_sources"
+            notes.append("A5 site diesel entered without a source → excluded.")
+
+    # ── A5.2 electricity (construction-year CI) ────────────────────────────────
+    electricity_kwh = None
+    if elec_kwh > 0.0:
+        entered = True
+        if elec_source and grid_construction is not None:
+            electricity_kwh = ProjectQuantity(elec_kwh, "kWh", elec_source, "site electricity")
+        else:
+            status = "incomplete_sources"
+            notes.append("A5 site electricity entered without a source (or no construction-year "
+                         "grid CI) → excluded.")
+
+    # ── A5.3–A5.6 waste: production + transport + treatment ─────────────────────
+    extra_waste_materials_kg = {}
+    waste_delivery_legs = []
+    waste_treatment_items = []
+    any_waste_entered = False
+
+    for material, quantity in masses.items():
+        wr = float(waste_rates.get(material, global_rate))
+        mass_kg = float(quantity.value)
+        if wr <= 0.0 or mass_kg <= 0.0:
+            continue
+        any_waste_entered = True
+        entered = True
+        if not waste_source:
+            status = "incomplete_sources"
+            notes.append(f"A5 waste for {material} entered without a waste-generation source → excluded.")
+            continue
+
+        w_kg = _a5_waste_mass_kg(mass_kg, wr, boq_basis)
+        if w_kg <= 0.0:
+            continue
+
+        # A5.4 production of wasted material — installed basis only (no double count).
+        if boq_basis == "installed":
+            extra_waste_materials_kg[material] = ProjectQuantity(
+                w_kg, "kg", waste_source, "installed-basis waste production (E8)")
+
+        # A5.5 waste transport.
+        route = routes_ui.get(material, {})
+        dist = float(route.get("transport_km", default_dist))
+        if dist > 0.0:
+            if waste_route_source:
+                waste_delivery_legs.append({
+                    "material": material, "mass_kg": w_kg, "distance_km": dist,
+                    "mode": "truck", "scope": "wtw",
+                    "mass_source": waste_source, "distance_source": waste_route_source,
+                })
+            else:
+                status = "incomplete_sources"
+                notes.append(f"A5 waste transport for {material} has a distance but no route source → excluded.")
+
+        # A5.6 waste treatment (per-tonne verified factors; shares honoured where verified).
+        route_codes = _A5_WASTE_ROUTE.get(material)
+        if route_codes is None:
+            status = "incomplete_sources"
+            notes.append(f"A5 waste treatment for {material} has no verified GHG-2025 factor "
+                         "(supply a documented override) → excluded.")
+            continue
+        shares = shares_ui.get(material, {"landfill": 1.0, "recycle": 0.0, "reuse": 0.0})
+        landfill_kg = w_kg * float(shares.get("landfill", 1.0))
+        recycle_kg = w_kg * float(shares.get("recycle", 0.0))
+        # reuse share → no processing emission in A5 (documented); recovery benefit is Module D.
+        if landfill_kg > 0.0:
+            waste_treatment_items.append({
+                "material": material, "waste_kg": landfill_kg, "waste_source": waste_source,
+                "route": "landfill", "factor_code": route_codes["landfill"]})
+        if recycle_kg > 0.0:
+            code = route_codes["recycle"] or route_codes["landfill"]
+            if route_codes["recycle"] is None:
+                notes.append(f"A5 {material} recycling has no verified processing factor; "
+                             "conservatively charged at the landfill factor.")
+            waste_treatment_items.append({
+                "material": material, "waste_kg": recycle_kg, "waste_source": waste_source,
+                "route": "recycle", "factor_code": code})
+
+    if not entered:
+        return None, "unconnected", "A5 module on but no fuel/electricity/waste entered."
+
+    a5_kwargs = dict(
+        diesel_litres=diesel_litres,
+        diesel_scope=diesel_scope,
+        electricity_kwh=electricity_kwh,
+        grid=grid_construction if electricity_kwh is not None else None,
+        extra_waste_materials_kg=extra_waste_materials_kg or None,
+        waste_factor_overrides=None,
+        waste_delivery_legs=waste_delivery_legs,
+        waste_treatment_items=waste_treatment_items,
+    )
+    return a5_kwargs, status, " ".join(notes)
 
 
 def run_scientific_lca_from_app_params(params):
@@ -327,12 +548,18 @@ def run_scientific_lca_from_app_params(params):
     # A4 wired from the app editors. Explicit pre-built legs win; otherwise build from UI.
     a4_legs = params.get("a4_scientific_legs")
     if a4_legs:
-        a4_connected, a4_note = True, ""
+        a4_status, a4_note = "connected", ""
     else:
-        a4_legs, a4_connected, a4_note = build_a4_scientific_legs(params, masses)
+        a4_legs, a4_status, a4_note = build_a4_scientific_legs(params, masses)
     a4 = calculate_transport_legs(a4_legs, "A4", default_scope="wtw") if a4_legs else {
         "stage": "A4", "total_tco2e": 0.0, "source_audit": [], "legs": []
     }
+    a4_by_material, a4_by_mode = _a4_breakdown(a4)
+    a4["by_material"] = a4_by_material
+    a4["by_mode"] = a4_by_mode
+    a4["status"] = a4_status
+    a4["note"] = a4_note
+    a4["equation_id"] = "E3_A4_C2"
 
     grid_source = str(params.get("grid_source", "")).strip()
     grid_location = str(params.get("grid_location", "")).strip()
@@ -389,11 +616,20 @@ def run_scientific_lca_from_app_params(params):
     }
     b6 = calculate_b6(annual_pkm_by_year, grid_by_year, energy_intensity)
 
-    a5_inputs = params.get("a5_scientific_inputs") or {}
-    a5_connected = bool(a5_inputs)
-    a5 = calculate_a5(**a5_inputs) if a5_inputs else {
-        "stage": "A5", "total_tco2e": 0.0, "source_audit": []
-    }
+    # A5 wired from the app editors (fuel + electricity + waste production/transport/treatment).
+    a5_prebuilt = params.get("a5_scientific_inputs")
+    if a5_prebuilt:
+        a5 = calculate_a5(**a5_prebuilt)
+        a5_status, a5_note = "connected", ""
+    else:
+        a5_kwargs, a5_status, a5_note = build_a5_scientific_activity(
+            params, masses, grid_by_year.get(1))
+        if a5_kwargs is not None:
+            a5 = calculate_a5(**a5_kwargs)
+        else:
+            a5 = {"stage": "A5", "total_tco2e": 0.0, "source_audit": []}
+    a5["status"] = a5_status
+    a5["note"] = a5_note
 
     b_events = params.get("b2_b5_scientific_events") or []
     b2b5_connected = bool(b_events)
@@ -427,38 +663,54 @@ def run_scientific_lca_from_app_params(params):
         assessment_period_years=rsp,
     )
 
-    # ── Two-level publication grade ──────────────────────────────────────────
-    # A1-A3 and B6 always reach this point sourced (else the run raised earlier).
-    scope_connected = {
-        "A1-A3": True,
-        "A4": bool(a4_connected),
-        "A5": a5_connected,
-        "B2-B5": b2b5_connected,
-        "B6": True,
-        "C1-C4": c1c4_connected,
+    # ── Per-stage status vocabulary ──────────────────────────────────────────
+    # A zero total is NOT the same as "done": distinguish connected / not_applicable /
+    # unconnected / incomplete_sources / validation_failed so a 0 is never mistaken
+    # for a completed, sourced stage.
+    def _optional_status(connected_flag):
+        return "connected" if connected_flag else "unconnected"
+
+    stage_status = {
+        "A1-A3": "connected",   # reached here only if masses were sourced
+        "A4": a4_status,
+        "A5": a5_status,
+        "B2-B5": _optional_status(b2b5_connected),
+        "B6": "connected",      # reached here only if grid + ridership + RSP sourced
+        "C1-C4": _optional_status(c1c4_connected),
     }
+    _DONE = {"connected", "not_applicable"}
+    # A stage is part of the reported partial number only when it is actually connected.
+    scope_connected = {s: (st == "connected") for s, st in stage_status.items()}
+
     # partial-scope grade = the CONNECTED stages are fully sourced (no OPEN factor,
     # FRP handled, one grid record per year). This is what publication_checks verifies.
     publication_grade_partial_scope = bool(checks.get("publication_grade", False))
-    # full whole-life grade additionally requires EVERY optional stage connected.
+    # full whole-life grade additionally requires EVERY optional stage done (connected
+    # or justified not_applicable). incomplete_sources / unconnected keep it False.
     required_full = ["A4", "A5", "B2-B5", "C1-C4"]
     publication_grade_full_wlca = (
         publication_grade_partial_scope
-        and all(scope_connected[s] for s in required_full)
+        and all(stage_status[s] in _DONE for s in required_full)
     )
 
-    connected = [s for s, v in scope_connected.items() if v]
-    unconnected = [s for s, v in scope_connected.items() if not v]
+    connected = [s for s, st in stage_status.items() if st == "connected"]
+    scope_included = [s for s, st in stage_status.items() if st in _DONE]
+    unconnected = [s for s, st in stage_status.items() if st not in _DONE]
+    incomplete = [s for s, st in stage_status.items() if st == "incomplete_sources"]
 
     final_lca["publication_checks"] = checks
     final_lca["publication_grade_partial_scope"] = publication_grade_partial_scope
     final_lca["publication_grade_full_wlca"] = publication_grade_full_wlca
+    final_lca["stage_status"] = stage_status
     final_lca["scope_connected"] = scope_connected
     final_lca["connected_stages"] = connected
     final_lca["unconnected_stages"] = unconnected
+    final_lca["incomplete_source_stages"] = incomplete
     # Alias: the combined value is a PARTIAL, connected-scope total until every stage is wired.
     final_lca["connected_scope_tCO2e"] = final_lca["gross_A_C_tCO2e"]
-    final_lca["scope_label"] = "Scientific partial LCA: " + " + ".join(connected)
+    # Scope label is generated from the status map, never hand-written, so it can never
+    # drift from what was actually summed.
+    final_lca["scope_label"] = "Scientific partial LCA: " + " + ".join(scope_included)
     final_lca["a4_note"] = a4_note
     final_lca["mass_balance"] = mass_balance
     final_lca["modules"] = {
