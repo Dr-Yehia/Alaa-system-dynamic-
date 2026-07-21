@@ -6,6 +6,19 @@ from plotly.subplots import make_subplots
 from datetime import datetime
 import io
 
+# ── Referenced scientific LCA core (separate, fully-sourced module) ──
+# Parallel, authoritative LCA engine: every factor/equation carries its source and
+# the core refuses to compute a publication result while any required source is open.
+# It runs ALONGSIDE the existing engine (which powers the dashboard) and never
+# changes the legacy result keys.
+try:
+    from lca_scientific_core import ScientificInputError, render_lca_audit_streamlit, OPEN_SOURCE_REQUIREMENTS
+    from lca_scientific_integration import add_lca_source_inputs, run_scientific_lca_from_app_params
+    SCI_LCA_AVAILABLE = True
+except Exception as _sci_import_err:  # pragma: no cover - defensive
+    SCI_LCA_AVAILABLE = False
+    _SCI_IMPORT_ERROR = str(_sci_import_err)
+
 # ═══════════════════════════════════════════════════════════════
 # PAGE CONFIGURATION
 # ═══════════════════════════════════════════════════════════════
@@ -2746,6 +2759,17 @@ with st.sidebar:
             recycling_scenario = st.selectbox("Legacy Module-D scenario", ["none", "conservative", "base"], index=0, key="recycling_scenario")
             renewable_share = st.slider("Renewable share (%) — dashboard-only", 0, 100, 20, key="renewable")
 
+        # ── Referenced scientific-LCA provenance (feeds the strict, sourced core only) ──
+        # These inputs do NOT change any legacy result. They supply the traceable sources
+        # (densities, BOQ, ridership, Egypt grid CI, RSP) the referenced core requires
+        # before it will report a publication-grade number.
+        lca_provenance = {}
+        if SCI_LCA_AVAILABLE:
+            with st.expander("🔬 Scientific LCA provenance (referenced core)", expanded=False):
+                st.caption("Fill these from project evidence to unlock the referenced Scientific LCA tab. "
+                           "Empty fields keep that tab in 'source-open' mode (no fabricated numbers).")
+                lca_provenance = add_lca_source_inputs(st, assessment_lifetime_default=int(ASSESSMENT_LIFETIME_YEARS))
+
         st.markdown("---")
         st.caption("↑ Use the **Run Assessment** button at the top of this panel to apply all inputs.")
     run_btn = bool(run_btn)
@@ -2808,6 +2832,8 @@ current_params = {
     **{f'eol_reuse_{_m}': eol_table[_m]['reuse'] for _m in eol_table},
     **{f'eol_recycle_{_m}': eol_table[_m]['recycle'] for _m in eol_table},
     **{f'eol_secondary_ef_{_m}': eol_table[_m]['secondary_ef'] for _m in eol_table},
+    # Referenced scientific-LCA provenance (used only by the strict sourced core; never by the legacy engine).
+    **lca_provenance,
 }
 
 @st.cache_data
@@ -2852,7 +2878,8 @@ with st.expander("🧩 LCA Stage Coverage", expanded=False):
 # MAIN CONTENT - TABS (Publication mode hides illustrative/legacy tabs)
 # ═══════════════════════════════════════════════════════════════
 _TAB_LABELS = {
-    'results': "📊 Results & Analysis", 'oat': "📊 Sensitivity (OAT)",
+    'results': "📊 Results & Analysis", 'sci_lca': "🔬 Scientific LCA (referenced)",
+    'oat': "📊 Sensitivity (OAT)",
     'uncertainty': "🎲 Uncertainty (Phase 4)", 'si': "🏁 Sustainability Index",
     'sd': "🔧 System Dynamics (B6)", 'benchmark': "🔬 External Benchmarking",
     'about': "📖 About & Methodology",
@@ -2860,9 +2887,11 @@ _TAB_LABELS = {
     'surface3d': "🗄️ 3D Surface (illustrative)", 'urban': "🗄️ Urban 3D (illustrative)",
     'interaction': "🗄️ Interaction Net (illustrative)",
 }
-# R18 final tab order: Results → Sensitivity → System Dynamics (B6) →
-# Uncertainty → Sustainability Index → External Benchmarking → Methodology.
-_SCI_ORDER = ['results', 'oat', 'sd', 'uncertainty', 'si', 'benchmark', 'about']
+# R18 final tab order: Results → Scientific LCA (referenced) → Sensitivity →
+# System Dynamics (B6) → Uncertainty → Sustainability Index → External Benchmarking → Methodology.
+_SCI_ORDER = ['results', 'sci_lca', 'oat', 'sd', 'uncertainty', 'si', 'benchmark', 'about']
+if not SCI_LCA_AVAILABLE:
+    _SCI_ORDER = [k for k in _SCI_ORDER if k != 'sci_lca']
 _LEGACY_ORDER = ['pareto', 'twelve', 'surface3d', 'urban', 'interaction']
 _order = _SCI_ORDER if publication_mode else (_SCI_ORDER + _LEGACY_ORDER)
 _created = st.tabs([_TAB_LABELS[k] for k in _order])
@@ -3249,6 +3278,70 @@ Carbon factors: ICE Database Educational V4.1 (Oct 2025). Module D (recycling) r
             st.download_button("📥 Download Excel", excel_buf.getvalue(),
                               file_name=f"monorail_report_{datetime.now().strftime('%Y%m%d')}.xlsx",
                               mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+
+
+# ═══════════════════════════════════════════════════════════════
+# TAB: SCIENTIFIC LCA (REFERENCED, FULLY-SOURCED CORE)
+# Parallel authoritative engine. Reports a publication-grade number ONLY when
+# every required source is supplied; otherwise it lists the missing evidence
+# instead of a fabricated value. It never overrides the legacy dashboard result.
+# ═══════════════════════════════════════════════════════════════
+if 'sci_lca' in TABS:
+    with TABS['sci_lca']:
+        st.markdown("### 🔬 Scientific LCA — fully referenced core")
+        st.caption("Every factor and equation carries its source (file / row / status). "
+                   "Waste factors are per-tonne, dynamic grid CI is per-year, and Module D is "
+                   "reported separately. This engine runs alongside the dashboard and refuses to "
+                   "report a publication-grade result while any required source is open.")
+        try:
+            scientific_lca = run_scientific_lca_from_app_params(params)
+        except ScientificInputError as _sci_err:
+            scientific_lca = None
+            st.warning(f"🟡 **Source-open — no publication number yet:** {_sci_err}")
+        except Exception as _sci_other:  # pragma: no cover - defensive
+            scientific_lca = None
+            st.error(f"Scientific core error: {_sci_other}")
+
+        if scientific_lca is not None:
+            _chk = scientific_lca.get("publication_checks", {})
+            _grade = bool(_chk.get("publication_grade", False))
+            s1, s2, s3 = st.columns(3)
+            with s1:
+                st.metric("Gross A–C (tCO₂e)", f"{scientific_lca['gross_A_C_tCO2e']:,.1f}")
+            with s2:
+                st.metric("GWP (kgCO₂e / pkm)", f"{scientific_lca['GWP_kgCO2e_per_pkm']:.5f}")
+            with s3:
+                st.metric("Module D (tCO₂e, separate)", f"{scientific_lca['module_D1_signed_tCO2e_separate']:,.1f}")
+            st.caption("Gross A–C = A1-A3 + A4 + A5 + B2-B5 + B6 + C1-C4. Module D is supplementary "
+                       "and is NEVER added to or subtracted from the gross headline.")
+
+            st.markdown(f"**Publication readiness:** {'🟢 publication-grade' if _grade else '🟡 not yet publication-grade'}")
+            for _iss in _chk.get("issues", []):
+                st.markdown(f"- 🔴 {_iss}")
+            for _warn in _chk.get("warnings", []):
+                st.markdown(f"- 🟠 {_warn}")
+
+            st.markdown("#### Stage contribution")
+            st.dataframe(pd.DataFrame(scientific_lca['stage_contribution']),
+                         use_container_width=True, hide_index=True)
+
+            _mb = scientific_lca.get("mass_balance", {}).get("rows")
+            if _mb:
+                with st.expander("⚖️ Mass balance (B4/B5 → remaining for C1-C4)", expanded=False):
+                    st.dataframe(pd.DataFrame(_mb), use_container_width=True, hide_index=True)
+
+            render_lca_audit_streamlit(st, scientific_lca)
+        else:
+            st.info("This referenced engine is intentionally strict. Provide the sourced inputs in the "
+                    "sidebar expander **🔬 Scientific LCA provenance (referenced core)** to unlock it: "
+                    "densities + sources, BOQ source, passenger-km source, RSP source, the annual "
+                    "Egypt/project grid CI (generation + T&D + upstream) with its source, and the B6 "
+                    "energy-intensity basis.")
+            with st.expander("📋 Still-open evidence register (what unlocks a publication number)", expanded=False):
+                _open_rows = [{"item": k, **v} for k, v in OPEN_SOURCE_REQUIREMENTS.items()]
+                st.dataframe(pd.DataFrame(_open_rows), use_container_width=True, hide_index=True)
+            st.caption("A4, A5, B2-B5 and C1-C4 scientific legs are wired to the existing editors "
+                       "in the next integration increment; A1-A3 and B6 are active now.")
 
 
 # ═══════════════════════════════════════════════════════════════
