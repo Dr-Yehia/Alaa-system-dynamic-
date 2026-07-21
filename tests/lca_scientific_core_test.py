@@ -168,33 +168,56 @@ check("A4 entered w/o source → incomplete_sources",
 check("A4 incomplete listed (not counted as measured zero)",
       "A4" in r_ns["incomplete_source_stages"])
 
-# Advanced rows do not double-count; masses come from A1-A3 masses via leg_share.
+# Advanced route/segment model; masses come from A1-A3 masses via route_share.
 from lca_scientific_integration import build_a4_scientific_legs as _b4a
 _masses_stub = {"steel": ProjectQuantity(1e6, "kg", "BOQ", "x")}
 adv_params = {"a4_route_source": "route", "a4_scope": "wtw", "boq_source": "BOQ",
               "transport_distance_km": 50.0, "transport_mode": "truck", "a4_mode": "advanced",
-              "a4_advanced_legs": [{"material": "steel", "leg_share": 1.0, "mass_kg": 999.0,
-                                    "distance_km": 20.0, "mode": "rail"}]}
+              "a4_advanced_legs": [{"material": "steel", "route_id": "1", "route_share": 1.0,
+                                    "segment_no": 1, "distance_km": 20.0, "mode": "rail",
+                                    "distance_source": "rail sheet"}]}
 _legs, _st, _note, _aud = _b4a(adv_params, _masses_stub)
-check("advanced A4 rows used, simple route NOT added (no double count)",
+check("advanced A4 route used, simple route NOT added (no double count)",
       len(_legs) == 1 and _legs[0]["mode"] == "rail" and abs(_legs[0]["distance_km"] - 20.0) < 1e-9)
-check("advanced A4 leg mass = A1-A3 mass × leg_share (NOT the free-typed mass_kg)",
+check("advanced A4 leg mass = A1-A3 mass × route_share (NOT a free-typed mass)",
       abs(_legs[0]["mass_kg"] - 1e6 * 1.0) < 1e-6)
 
-# ── A4 mass reconciliation ────────────────────────────────────────────────────
-# shares that do not sum to 1 → validation_failed, A4 excluded.
+# ── A4 mass reconciliation (route_share) ──────────────────────────────────────
 bad_recon = dict(adv_params)
-bad_recon["a4_advanced_legs"] = [{"material": "steel", "leg_share": 0.5, "distance_km": 20.0, "mode": "rail"}]
+bad_recon["a4_advanced_legs"] = [{"material": "steel", "route_id": "1", "route_share": 0.5,
+                                  "segment_no": 1, "distance_km": 20.0, "mode": "rail",
+                                  "distance_source": "s"}]
 _bl, _bst, _bn, _ba = _b4a(bad_recon, _masses_stub)
-check("A4 Σ leg_share ≠ 1 → validation_failed", _bst == "validation_failed" and _bl == [])
-# two legs summing to 1 → reconciles (multi-leg split of one material's mass).
-ok_recon = dict(adv_params)
-ok_recon["a4_advanced_legs"] = [
-    {"material": "steel", "leg_share": 0.6, "distance_km": 20.0, "mode": "ship"},
-    {"material": "steel", "leg_share": 0.4, "distance_km": 5.0, "mode": "truck"}]
-_ol, _ost, _on, _oa = _b4a(ok_recon, _masses_stub)
-check("A4 split legs Σ share = 1 → connected, masses reconcile",
+check("A4 Σ route_share ≠ 1 → validation_failed", _bst == "validation_failed" and _bl == [])
+# Two ROUTES (different route_id) split the mass; masses sum to the full A1-A3 mass.
+split_recon = dict(adv_params)
+split_recon["a4_advanced_legs"] = [
+    {"material": "steel", "route_id": "1", "route_share": 0.6, "segment_no": 1,
+     "distance_km": 20.0, "mode": "ship", "distance_source": "s1"},
+    {"material": "steel", "route_id": "2", "route_share": 0.4, "segment_no": 1,
+     "distance_km": 5.0, "mode": "truck", "distance_source": "s2"}]
+_ol, _ost, _on, _oa = _b4a(split_recon, _masses_stub)
+check("A4 two routes Σ share = 1 → connected, masses reconcile",
       _ost == "connected" and abs(sum(l["mass_kg"] for l in _ol) - 1e6) < 1e-6)
+# SEQUENTIAL segments (same route_id) carry the SAME mass — not a split.
+seq = dict(adv_params)
+seq["a4_advanced_legs"] = [
+    {"material": "steel", "route_id": "1", "route_share": 1.0, "segment_no": 1,
+     "distance_km": 1000.0, "mode": "ship", "distance_source": "port"},
+    {"material": "steel", "route_id": "1", "route_share": 1.0, "segment_no": 2,
+     "distance_km": 50.0, "mode": "truck", "distance_source": "haul"}]
+_sl, _sst, _sn, _sa = _b4a(seq, _masses_stub)
+check("A4 sequential segments carry the SAME route mass (not split)",
+      _sst == "connected" and len(_sl) == 2 and all(abs(l["mass_kg"] - 1e6) < 1e-6 for l in _sl))
+# per-segment distance source required.
+nosrc_seg = dict(adv_params)
+nosrc_seg["a4_route_source"] = ""
+nosrc_seg["a4_advanced_legs"] = [{"material": "steel", "route_id": "1", "route_share": 1.0,
+                                  "segment_no": 1, "distance_km": 20.0, "mode": "rail",
+                                  "distance_source": ""}]
+_nl, _nst, _nn, _naud = _b4a(nosrc_seg, _masses_stub)
+check("A4 segment without a distance source → incomplete_sources",
+      _nst == "incomplete_sources")
 
 # ── A4 road return journey (documented) ───────────────────────────────────────
 ret_params = {"a4_route_source": "route", "a4_scope": "wtw", "boq_source": "BOQ",
@@ -341,9 +364,74 @@ check("A5.1 N/A without justification → incomplete_sources",
 # construction-year grid is independent of B6 year 1.
 _a5_cy = dict(_a5_lf); _a5_cy["a5_construction_year"] = 2024
 _r_cy = run_scientific_lca_from_app_params(_a5_cy)
-_elec_row = _r_cy["modules"]["A5"].get("details", {}).get("electricity", {})
-# electricity here is 0 (no a5_elec_kwh), so just assert the run succeeds and A5 connected.
 check("A5 accepts an explicit construction year", _r_cy["stage_status"]["A5"] == "connected")
+
+# ── 12. Foundational: reported-vs-diagnostic, overrides, reuse, grid mode ──────
+# A5 incomplete (recycle w/o factor) but diesel sourced: diesel is computed (diagnostic>0)
+# yet the reported headline must EXCLUDE it because A5 is not connected.
+_a5_excl = dict(_a5crit)
+_a5_excl.update(a5_diesel_l=100000.0, a5_diesel_mode="simple", a5_diesel_scope="wtw",
+                a5_diesel_source="fuel log",
+                a5_treatment_shares={"steel": {"reuse": 0.0, "recycle": 0.5, "landfill": 0.5}})
+_r_excl = run_scientific_lca_from_app_params(_a5_excl)
+check("incomplete A5 diesel is computed (diagnostic > 0)",
+      _r_excl["diagnostic_stage_tco2e"]["A5"] > 0.0)
+check("incomplete A5 is EXCLUDED from the reported total (reported == 0)",
+      abs(_r_excl["reported_stage_tco2e"]["A5"]) < 1e-9)
+check("excluded stage listed in excluded_from_reported", "A5" in _r_excl["excluded_from_reported"])
+check("connected_scope headline excludes the incomplete A5 carbon",
+      abs(_r_excl["connected_scope_tCO2e"]
+          - (_r_excl["reported_stage_tco2e"]["A1-A3"] + _r_excl["reported_stage_tco2e"]["A4"]
+             + _r_excl["reported_stage_tco2e"]["B6"])) < 1e-6)
+
+# documented per-tonne recycle override → A5 connects (uses the row's ef_recycle + source).
+_a5_ovr = dict(_a5_excl)
+_a5_ovr["a5_waste_routes"] = {"steel": {"transport_km": 30.0, "ef_recycle": 0.9,
+                                        "ef_landfill": 1.26435, "source": "EPD recycle route"}}
+_r_ovr = run_scientific_lca_from_app_params(_a5_ovr)
+check("documented per-tonne treatment override → A5 connected",
+      _r_ovr["stage_status"]["A5"] == "connected")
+
+# reuse share needs an Evidence source even for a 0 factor.
+_a5_reuse = dict(_a5crit)
+_a5_reuse["a5_treatment_shares"] = {"steel": {"reuse": 0.5, "recycle": 0.0, "landfill": 0.5}}
+_r_reuse = run_scientific_lca_from_app_params(_a5_reuse)
+check("A5 reuse without a documented source → incomplete_sources",
+      _r_reuse["stage_status"]["A5"] == "incomplete_sources")
+_a5_reuse_ok = dict(_a5_reuse)
+_a5_reuse_ok["a5_waste_routes"] = {"steel": {"transport_km": 30.0, "ef_reuse": 0.0,
+                                             "ef_landfill": 1.26435, "source": "reuse route doc"}}
+_r_reuse_ok = run_scientific_lca_from_app_params(_a5_reuse_ok)
+check("A5 reuse WITH a documented (even 0) source → connected",
+      _r_reuse_ok["stage_status"]["A5"] == "connected")
+
+# A5.1 not_yet_modelled → A5 incomplete (scope not closed).
+_a5_nym = dict(_a5_lf); _a5_nym["a5_predemolition_status"] = "not_yet_modelled"
+_r_nym = run_scientific_lca_from_app_params(_a5_nym)
+check("A5.1 not_yet_modelled → A5 incomplete_sources",
+      _r_nym["stage_status"]["A5"] == "incomplete_sources")
+
+# A5 component-readiness matrix present.
+check("A5 component_readiness matrix present",
+      {"A5.2_site_fuel", "A5.3_waste_treatment", "A5.1_preconstruction_demolition",
+       "A5.4_worker_transport"} <= set(_r_lf["modules"]["A5"]["component_readiness"]))
+
+# grid mode: constant scenario vs annual official series.
+check("constant grid → not project-specific annual",
+      _r_lf["publication_readiness"]["grid_is_project_specific_annual"] is False
+      and "constant" in _r_lf["grid_basis"])
+_ann = dict(_a5_lf); _ann["grid_mode"] = "annual_official_series"
+_ann["grid_annual_series"] = {2026 + i: {"generation": 0.40, "td": 0.03, "upstream": 0.05}
+                              for i in range(50)}
+_r_ann = run_scientific_lca_from_app_params(_ann)
+check("annual official series → project-specific annual flagged",
+      _r_ann["publication_readiness"]["grid_is_project_specific_annual"] is True)
+
+# expanded publication_readiness gate present.
+check("publication_readiness has the 7 required criteria",
+      {"method_complete", "activity_data_complete", "factor_sources_complete", "mass_balance_valid",
+       "stage_applicability_complete", "project_specific_data_complete", "uncertainty_complete"}
+      <= set(_r_lf["publication_readiness"]))
 
 print("\nALL SCIENTIFIC CORE TESTS PASSED" if ok else "\nSOME TESTS FAILED")
 sys.exit(0 if ok else 1)

@@ -2504,15 +2504,19 @@ with st.sidebar:
             }
             a4_df0 = pd.DataFrame({
                 'material': MATERIALS_UI,
-                'leg_share': [1.0] * len(MATERIALS_UI),
-                'distance_km': [transport_distance_km] * len(MATERIALS_UI),
+                'route_id': ['1'] * len(MATERIALS_UI),
+                'route_share': [1.0] * len(MATERIALS_UI),
+                'segment_no': [1] * len(MATERIALS_UI),
                 'mode': [transport_mode] * len(MATERIALS_UI),
+                'distance_km': [transport_distance_km] * len(MATERIALS_UI),
+                'distance_source': [''] * len(MATERIALS_UI),
                 'mass_tonnes_legacy': [round(_pref_t[m], 3) for m in MATERIALS_UI],
                 'ef_override_legacy': [0.0] * len(MATERIALS_UI),
             })
-            # P4: dynamic rows → a material can have multiple legs/modes (e.g. ship + truck).
-            # Scientific engine uses leg_share × the material's sourced A1-A3 mass (mass
-            # reconciliation: Σ leg_share per material must equal 1). mass_tonnes_legacy and
+            # Route/segment model: a material's transport splits across ROUTES (route_share
+            # per material must sum to 1). A route can have several SEQUENTIAL SEGMENTS
+            # (e.g. ship then truck) that all carry the SAME route mass — segments are not a
+            # mass split. Scientific leg mass = A1-A3 mass × route_share. mass_tonnes_legacy /
             # ef_override_legacy feed ONLY the legacy engine and are ignored by the referenced core.
             a4_edit = st.data_editor(a4_df0, hide_index=True, use_container_width=True, key="a4_editor",
                                      num_rows="dynamic",
@@ -2522,15 +2526,18 @@ with st.sidebar:
                 _ef = float(_r['ef_override_legacy'])
                 a4_advanced_legs.append({
                     'material': _r['material'],
-                    'leg_share': float(_r['leg_share']),
+                    'route_id': str(_r['route_id']),
+                    'route_share': float(_r['route_share']),
+                    'segment_no': int(_r['segment_no']),
+                    'distance_source': str(_r['distance_source']),
                     'mass_kg': float(_r['mass_tonnes_legacy']) * 1000.0,  # legacy engine only
                     'distance_km': float(_r['distance_km']), 'mode': _r['mode'],
                     'ef': (_ef if _ef > 0.0 else None)})  # legacy engine only
-            st.caption("Advanced A4: **leg_share** = the fraction of this material's sourced A1-A3 mass "
-                       "carried by this leg. Add rows for multi-leg/multi-mode routes (e.g. ship + truck); "
-                       "the shares for each material must sum to 1 or the scientific engine flags a mass "
-                       "reconciliation error. mass_tonnes_legacy / ef_override_legacy feed only the legacy "
-                       "engine. I_A4 = ΣΣ (M/1000)·D·EF / 1000 [t CO₂e].")
+            st.caption("Advanced A4 (route/segment): **route_share** = fraction of this material's sourced "
+                       "A1-A3 mass on this route (shares per material must sum to 1). Same route_id + "
+                       "different segment_no = SEQUENTIAL legs (e.g. ship→truck) carrying the SAME mass. "
+                       "Each segment needs its own distance_source. mass_tonnes_legacy / ef_override_legacy "
+                       "feed only the legacy engine. I_A4 = ΣΣ (M/1000)·D·EF / 1000 [t CO₂e].")
 
         # ── A5 Construction (lifecycle order: after A4, before B6) ──
         a5_boq_mode, a5_diesel_l = 'installed', 0.0
@@ -2545,8 +2552,15 @@ with st.sidebar:
                                        help="installed: extra waste production added here. purchased: production already in A1-A3.")
             a5_diesel_ef = st.number_input("Diesel EF (kgCO₂e/L)", value=FUEL_FACTORS['diesel']['ef_kgco2e_per_l'],
                                            min_value=0.0, step=0.01, format="%.2f", key="a5_diesel_ef")
-            a5_diesel_mode = st.selectbox("Diesel method", ["simple", "equipment"], index=0, key="a5_diesel_mode",
-                                          help="simple: total litres. equipment: Σ N·FC·LF·CCF·H·D/(1−PL).")
+            # R11-review: equipment-fleet diesel (WBGT CCF/PL scenario) is not sourced-ready,
+            # so it is disabled in publication mode until every input carries a source.
+            _diesel_methods = ["simple"] if publication_mode else ["simple", "equipment"]
+            a5_diesel_mode = st.selectbox("Diesel method", _diesel_methods, index=0, key="a5_diesel_mode",
+                                          help="simple: total litres. equipment: Σ N·FC·LF·CCF·H·D/(1−PL) "
+                                               "(developer only; the scientific engine needs total litres).")
+            if publication_mode:
+                st.caption("Equipment-fleet diesel (WBGT CCF/PL) is disabled in publication mode; "
+                           "enter total sourced litres.")
             if a5_diesel_mode == "equipment":
                 eq0 = pd.DataFrame({'equipment': ['excavator', 'crane'], 'N': [0.0, 0.0],
                                     'FC_L_per_h': [0.0, 0.0], 'LF': [0.6, 0.5], 'CCF': [1.0, 1.0],
@@ -2564,7 +2578,11 @@ with st.sidebar:
             a5_waste_rate = st.number_input("Global waste rate w (0–1, fallback)", value=0.0, min_value=0.0, max_value=0.95, step=0.01, format="%.2f", key="a5_waste_rate",
                                             help="Used for any material without a per-material rate below.")
             a5_waste_transport_km = st.number_input("Waste transport (km, fallback)", value=0.0, min_value=0.0, step=10.0, key="a5_waste_km")
-            a5_waste_treatment_ef = st.number_input("Waste treatment EF (kgCO₂e/kg, fallback landfill)", value=0.0, min_value=0.0, step=0.01, format="%.3f", key="a5_waste_ef")
+            # Unit note: the referenced scientific engine uses per-TONNE waste factors
+            # (registry or a documented per-tonne override with its own source). This legacy
+            # per-kg fallback feeds ONLY the legacy engine.
+            a5_waste_treatment_ef = st.number_input("Waste treatment EF — legacy engine only (kgCO₂e/kg)", value=0.0, min_value=0.0, step=0.01, format="%.3f", key="a5_waste_ef",
+                                                    help="Scientific engine ignores this and uses per-tonne registry/override factors.")
             a5_waste_routes = None
             with st.expander("♻️ Per-material A5 waste (rates + shares + routes/factors)", expanded=False):
                 _n = len(MATERIALS_UI)
@@ -2587,8 +2605,11 @@ with st.sidebar:
                         'ef_reuse': float(_r['ef_reuse']), 'ef_recycle': float(_r['ef_recycle']),
                         'ef_landfill': float(_r['ef_landfill']), 'source': str(_r['source'])}
                 st.caption("W_j = M_j·w/(1−w) [installed] or M_j·w [purchased]. "
-                           "reuse + recycle + landfill must equal 1. Treatment EF = Σ share·EF_route; "
-                           "transport = (W/1000)·km·EF. Provide a source for each route before publication.")
+                           "reuse + recycle + landfill must equal 1. For the scientific engine, "
+                           "ef_reuse/ef_recycle/ef_landfill are **kgCO₂e/tonne of waste** and are used "
+                           "as a documented override ONLY when this row's **source** is filled "
+                           "(reuse needs a source even for a 0 factor). Otherwise a verified per-tonne "
+                           "registry factor is used, and materials without one become incomplete_sources.")
 
         st.markdown("### 🌍 B6 Operation — Energy, Grid Carbon, and Service Demand")
         carbon_intensity_input = st.number_input("Grid carbon (kgCO₂/kWh)", value=0.5, min_value=0.0, step=0.05, key="carbon_int")
@@ -3357,6 +3378,21 @@ if 'sci_lca' in TABS:
                 if isinstance(_mod, dict) and _mod.get("note"):
                     st.caption(f"{_stg} note: {_mod['note']}")
 
+            # Reported vs diagnostic: computed carbon of a non-connected stage is NEVER in the headline.
+            _excl = scientific_lca.get("excluded_from_reported", {})
+            if _excl:
+                st.error("⚠️ **Excluded from the reported headline** (computed but the stage is not "
+                         "'connected', so it does NOT enter the reported total): "
+                         + ", ".join(f"{k} = {v:,.1f} tCO₂e" for k, v in _excl.items()))
+            with st.expander("🧪 Reported vs diagnostic per-stage totals", expanded=False):
+                _diag = scientific_lca.get("diagnostic_stage_tco2e", {})
+                _rep = scientific_lca.get("reported_stage_tco2e", {})
+                st.dataframe(pd.DataFrame([
+                    {"stage": s, "status": _sstat.get(s, "?"),
+                     "diagnostic_tCO2e": _diag.get(s, 0.0), "reported_tCO2e": _rep.get(s, 0.0)}
+                    for s in _diag]), use_container_width=True, hide_index=True)
+            st.caption(f"**Grid CI basis:** {scientific_lca.get('grid_basis', '?')}.")
+
             f1, f2 = st.columns(2)
             with f1:
                 st.markdown(f"**Partial-scope grade:** "
@@ -3370,6 +3406,14 @@ if 'sci_lca' in TABS:
                 st.markdown(f"- 🔴 {_iss}")
             for _warn in _chk.get("warnings", []):
                 st.markdown(f"- 🟠 {_warn}")
+
+            _pr = scientific_lca.get("publication_readiness", {})
+            if _pr:
+                with st.expander("✅ Publication readiness gate (method / activity / factors / mass / "
+                                 "applicability / project-specific / uncertainty)", expanded=False):
+                    st.dataframe(pd.DataFrame(
+                        [{"criterion": k, "value": v} for k, v in _pr.items()]),
+                        use_container_width=True, hide_index=True)
 
             st.markdown("#### Stage contribution (connected scope)")
             st.dataframe(pd.DataFrame(scientific_lca['stage_contribution']),
@@ -3420,6 +3464,12 @@ if 'sci_lca' in TABS:
                         {"component": "A5.3 waste transport", "tCO2e": _a5mod.get("waste_transport_tco2e", 0.0)},
                         {"component": "A5.3 waste treatment", "tCO2e": _a5mod.get("waste_treatment_tco2e", 0.0)},
                     ]), use_container_width=True, hide_index=True)
+                    _a5rd = _a5mod.get("component_readiness", {})
+                    if _a5rd:
+                        st.markdown("**A5 component readiness**")
+                        st.dataframe(pd.DataFrame(
+                            [{"component": k, "readiness": v} for k, v in _a5rd.items()]),
+                            use_container_width=True, hide_index=True)
 
             _mb = scientific_lca.get("mass_balance", {}).get("rows")
             if _mb:

@@ -105,6 +105,15 @@ def add_lca_source_inputs(st, assessment_lifetime_default=50):
     grid_location = st.text_input(
         "Grid-factor table/page/year", value="", key="lca_grid_location"
     )
+    grid_mode = st.selectbox(
+        "Grid CI mode",
+        ["constant_documented_scenario", "annual_official_series"], index=0,
+        help="constant = one documented factor repeated across years (a SCENARIO, not an annual "
+             "series). annual = a real per-calendar-year official table (project-specific).",
+        key="lca_grid_mode")
+    st.caption("A single factor repeated across 50 years is a constant-grid scenario, not an "
+               "annual measured series — it is labelled as such and does not claim project-specific "
+               "annual data.")
 
     energy_intensity_choice = st.selectbox(
         "B6 energy-intensity basis",
@@ -186,8 +195,11 @@ def add_lca_source_inputs(st, assessment_lifetime_default=50):
         value=int(assessment_lifetime and 0) or 0, min_value=0, step=1,
         help="0 = use the analysis start year. A5 electricity uses THIS year's grid CI, not B6 year 1.",
         key="lca_a5_construction_year")
+    # A5.1/A5.4 have no calculator yet, so 'included' is intentionally NOT offered.
     a5_predemolition_status = st.selectbox(
-        "A5.1 pre-construction demolition", ["not_applicable", "included"], index=0,
+        "A5.1 pre-construction demolition", ["not_applicable", "not_yet_modelled"], index=0,
+        help="No demolition calculator yet → choose N/A (with justification) or not_yet_modelled. "
+             "Both keep A5 out of full-WLCA until modelled.",
         key="lca_a5_1_status")
     a5_predemolition_note = st.text_input(
         "A5.1 justification (required if N/A)", value="",
@@ -195,7 +207,9 @@ def add_lca_source_inputs(st, assessment_lifetime_default=50):
         key="lca_a5_1_note")
     a5_worker_transport_status = st.selectbox(
         "A5.4 worker transport (optional in RICS)",
-        ["optional_not_reported", "not_applicable", "included"], index=0, key="lca_a5_4_status")
+        ["optional_not_reported", "not_applicable"], index=0,
+        help="Worker transport has no calculator yet → optional_not_reported or N/A only.",
+        key="lca_a5_4_status")
 
     return {
         "assessment_lifetime": int(assessment_lifetime),
@@ -213,6 +227,7 @@ def add_lca_source_inputs(st, assessment_lifetime_default=50):
         "grid_upstream": grid_upstream,
         "grid_source": grid_source,
         "grid_location": grid_location,
+        "grid_mode": grid_mode,
         "energy_intensity_choice": energy_intensity_choice,
         "project_ei": project_ei,
         "project_ei_source": project_ei_source,
@@ -357,36 +372,47 @@ def build_a4_scientific_legs(params, masses):
                     "A4 is EXCLUDED from the result (not counted as a measured zero).", [])
         return [], "unconnected", "No A4 transport entered.", []
 
-    # Assemble (material -> list of (share, distance, mode)) so masses come from the
-    # scientific A1-A3 masses via leg_share, never from a free-typed mass.
-    per_material = {}
+    # Assemble routes. A material's transport is split across one or more ROUTES
+    # (route_share per route must sum to 1). Each route can have several SEQUENTIAL
+    # SEGMENTS (e.g. ship then truck) that all carry the SAME route mass — segments are
+    # NOT a mass split. Structure: routes[material][route_id] = {"share", "segments":[...]}.
+    routes = {}
     if advanced_present:
         for row in advanced:
             m = row.get("material", "not specified")
-            per_material.setdefault(m, []).append((
-                float(row.get("leg_share", 1.0)),
-                float(row.get("distance_km", 0.0)),
-                str(row.get("mode", mode_default)).lower(),
-            ))
+            rid = str(row.get("route_id", "1"))
+            routes.setdefault(m, {}).setdefault(rid, {"share": None, "segments": []})
+            # route_share is per route; take the first non-None value seen for the route.
+            rs = float(row.get("route_share", 1.0))
+            if routes[m][rid]["share"] is None:
+                routes[m][rid]["share"] = rs
+            routes[m][rid]["segments"].append({
+                "segment_no": int(row.get("segment_no", len(routes[m][rid]["segments"]) + 1)),
+                "mode": str(row.get("mode", mode_default)).lower(),
+                "distance_km": float(row.get("distance_km", 0.0)),
+                "distance_source": str(row.get("distance_source", "")).strip() or route_source,
+            })
     else:
         for material, quantity in masses.items():
             if float(quantity.value) > 0.0:
-                per_material[material] = [(1.0, dist_default, mode_default)]
+                routes[material] = {"1": {"share": 1.0, "segments": [
+                    {"segment_no": 1, "mode": mode_default, "distance_km": dist_default,
+                     "distance_source": route_source}]}}
 
-    # MASS RECONCILIATION: for every material with A1-A3 mass, Σ leg_share must equal 1.
+    # MASS RECONCILIATION: for every material with A1-A3 mass, Σ route_share must equal 1.
     for material, quantity in masses.items():
         mat_mass = float(quantity.value)
         if mat_mass <= 0.0:
             continue
-        legs_for = per_material.get(material)
-        if not legs_for:
+        mat_routes = routes.get(material)
+        if not mat_routes:
             return ([], "validation_failed",
                     f"A4 mass reconciliation failed: material '{material}' has A1-A3 mass but no "
-                    "A4 leg. Every transported material needs leg_shares summing to 1.", [])
-        share_sum = sum(s for s, _, _ in legs_for)
+                    "A4 route. Every transported material needs route_shares summing to 1.", [])
+        share_sum = sum(float(r["share"] or 0.0) for r in mat_routes.values())
         if abs(share_sum - 1.0) > 1e-6:
             return ([], "validation_failed",
-                    f"A4 mass reconciliation failed for '{material}': Σ leg_share = {share_sum:.6f} "
+                    f"A4 mass reconciliation failed for '{material}': Σ route_share = {share_sum:.6f} "
                     "(must equal 1).", [])
 
     legs, audit = [], []
@@ -395,48 +421,61 @@ def build_a4_scientific_legs(params, masses):
         if mat_mass <= 0.0:
             continue
         mass_src = boq_source or quantity.source
-        for share, distance_km, mode in per_material[material]:
-            leg_mass = mat_mass * share
-            if leg_mass <= 0.0:
+        for rid, route in routes[material].items():
+            route_mass = mat_mass * float(route["share"] or 0.0)
+            if route_mass <= 0.0:
                 continue
-            legs.append({
-                "material": material, "mass_kg": leg_mass, "distance_km": distance_km,
-                "mode": mode, "scope": scope,
-                "mass_source": mass_src, "distance_source": route_source,
-            })
-            audit.append({
-                "stage": "A4", "material": material, "leg": "outward", "mass_kg": leg_mass,
-                "leg_share": share, "mass_source": mass_src, "distance_km": distance_km,
-                "distance_source": route_source, "mode": mode, "scope": scope,
-                "payload_assumption": payload or "not stated",
-                "return_assumption": "none (outward only)",
-            })
-            # RICS road return journey — ONLY for road, ONLY with a documented assumption.
-            if mode == "truck" and return_fraction > 0.0 and empty_return_ef > 0.0 and return_source:
-                ret_ev = make_project_evidence(
-                    code=f"A4-ROAD-RETURN-{material}",
-                    value=empty_return_ef, unit="kgCO2e/tonne.km", stage="A4",
-                    source_file=return_source,
-                    location=f"documented empty-return: fraction={return_fraction}",
-                    boundary_scope="A4 road empty-return running",
-                    note=payload or "documented road return-trip assumption",
-                )
+            for seg in sorted(route["segments"], key=lambda s: s["segment_no"]):
+                mode = seg["mode"]
+                distance_km = seg["distance_km"]
+                dist_src = seg["distance_source"]
+                # Every sequential segment carries the SAME route mass (not a split).
                 legs.append({
-                    "material": material, "mass_kg": leg_mass,
-                    "distance_km": distance_km * return_fraction, "mode": mode, "scope": scope,
-                    "mass_source": mass_src, "distance_source": return_source,
-                    "factor_override": ret_ev,
+                    "material": material, "mass_kg": route_mass, "distance_km": distance_km,
+                    "mode": mode, "scope": scope,
+                    "mass_source": mass_src, "distance_source": dist_src,
                 })
                 audit.append({
-                    "stage": "A4", "material": material, "leg": "return", "mass_kg": leg_mass,
-                    "leg_share": share, "mass_source": mass_src,
-                    "distance_km": distance_km * return_fraction, "distance_source": return_source,
-                    "mode": mode, "scope": scope, "payload_assumption": payload or "not stated",
-                    "return_assumption": f"empty-return fraction={return_fraction}, EF={empty_return_ef}",
+                    "stage": "A4", "material": material, "route_id": rid,
+                    "route_share": route["share"], "segment_no": seg["segment_no"], "leg": "outward",
+                    "mass_kg": route_mass, "mass_source": mass_src, "distance_km": distance_km,
+                    "distance_source": dist_src or "MISSING", "mode": mode, "scope": scope,
+                    "payload_assumption": payload or "not stated",
+                    "return_assumption": "none (outward only)",
                 })
+                # RICS road return journey — road only, only with a documented assumption.
+                if mode == "truck" and return_fraction > 0.0 and empty_return_ef > 0.0 and return_source:
+                    ret_ev = make_project_evidence(
+                        code=f"A4-ROAD-RETURN-{material}-{rid}-{seg['segment_no']}",
+                        value=empty_return_ef, unit="kgCO2e/tonne.km", stage="A4",
+                        source_file=return_source,
+                        location=f"documented empty-return: fraction={return_fraction}",
+                        boundary_scope="A4 road empty-return running",
+                        note=payload or "documented road return-trip assumption",
+                    )
+                    legs.append({
+                        "material": material, "mass_kg": route_mass,
+                        "distance_km": distance_km * return_fraction, "mode": mode, "scope": scope,
+                        "mass_source": mass_src, "distance_source": return_source,
+                        "factor_override": ret_ev,
+                    })
+                    audit.append({
+                        "stage": "A4", "material": material, "route_id": rid,
+                        "route_share": route["share"], "segment_no": seg["segment_no"], "leg": "return",
+                        "mass_kg": route_mass, "mass_source": mass_src,
+                        "distance_km": distance_km * return_fraction, "distance_source": return_source,
+                        "mode": mode, "scope": scope, "payload_assumption": payload or "not stated",
+                        "return_assumption": f"empty-return fraction={return_fraction}, EF={empty_return_ef}",
+                    })
+
+    # Every segment must carry its own distance source (per-route/segment, not one global).
+    if any(a.get("distance_source") in (None, "", "MISSING") for a in audit):
+        return ([], "incomplete_sources",
+                "A4 has a route segment without a distance source → A4 excluded.", audit)
 
     note = ""
-    road_present = any(mode == "truck" for legs_ in per_material.values() for _, _, mode in legs_)
+    road_present = any(s["mode"] == "truck" for mr in routes.values() for r in mr.values()
+                       for s in r["segments"])
     if road_present and not (return_fraction > 0.0 and empty_return_ef > 0.0 and return_source):
         note = ("Road legs are outward-only (average-laden factor); a documented empty-return "
                 "assumption (fraction + empty-running EF + source) is required to add the return trip.")
@@ -463,6 +502,35 @@ _A5_WASTE_ROUTE = {
     "aluminum": {"landfill": "metal_landfill",   "recycle": None},
     "frp":      {"landfill": "plastic_landfill_proxy", "recycle": None},
 }
+
+
+def _a5_treatment_override(material, route_name, routes_ui):
+    """Build a documented per-tonne treatment factor Evidence from the A5 editor row.
+
+    Returns (evidence_or_None, documented_bool). A row qualifies only with an explicit
+    per-row source. For reuse the value may be 0 (e.g. a documented clean-reuse route)
+    but a source is still required — a zero is a number that needs evidence, not an
+    absence of one. Values are interpreted as kgCO2e/tonne of waste (never per kg).
+    """
+    r = routes_ui.get(material)
+    if not isinstance(r, dict):
+        return None, False
+    src = str(r.get("source", "")).strip()
+    if not src:
+        return None, False
+    key = {"landfill": "ef_landfill", "recycle": "ef_recycle", "reuse": "ef_reuse"}[route_name]
+    val = float(r.get(key, 0.0) or 0.0)
+    if val < 0.0:
+        return None, False
+    if route_name != "reuse" and val <= 0.0:
+        # landfill/recycle need a positive documented factor to be an override.
+        return None, False
+    ev = make_project_evidence(
+        code=f"A5-WASTE-{material}-{route_name}", value=val, unit="kgCO2e/tonne waste",
+        stage="A5", source_file=src,
+        location=f"A5 documented {route_name} treatment factor (per tonne)",
+        boundary_scope="A5.3 waste treatment")
+    return ev, True
 
 
 def _a5_waste_mass_kg(installed_or_purchased_mass_kg, waste_rate, boq_basis):
@@ -495,7 +563,7 @@ def build_a5_scientific_activity(params, masses, grid_construction):
     basis the waste material is already inside A1-A3, so it is NOT added again.
     """
     if not bool(params.get("include_a5", False)):
-        return None, "unconnected", "A5 module is off."
+        return None, "unconnected", "A5 module is off.", {}
 
     boq_basis = str(params.get("a5_boq_mode", "installed")).lower()
     diesel_l = float(params.get("a5_diesel_l", 0.0))
@@ -515,33 +583,45 @@ def build_a5_scientific_activity(params, masses, grid_construction):
     status = "connected"
     notes = []
     entered = False
+    readiness = {}
 
-    # ── A5.1 fuel ──────────────────────────────────────────────────────────────
+    # ── A5.2 site fuel ─────────────────────────────────────────────────────────
     diesel_litres = None
     if diesel_mode == "equipment":
         if params.get("a5_equipment"):
             entered = True
             status = "incomplete_sources"
+            readiness["A5.2_site_fuel"] = "incomplete_sources"
             notes.append("A5 diesel is in equipment-fleet mode; the scientific core needs total "
                          "litres. Provide simple total litres or the litres are excluded.")
+        else:
+            readiness["A5.2_site_fuel"] = "not_entered"
     elif diesel_l > 0.0:
         entered = True
         if diesel_source:
             diesel_litres = ProjectQuantity(diesel_l, "L", diesel_source, "site diesel")
+            readiness["A5.2_site_fuel"] = "included_and_sourced"
         else:
             status = "incomplete_sources"
+            readiness["A5.2_site_fuel"] = "incomplete_sources"
             notes.append("A5 site diesel entered without a source → excluded.")
+    else:
+        readiness["A5.2_site_fuel"] = "not_entered"
 
-    # ── A5.2 electricity (construction-year CI) ────────────────────────────────
+    # ── A5.2 site electricity (construction-year CI) ───────────────────────────
     electricity_kwh = None
     if elec_kwh > 0.0:
         entered = True
         if elec_source and grid_construction is not None:
             electricity_kwh = ProjectQuantity(elec_kwh, "kWh", elec_source, "site electricity")
+            readiness["A5.2_site_electricity"] = "included_and_sourced"
         else:
             status = "incomplete_sources"
+            readiness["A5.2_site_electricity"] = "incomplete_sources"
             notes.append("A5 site electricity entered without a source (or no construction-year "
                          "grid CI) → excluded.")
+    else:
+        readiness["A5.2_site_electricity"] = "not_entered"
 
     # ── A5.3–A5.6 waste: production + transport + treatment ─────────────────────
     extra_waste_materials_kg = {}
@@ -565,12 +645,12 @@ def build_a5_scientific_activity(params, masses, grid_construction):
         if w_kg <= 0.0:
             continue
 
-        # A5.4 production of wasted material — installed basis only (no double count).
+        # A5.3 production of wasted material — installed basis only (no double count).
         if boq_basis == "installed":
             extra_waste_materials_kg[material] = ProjectQuantity(
                 w_kg, "kg", waste_source, "installed-basis waste production (E8)")
 
-        # A5.5 waste transport.
+        # A5.3 waste transport.
         route = routes_ui.get(material, {})
         dist = float(route.get("transport_km", default_dist))
         if dist > 0.0:
@@ -600,22 +680,47 @@ def build_a5_scientific_activity(params, masses, grid_construction):
             if share <= 0.0:
                 continue
             w_route = w_kg * share
+            override, documented = _a5_treatment_override(material, route_name, routes_ui)
+            if documented:
+                # A documented per-tonne factor from the editor (used as Evidence override).
+                waste_treatment_items.append({
+                    "material": material, "waste_kg": w_route, "waste_source": waste_source,
+                    "route": route_name, "factor_override": override})
+                continue
             code = route_codes.get(route_name)
             if code:
                 waste_treatment_items.append({
                     "material": material, "waste_kg": w_route, "waste_source": waste_source,
                     "route": route_name, "factor_code": code})
             elif route_name == "reuse":
-                # Reuse: no A5 processing emission assumed (documented); recovery credit is Module D.
-                notes.append(f"A5 {material} reuse: 0 processing emission assumed (documented); "
-                             "recovery credit belongs to Module D, not A5.")
+                # Reuse EF (even 0) is a NUMBER that needs evidence, not an absence of one.
+                status = "incomplete_sources"
+                notes.append(f"A5 {material} reuse: a reuse processing EF (0 is allowed) requires a "
+                             "documented source → EXCLUDED until supplied. Recovery credit is Module D.")
             else:
                 status = "incomplete_sources"
                 notes.append(f"A5 {material} {route_name}: no verified per-tonne factor → EXCLUDED "
                              "(no landfill fallback). Supply a documented per-tonne override.")
 
+    # A5.3 component readiness (waste generation / transport / treatment).
+    if not any_waste_entered:
+        readiness["A5.3_waste_generation"] = "not_entered"
+        readiness["A5.3_waste_transport"] = "not_entered"
+        readiness["A5.3_waste_treatment"] = "not_entered"
+    else:
+        readiness["A5.3_waste_generation"] = (
+            "included_and_sourced" if waste_source else "incomplete_sources")
+        readiness["A5.3_waste_transport"] = (
+            "included_and_sourced" if waste_delivery_legs else
+            ("incomplete_sources" if status == "incomplete_sources" else "documented_zero"))
+        readiness["A5.3_waste_treatment"] = (
+            "included_and_sourced" if waste_treatment_items and status == "connected" else
+            ("incomplete_sources" if status in ("incomplete_sources", "validation_failed")
+             else "documented_zero"))
+
     if not entered:
-        return None, "unconnected", "A5 module on but no fuel/electricity/waste entered."
+        return (None, "unconnected", "A5 module on but no fuel/electricity/waste entered.",
+                readiness)
 
     a5_kwargs = dict(
         diesel_litres=diesel_litres,
@@ -627,7 +732,7 @@ def build_a5_scientific_activity(params, masses, grid_construction):
         waste_delivery_legs=waste_delivery_legs,
         waste_treatment_items=waste_treatment_items,
     )
-    return a5_kwargs, status, " ".join(notes)
+    return a5_kwargs, status, " ".join(notes), readiness
 
 
 def run_scientific_lca_from_app_params(params):
@@ -669,20 +774,38 @@ def run_scientific_lca_from_app_params(params):
             "Egypt/project grid CI is still OPEN. Supply the official source file and table/page."
         )
     start_year = int(params.get("analysis_start_year", 1))
+    # Grid mode: an ANNUAL official series (a real per-calendar-year table) is project-
+    # specific; a CONSTANT value repeated across years is only a documented scenario and
+    # must never be described as an annual measured series.
+    grid_mode = str(params.get("grid_mode", "constant_documented_scenario")).lower()
+    grid_annual_series = params.get("grid_annual_series") or {}  # {calendar_year: {gen,td,up}}
+
+    def _grid_for_calendar_year(cal_year, operating_year):
+        if grid_mode == "annual_official_series":
+            row = grid_annual_series.get(cal_year) or grid_annual_series.get(str(cal_year))
+            if row is None:
+                raise ScientificInputError(
+                    f"grid_mode=annual_official_series but no grid row for calendar year {cal_year}.")
+            gen = float(row.get("generation", 0.0))
+            td = float(row.get("td", 0.0))
+            up = float(row.get("upstream", 0.0))
+            note = "Annual official grid series (project-specific)."
+        else:
+            gen = float(params.get("grid_generation", 0.0))
+            td = float(params.get("grid_td", 0.0))
+            up = float(params.get("grid_upstream", 0.0))
+            note = "Constant-grid documented scenario (single factor repeated; NOT an annual series)."
+        return GridCarbonYear(
+            year=operating_year, generation_kgco2e_per_kwh=gen, td_kgco2e_per_kwh=td,
+            upstream_kgco2e_per_kwh=up, source_file=grid_source,
+            location=f"{grid_location}; calendar year {cal_year}",
+            geographic_scope="Egypt/project electricity supply", note=note)
+
     grid_by_year = {}
     for offset in range(rsp):
         operating_year = offset + 1
         calendar_year = start_year + offset
-        grid_by_year[operating_year] = GridCarbonYear(
-            year=operating_year,
-            generation_kgco2e_per_kwh=float(params.get("grid_generation", 0.0)),
-            td_kgco2e_per_kwh=float(params.get("grid_td", 0.0)),
-            upstream_kgco2e_per_kwh=float(params.get("grid_upstream", 0.0)),
-            source_file=grid_source,
-            location=f"{grid_location}; calendar year {calendar_year}",
-            geographic_scope="Egypt/project electricity supply",
-            note="Flat trajectory only if the source supports a constant factor; otherwise upload annual values.",
-        )
+        grid_by_year[operating_year] = _grid_for_calendar_year(calendar_year, operating_year)
 
     choice = str(params.get("energy_intensity_choice", "project_specific"))
     if choice == "project_specific":
@@ -718,26 +841,19 @@ def run_scientific_lca_from_app_params(params):
     b6 = calculate_b6(annual_pkm_by_year, grid_by_year, energy_intensity)
 
     # Independent construction-year grid record (A5 electricity uses the CONSTRUCTION year's
-    # grid CI, which is NOT necessarily B6 operating year 1).
+    # grid CI). With an annual series it reads THAT calendar year's row; with a constant
+    # scenario it uses the documented single value.
     construction_year = int(params.get("a5_construction_year", 0)) or start_year
-    grid_construction = GridCarbonYear(
-        year=construction_year,
-        generation_kgco2e_per_kwh=float(params.get("grid_generation", 0.0)),
-        td_kgco2e_per_kwh=float(params.get("grid_td", 0.0)),
-        upstream_kgco2e_per_kwh=float(params.get("grid_upstream", 0.0)),
-        source_file=grid_source,
-        location=f"{grid_location}; construction calendar year {construction_year}",
-        geographic_scope="Egypt/project electricity supply (construction year)",
-        note="A5 construction-year grid CI (independent of B6 year 1).",
-    )
+    grid_construction = _grid_for_calendar_year(construction_year, 0)
 
     # A5 wired from the app editors (fuel + electricity + waste production/transport/treatment).
     a5_prebuilt = params.get("a5_scientific_inputs")
+    a5_readiness = {}
     if a5_prebuilt:
         a5 = calculate_a5(**a5_prebuilt)
         a5_status, a5_note = "connected", ""
     else:
-        a5_kwargs, a5_status, a5_note = build_a5_scientific_activity(
+        a5_kwargs, a5_status, a5_note, a5_readiness = build_a5_scientific_activity(
             params, masses, grid_construction)
         if a5_kwargs is not None:
             a5 = calculate_a5(**a5_kwargs)
@@ -745,18 +861,38 @@ def run_scientific_lca_from_app_params(params):
             a5 = {"stage": "A5", "total_tco2e": 0.0, "source_audit": []}
     a5["status"] = a5_status
     a5["note"] = a5_note
-    # RICS official A5 subdivision (A5.1 pre-construction demolition, A5.2 construction
-    # activities, A5.3 waste management, A5.4 optional worker transport). The computed
-    # components are mapped onto A5.2 (fuel+electricity) and A5.3 (waste prod+transport+treat).
+    # RICS official A5 subdivision. A5.1 pre-construction demolition and A5.4 worker
+    # transport have NO calculator yet, so "included" is not an allowed choice; the only
+    # valid choices are not_applicable (with justification) or not_yet_modelled — both of
+    # which keep A5 out of full-WLCA until modelled. Computed components map onto A5.2/A5.3.
     _predemo_status = str(params.get("a5_predemolition_status", "not_applicable"))
     _predemo_note = str(params.get("a5_predemolition_note", "")).strip()
     _worker_status = str(params.get("a5_worker_transport_status", "optional_not_reported"))
+    _a5_notes = [a5["note"]] if a5["note"] else []
+    # A5.1 gating.
     if _predemo_status == "not_applicable" and not _predemo_note:
-        # N/A without a justification is itself incomplete (must be explained, not silent).
         if a5_status == "connected":
             a5_status = "incomplete_sources"
-            a5["status"] = a5_status
-        a5["note"] = (a5["note"] + " A5.1 marked not_applicable but no justification was given.").strip()
+        _a5_notes.append("A5.1 marked not_applicable but no justification was given.")
+    elif _predemo_status == "not_yet_modelled":
+        if a5_status == "connected":
+            a5_status = "incomplete_sources"
+        _a5_notes.append("A5.1 pre-construction demolition is not_yet_modelled → A5 scope incomplete.")
+    elif _predemo_status == "included":
+        # No demolition calculator exists → 'included' cannot be substantiated.
+        if a5_status == "connected":
+            a5_status = "incomplete_sources"
+        _a5_notes.append("A5.1 'included' has no demolition calculation → incomplete_sources.")
+    # A5.4 gating: worker transport has no calculator; 'included' cannot be substantiated.
+    if _worker_status == "included":
+        if a5_status == "connected":
+            a5_status = "incomplete_sources"
+        _a5_notes.append("A5.4 'included' has no worker-transport calculation → incomplete_sources.")
+    a5["status"] = a5_status
+    a5["note"] = " ".join(_a5_notes)
+    a5_readiness["A5.1_preconstruction_demolition"] = _predemo_status
+    a5_readiness["A5.4_worker_transport"] = _worker_status
+    a5["component_readiness"] = a5_readiness
     a5["rics_subdivision"] = {
         "A5.1_preconstruction_demolition": {
             "status": _predemo_status, "justification": _predemo_note or "(none)"},
@@ -793,14 +929,6 @@ def run_scientific_lca_from_app_params(params):
         "reporting_note": "Module D not calculated."
     }
 
-    final_lca = combine_lca_modules(a1_a3, a4, a5, b2_b5, b6, c1_c4, module_d1)
-    checks = publication_checks(
-        masses,
-        grid_by_year,
-        final_lca["source_audit"],
-        assessment_period_years=rsp,
-    )
-
     # ── Per-stage status vocabulary ──────────────────────────────────────────
     # A zero total is NOT the same as "done": distinguish connected / not_applicable /
     # unconnected / incomplete_sources / validation_failed so a 0 is never mistaken
@@ -817,8 +945,51 @@ def run_scientific_lca_from_app_params(params):
         "C1-C4": _optional_status(c1c4_connected),
     }
     _DONE = {"connected", "not_applicable"}
-    # A stage is part of the reported partial number only when it is actually connected.
     scope_connected = {s: (st == "connected") for s, st in stage_status.items()}
+
+    # ── REPORTED vs DIAGNOSTIC totals ────────────────────────────────────────
+    # A stage whose status is not "connected" (incomplete_sources / validation_failed /
+    # unconnected) must NOT contribute its partially-computed carbon to the reported
+    # headline. We combine a REPORTED set (non-connected stages zeroed) for the published
+    # number, and keep the raw computed value only in a diagnostic table.
+    def _zero_module(stage):
+        return {"stage": stage, "total_tco2e": 0.0, "source_audit": []}
+
+    def _reported(module, stage_key, stage_name):
+        return module if stage_status[stage_key] == "connected" else _zero_module(stage_name)
+
+    rep_a4 = _reported(a4, "A4", "A4")
+    rep_a5 = _reported(a5, "A5", "A5")
+    rep_b2b5 = _reported(b2_b5, "B2-B5", "B2-B5")
+    rep_c1c4 = _reported(c1_c4, "C1-C4", "C1-C4")
+
+    final_lca = combine_lca_modules(a1_a3, rep_a4, rep_a5, rep_b2b5, b6, rep_c1c4, module_d1)
+    checks = publication_checks(
+        masses,
+        grid_by_year,
+        final_lca["source_audit"],
+        assessment_period_years=rsp,
+    )
+
+    # Diagnostic table: what each stage computed vs what was reported.
+    diagnostic_stage_tco2e = {
+        "A1-A3": float(a1_a3.get("total_tco2e", 0.0)),
+        "A4": float(a4.get("total_tco2e", 0.0)),
+        "A5": float(a5.get("total_tco2e", 0.0)),
+        "B2-B5": float(b2_b5.get("total_tco2e", 0.0)),
+        "B6": float(b6.get("total_tco2e", 0.0)),
+        "C1-C4": float(c1_c4.get("total_tco2e", 0.0)),
+    }
+    reported_stage_tco2e = {
+        s: (diagnostic_stage_tco2e[s] if stage_status[s] == "connected" else 0.0)
+        for s in diagnostic_stage_tco2e
+    }
+    final_lca["diagnostic_stage_tco2e"] = diagnostic_stage_tco2e
+    final_lca["reported_stage_tco2e"] = reported_stage_tco2e
+    final_lca["excluded_from_reported"] = {
+        s: diagnostic_stage_tco2e[s] for s in diagnostic_stage_tco2e
+        if stage_status[s] != "connected" and abs(diagnostic_stage_tco2e[s]) > 0.0
+    }
 
     # partial-scope grade = the CONNECTED stages are fully sourced (no OPEN factor,
     # FRP handled, one grid record per year). This is what publication_checks verifies.
@@ -836,7 +1007,37 @@ def run_scientific_lca_from_app_params(params):
     unconnected = [s for s, st in stage_status.items() if st not in _DONE]
     incomplete = [s for s, st in stage_status.items() if st == "incomplete_sources"]
 
+    # ── Expanded publication readiness gate (method + activity + factor + mass +
+    #    applicability + project/proxy + grid-mode) ────────────────────────────
+    grid_project_specific = (grid_mode == "annual_official_series")
+    mass_balance_valid = all(r.get("remaining_for_C1_C4_kg", 0.0) >= -1e-9
+                             for r in mass_balance.get("rows", []))
+    activity_data_complete = ("incomplete_sources" not in stage_status.values()
+                              and "validation_failed" not in stage_status.values())
+    stage_applicability_complete = all(stage_status[s] in _DONE for s in required_full)
+    # Any verified-proxy factor was used → not fully project-specific.
+    _aud = final_lca.get("source_audit")
+    proxy_used = False
+    try:
+        if hasattr(_aud, "empty") and not _aud.empty and "status" in _aud.columns:
+            proxy_used = _aud["status"].astype(str).str.contains("proxy", case=False, na=False).any()
+    except Exception:
+        proxy_used = False
+    publication_readiness = {
+        "method_complete": True,  # equations closed for the connected stages
+        "activity_data_complete": bool(activity_data_complete),
+        "factor_sources_complete": bool(not checks.get("issues")),
+        "mass_balance_valid": bool(mass_balance_valid),
+        "stage_applicability_complete": bool(stage_applicability_complete),
+        "project_specific_data_complete": bool(grid_project_specific and not proxy_used),
+        "grid_mode": grid_mode,
+        "grid_is_project_specific_annual": bool(grid_project_specific),
+        "proxy_factors_used": bool(proxy_used),
+        "uncertainty_complete": False,  # Phase-4 MC wiring for the scientific engine is pending
+    }
+
     final_lca["publication_checks"] = checks
+    final_lca["publication_readiness"] = publication_readiness
     final_lca["publication_grade_partial_scope"] = publication_grade_partial_scope
     final_lca["publication_grade_full_wlca"] = publication_grade_full_wlca
     final_lca["stage_status"] = stage_status
@@ -844,6 +1045,9 @@ def run_scientific_lca_from_app_params(params):
     final_lca["connected_stages"] = connected
     final_lca["unconnected_stages"] = unconnected
     final_lca["incomplete_source_stages"] = incomplete
+    final_lca["grid_mode"] = grid_mode
+    final_lca["grid_basis"] = ("annual_official_series (project-specific)"
+                               if grid_project_specific else "constant_documented_scenario")
     # Alias: the combined value is a PARTIAL, connected-scope total until every stage is wired.
     final_lca["connected_scope_tCO2e"] = final_lca["gross_A_C_tCO2e"]
     # Scope label is generated from the status map, never hand-written, so it can never
