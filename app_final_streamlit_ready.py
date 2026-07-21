@@ -2504,24 +2504,33 @@ with st.sidebar:
             }
             a4_df0 = pd.DataFrame({
                 'material': MATERIALS_UI,
-                'mass_tonnes': [round(_pref_t[m], 3) for m in MATERIALS_UI],
+                'leg_share': [1.0] * len(MATERIALS_UI),
                 'distance_km': [transport_distance_km] * len(MATERIALS_UI),
                 'mode': [transport_mode] * len(MATERIALS_UI),
-                'ef_override': [0.0] * len(MATERIALS_UI),
+                'mass_tonnes_legacy': [round(_pref_t[m], 3) for m in MATERIALS_UI],
+                'ef_override_legacy': [0.0] * len(MATERIALS_UI),
             })
             # P4: dynamic rows → a material can have multiple legs/modes (e.g. ship + truck).
+            # Scientific engine uses leg_share × the material's sourced A1-A3 mass (mass
+            # reconciliation: Σ leg_share per material must equal 1). mass_tonnes_legacy and
+            # ef_override_legacy feed ONLY the legacy engine and are ignored by the referenced core.
             a4_edit = st.data_editor(a4_df0, hide_index=True, use_container_width=True, key="a4_editor",
-                                     num_rows="dynamic")
+                                     num_rows="dynamic",
+                                     disabled=['mass_tonnes_legacy'])
             a4_advanced_legs = []
             for _, _r in pd.DataFrame(a4_edit).iterrows():
-                _ef = float(_r['ef_override'])
+                _ef = float(_r['ef_override_legacy'])
                 a4_advanced_legs.append({
-                    'material': _r['material'], 'mass_kg': float(_r['mass_tonnes']) * 1000.0,
+                    'material': _r['material'],
+                    'leg_share': float(_r['leg_share']),
+                    'mass_kg': float(_r['mass_tonnes_legacy']) * 1000.0,  # legacy engine only
                     'distance_km': float(_r['distance_km']), 'mode': _r['mode'],
-                    'ef': (_ef if _ef > 0.0 else None)})
-            st.caption("Advanced A4: per-material legs (add rows for multi-leg/multi-mode routes, e.g. "
-                       "ship + truck; split the mass across a material's legs). EF override 0 → registry mode "
-                       "factor. I_A4 = ΣΣ (M/1000)·D·EF / 1000 [t CO₂e].")
+                    'ef': (_ef if _ef > 0.0 else None)})  # legacy engine only
+            st.caption("Advanced A4: **leg_share** = the fraction of this material's sourced A1-A3 mass "
+                       "carried by this leg. Add rows for multi-leg/multi-mode routes (e.g. ship + truck); "
+                       "the shares for each material must sum to 1 or the scientific engine flags a mass "
+                       "reconciliation error. mass_tonnes_legacy / ef_override_legacy feed only the legacy "
+                       "engine. I_A4 = ΣΣ (M/1000)·D·EF / 1000 [t CO₂e].")
 
         # ── A5 Construction (lifecycle order: after A4, before B6) ──
         a5_boq_mode, a5_diesel_l = 'installed', 0.0
@@ -2901,6 +2910,11 @@ TABS = {k: _created[i] for i, k in enumerate(_order)}
 # TAB 1: RESULTS & ANALYSIS
 # ═══════════════════════════════════════════════════════════════
 with TABS['results']:
+    if SCI_LCA_AVAILABLE:
+        st.info("ℹ️ The values in this tab are produced by the **legacy/scenario engine**. The "
+                "**🔬 Scientific LCA (referenced)** tab is the authoritative, fully-sourced reporting "
+                "path for publication. During migration the two engines can differ; cite the "
+                "referenced tab. Legacy will move to Developer-mode only once every stage is wired.")
     # Key metrics row
     m1, m2, m3, m4, m5 = st.columns(5)
     with m1:
@@ -3362,8 +3376,8 @@ if 'sci_lca' in TABS:
                          use_container_width=True, hide_index=True)
 
             _a4mod = scientific_lca.get("modules", {}).get("A4", {})
-            if _a4mod.get("by_material") or _a4mod.get("by_mode"):
-                with st.expander("🚚 A4 breakdown (per material / per mode)", expanded=False):
+            if _a4mod.get("by_material") or _a4mod.get("by_mode") or _a4mod.get("activity_audit"):
+                with st.expander("🚚 A4 breakdown + activity-data audit", expanded=False):
                     if _a4mod.get("by_material"):
                         st.markdown("**Per material (tCO₂e)**")
                         st.dataframe(pd.DataFrame(
@@ -3374,17 +3388,37 @@ if 'sci_lca' in TABS:
                         st.dataframe(pd.DataFrame(
                             [{"mode": k, "tCO2e": v} for k, v in _a4mod["by_mode"].items()]),
                             use_container_width=True, hide_index=True)
+                    if _a4mod.get("activity_audit"):
+                        st.markdown("**Activity-data audit (per leg: mass/distance source, "
+                                    "payload & return assumption)**")
+                        st.dataframe(pd.DataFrame(_a4mod["activity_audit"]),
+                                     use_container_width=True, hide_index=True)
 
             _a5mod = scientific_lca.get("modules", {}).get("A5", {})
-            if _a5mod.get("total_tco2e", 0.0) or _a5mod.get("status") == "connected":
-                with st.expander("🏗️ A5 five-component breakdown", expanded=False):
+            if _a5mod.get("total_tco2e", 0.0) or _a5mod.get("status") in ("connected", "incomplete_sources"):
+                with st.expander("🏗️ A5 — RICS subdivision (A5.1–A5.4) + component detail", expanded=False):
+                    _rics = _a5mod.get("rics_subdivision", {})
+                    _pre = _rics.get("A5.1_preconstruction_demolition", {})
+                    _wrk = _rics.get("A5.4_worker_transport", {})
                     st.dataframe(pd.DataFrame([
-                        {"component": "A5.1 fuel", "tCO2e": _a5mod.get("fuel_tco2e", 0.0)},
-                        {"component": "A5.2 electricity", "tCO2e": _a5mod.get("electricity_tco2e", 0.0)},
-                        {"component": "A5.4 waste production", "tCO2e": _a5mod.get("extra_waste_product_tco2e", 0.0)},
-                        {"component": "A5.5 waste transport", "tCO2e": _a5mod.get("waste_transport_tco2e", 0.0)},
-                        {"component": "A5.6 waste treatment", "tCO2e": _a5mod.get("waste_treatment_tco2e", 0.0)},
-                        {"component": "A5 total", "tCO2e": _a5mod.get("total_tco2e", 0.0)},
+                        {"RICS module": "A5.1 pre-construction demolition",
+                         "tCO2e / status": f"{_pre.get('status','?')} — {_pre.get('justification','')}"},
+                        {"RICS module": "A5.2 construction activities (fuel + electricity)",
+                         "tCO2e / status": f"{_rics.get('A5.2_construction_activities_tco2e', 0.0):,.2f}"},
+                        {"RICS module": "A5.3 waste management (production + transport + treatment)",
+                         "tCO2e / status": f"{_rics.get('A5.3_waste_management_tco2e', 0.0):,.2f}"},
+                        {"RICS module": "A5.4 worker transport (optional)",
+                         "tCO2e / status": _wrk.get("status", "?")},
+                        {"RICS module": "A5 total",
+                         "tCO2e / status": f"{_a5mod.get('total_tco2e', 0.0):,.2f}"},
+                    ]), use_container_width=True, hide_index=True)
+                    st.markdown("**Component detail (A5.2 / A5.3 breakdown)**")
+                    st.dataframe(pd.DataFrame([
+                        {"component": "A5.2 site fuel", "tCO2e": _a5mod.get("fuel_tco2e", 0.0)},
+                        {"component": "A5.2 site electricity (construction-year CI)", "tCO2e": _a5mod.get("electricity_tco2e", 0.0)},
+                        {"component": "A5.3 waste production", "tCO2e": _a5mod.get("extra_waste_product_tco2e", 0.0)},
+                        {"component": "A5.3 waste transport", "tCO2e": _a5mod.get("waste_transport_tco2e", 0.0)},
+                        {"component": "A5.3 waste treatment", "tCO2e": _a5mod.get("waste_treatment_tco2e", 0.0)},
                     ]), use_container_width=True, hide_index=True)
 
             _mb = scientific_lca.get("mass_balance", {}).get("rows")
@@ -3402,7 +3436,7 @@ if 'sci_lca' in TABS:
             with st.expander("📋 Still-open evidence register (what unlocks a publication number)", expanded=False):
                 _open_rows = [{"item": k, **v} for k, v in OPEN_SOURCE_REQUIREMENTS.items()]
                 st.dataframe(pd.DataFrame(_open_rows), use_container_width=True, hide_index=True)
-            st.caption("A1-A3, A4 and B6 are wired to the referenced core now. A5, B2-B5 and C1-C4 "
+            st.caption("A1-A3, A4, A5 and B6 are wired to the referenced core now. B2-B5 and C1-C4 "
                        "scientific legs are the next integration increments; until then they report "
                        "0 as UNCONNECTED (not negligible), and full-WLCA grade stays False.")
 

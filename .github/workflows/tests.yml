@@ -1,0 +1,38 @@
+name: tests
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install headless test dependencies
+        # The suites exec the Streamlit app against an in-process stub, so real
+        # Streamlit is not required; only the compute/data deps are.
+        run: python -m pip install --upgrade pip pandas numpy plotly openpyxl
+      - name: Run full test suite
+        run: |
+          set -e
+          for t in \
+            tests/ui_keys_test.py \
+            tests/smoke_headless.py \
+            tests/q1_upgrade_test.py \
+            tests/comprehensive_app_test.py \
+            tests/phase2_acceptance.py \
+            tests/phase3a_acceptance.py \
+            tests/phase3b_acceptance.py \
+            tests/phase3c_acceptance.py \
+            tests/phase4_acceptance.py \
+            tests/phase5_acceptance.py \
+            tests/lca_scientific_core_test.py ; do
+            echo "=== $t ==="
+            python "$t"
+          done

@@ -152,6 +152,17 @@ def add_lca_source_inputs(st, assessment_lifetime_default=50):
         placeholder="e.g. average laden HGV; empty return not separately counted",
         key="lca_a4_payload",
     )
+    st.caption("Road return trip (RICS): outward-laden + fraction·empty-running. Applied to road "
+               "only, and only with a documented empty-running factor + fraction + source. No "
+               "hard-coded 0.5. Leave the factor at 0 to report outward-only.")
+    a4_return_fraction = st.number_input(
+        "A4 road empty-return fraction (0 = off)", value=0.0, min_value=0.0, max_value=1.0,
+        step=0.05, format="%.2f", key="lca_a4_return_fraction")
+    a4_empty_return_factor = st.number_input(
+        "A4 empty-running EF (kgCO2e/tonne.km, 0 = off)", value=0.0, min_value=0.0,
+        step=0.001, format="%.5f", key="lca_a4_empty_return_factor")
+    a4_return_source = st.text_input(
+        "A4 return-assumption source", value="", key="lca_a4_return_source")
 
     st.markdown("#### A5 construction provenance")
     st.caption(
@@ -170,6 +181,21 @@ def add_lca_source_inputs(st, assessment_lifetime_default=50):
         "A5 waste-generation source (rates/quantities)", value="", key="lca_a5_waste_source")
     a5_waste_route_source = st.text_input(
         "A5 waste-transport route/distance source", value="", key="lca_a5_waste_route_source")
+    a5_construction_year = st.number_input(
+        "A5 construction year (drives A5 electricity grid CI)",
+        value=int(assessment_lifetime and 0) or 0, min_value=0, step=1,
+        help="0 = use the analysis start year. A5 electricity uses THIS year's grid CI, not B6 year 1.",
+        key="lca_a5_construction_year")
+    a5_predemolition_status = st.selectbox(
+        "A5.1 pre-construction demolition", ["not_applicable", "included"], index=0,
+        key="lca_a5_1_status")
+    a5_predemolition_note = st.text_input(
+        "A5.1 justification (required if N/A)", value="",
+        placeholder="e.g. Greenfield project; no existing asset demolition in the declared boundary.",
+        key="lca_a5_1_note")
+    a5_worker_transport_status = st.selectbox(
+        "A5.4 worker transport (optional in RICS)",
+        ["optional_not_reported", "not_applicable", "included"], index=0, key="lca_a5_4_status")
 
     return {
         "assessment_lifetime": int(assessment_lifetime),
@@ -193,11 +219,18 @@ def add_lca_source_inputs(st, assessment_lifetime_default=50):
         "a4_route_source": a4_route_source,
         "a4_scope": a4_scope,
         "a4_payload_assumption": a4_payload_assumption,
+        "a4_return_fraction": a4_return_fraction,
+        "a4_empty_return_factor": a4_empty_return_factor,
+        "a4_return_source": a4_return_source,
         "a5_diesel_scope": a5_diesel_scope,
         "a5_diesel_source": a5_diesel_source,
         "a5_electricity_source": a5_electricity_source,
         "a5_waste_source": a5_waste_source,
         "a5_waste_route_source": a5_waste_route_source,
+        "a5_construction_year": int(a5_construction_year),
+        "a5_predemolition_status": a5_predemolition_status,
+        "a5_predemolition_note": a5_predemolition_note,
+        "a5_worker_transport_status": a5_worker_transport_status,
     }
 
 
@@ -310,43 +343,104 @@ def build_a4_scientific_legs(params, masses):
     simple_entered = dist_default > 0.0
     entered = advanced_present or simple_entered
 
+    # Documented road empty-return assumption (no hard-coded 0.5). Applied to road only.
+    return_fraction = float(params.get("a4_return_fraction", 0.0))
+    empty_return_ef = float(params.get("a4_empty_return_factor", 0.0))
+    return_source = str(params.get("a4_return_source", "")).strip()
+    payload = str(params.get("a4_payload_assumption", "")).strip()
     route_source = str(params.get("a4_route_source", "")).strip()
+
     if not route_source:
         if entered:
             return ([], "incomplete_sources",
                     "A4 distance/mode were set but no route/distance source was given → "
-                    "A4 is EXCLUDED from the result (not counted as a measured zero).")
-        return [], "unconnected", "No A4 transport entered."
+                    "A4 is EXCLUDED from the result (not counted as a measured zero).", [])
+        return [], "unconnected", "No A4 transport entered.", []
 
-    legs = []
+    # Assemble (material -> list of (share, distance, mode)) so masses come from the
+    # scientific A1-A3 masses via leg_share, never from a free-typed mass.
+    per_material = {}
     if advanced_present:
-        # Advanced rows win; simple route is ignored → no double counting.
         for row in advanced:
-            legs.append({
-                "material": row.get("material", "not specified"),
-                "mass_kg": float(row.get("mass_kg", 0.0)),
-                "distance_km": float(row.get("distance_km", 0.0)),
-                "mode": str(row.get("mode", mode_default)).lower(),
-                "scope": scope,
-                "mass_source": boq_source,
-                "distance_source": route_source,
-            })
+            m = row.get("material", "not specified")
+            per_material.setdefault(m, []).append((
+                float(row.get("leg_share", 1.0)),
+                float(row.get("distance_km", 0.0)),
+                str(row.get("mode", mode_default)).lower(),
+            ))
     else:
-        # Simple mode: one leg per material using the sourced A1-A3 masses.
         for material, quantity in masses.items():
-            mass_kg = float(quantity.value)
-            if mass_kg <= 0.0:
+            if float(quantity.value) > 0.0:
+                per_material[material] = [(1.0, dist_default, mode_default)]
+
+    # MASS RECONCILIATION: for every material with A1-A3 mass, Σ leg_share must equal 1.
+    for material, quantity in masses.items():
+        mat_mass = float(quantity.value)
+        if mat_mass <= 0.0:
+            continue
+        legs_for = per_material.get(material)
+        if not legs_for:
+            return ([], "validation_failed",
+                    f"A4 mass reconciliation failed: material '{material}' has A1-A3 mass but no "
+                    "A4 leg. Every transported material needs leg_shares summing to 1.", [])
+        share_sum = sum(s for s, _, _ in legs_for)
+        if abs(share_sum - 1.0) > 1e-6:
+            return ([], "validation_failed",
+                    f"A4 mass reconciliation failed for '{material}': Σ leg_share = {share_sum:.6f} "
+                    "(must equal 1).", [])
+
+    legs, audit = [], []
+    for material, quantity in masses.items():
+        mat_mass = float(quantity.value)
+        if mat_mass <= 0.0:
+            continue
+        mass_src = boq_source or quantity.source
+        for share, distance_km, mode in per_material[material]:
+            leg_mass = mat_mass * share
+            if leg_mass <= 0.0:
                 continue
             legs.append({
-                "material": material,
-                "mass_kg": mass_kg,
-                "distance_km": dist_default,
-                "mode": mode_default,
-                "scope": scope,
-                "mass_source": boq_source or quantity.source,
-                "distance_source": route_source,
+                "material": material, "mass_kg": leg_mass, "distance_km": distance_km,
+                "mode": mode, "scope": scope,
+                "mass_source": mass_src, "distance_source": route_source,
             })
-    return legs, "connected", ""
+            audit.append({
+                "stage": "A4", "material": material, "leg": "outward", "mass_kg": leg_mass,
+                "leg_share": share, "mass_source": mass_src, "distance_km": distance_km,
+                "distance_source": route_source, "mode": mode, "scope": scope,
+                "payload_assumption": payload or "not stated",
+                "return_assumption": "none (outward only)",
+            })
+            # RICS road return journey — ONLY for road, ONLY with a documented assumption.
+            if mode == "truck" and return_fraction > 0.0 and empty_return_ef > 0.0 and return_source:
+                ret_ev = make_project_evidence(
+                    code=f"A4-ROAD-RETURN-{material}",
+                    value=empty_return_ef, unit="kgCO2e/tonne.km", stage="A4",
+                    source_file=return_source,
+                    location=f"documented empty-return: fraction={return_fraction}",
+                    boundary_scope="A4 road empty-return running",
+                    note=payload or "documented road return-trip assumption",
+                )
+                legs.append({
+                    "material": material, "mass_kg": leg_mass,
+                    "distance_km": distance_km * return_fraction, "mode": mode, "scope": scope,
+                    "mass_source": mass_src, "distance_source": return_source,
+                    "factor_override": ret_ev,
+                })
+                audit.append({
+                    "stage": "A4", "material": material, "leg": "return", "mass_kg": leg_mass,
+                    "leg_share": share, "mass_source": mass_src,
+                    "distance_km": distance_km * return_fraction, "distance_source": return_source,
+                    "mode": mode, "scope": scope, "payload_assumption": payload or "not stated",
+                    "return_assumption": f"empty-return fraction={return_fraction}, EF={empty_return_ef}",
+                })
+
+    note = ""
+    road_present = any(mode == "truck" for legs_ in per_material.values() for _, _, mode in legs_)
+    if road_present and not (return_fraction > 0.0 and empty_return_ef > 0.0 and return_source):
+        note = ("Road legs are outward-only (average-laden factor); a documented empty-return "
+                "assumption (fraction + empty-running EF + source) is required to add the return trip.")
+    return legs, "connected", note, audit
 
 
 def _a4_breakdown(a4_result):
@@ -490,29 +584,35 @@ def build_a5_scientific_activity(params, masses, grid_construction):
                 status = "incomplete_sources"
                 notes.append(f"A5 waste transport for {material} has a distance but no route source → excluded.")
 
-        # A5.6 waste treatment (per-tonne verified factors; shares honoured where verified).
-        route_codes = _A5_WASTE_ROUTE.get(material)
-        if route_codes is None:
-            status = "incomplete_sources"
-            notes.append(f"A5 waste treatment for {material} has no verified GHG-2025 factor "
-                         "(supply a documented override) → excluded.")
-            continue
+        # A5.3 waste treatment — verified per-tonne factors only; shares must be valid;
+        # NO landfill-as-recycling fallback (a missing recycling factor → incomplete_sources).
         shares = shares_ui.get(material, {"landfill": 1.0, "recycle": 0.0, "reuse": 0.0})
-        landfill_kg = w_kg * float(shares.get("landfill", 1.0))
-        recycle_kg = w_kg * float(shares.get("recycle", 0.0))
-        # reuse share → no processing emission in A5 (documented); recovery benefit is Module D.
-        if landfill_kg > 0.0:
-            waste_treatment_items.append({
-                "material": material, "waste_kg": landfill_kg, "waste_source": waste_source,
-                "route": "landfill", "factor_code": route_codes["landfill"]})
-        if recycle_kg > 0.0:
-            code = route_codes["recycle"] or route_codes["landfill"]
-            if route_codes["recycle"] is None:
-                notes.append(f"A5 {material} recycling has no verified processing factor; "
-                             "conservatively charged at the landfill factor.")
-            waste_treatment_items.append({
-                "material": material, "waste_kg": recycle_kg, "waste_source": waste_source,
-                "route": "recycle", "factor_code": code})
+        lf = float(shares.get("landfill", 0.0))
+        rc = float(shares.get("recycle", 0.0))
+        ru = float(shares.get("reuse", 0.0))
+        if min(lf, rc, ru) < 0.0 or max(lf, rc, ru) > 1.0 or abs(lf + rc + ru - 1.0) > 1e-9:
+            status = "validation_failed"
+            notes.append(f"A5 {material} treatment shares invalid: reuse+recycle+landfill must "
+                         "equal 1 and each be within 0..1.")
+            continue
+        route_codes = _A5_WASTE_ROUTE.get(material, {})
+        for route_name, share in (("landfill", lf), ("recycle", rc), ("reuse", ru)):
+            if share <= 0.0:
+                continue
+            w_route = w_kg * share
+            code = route_codes.get(route_name)
+            if code:
+                waste_treatment_items.append({
+                    "material": material, "waste_kg": w_route, "waste_source": waste_source,
+                    "route": route_name, "factor_code": code})
+            elif route_name == "reuse":
+                # Reuse: no A5 processing emission assumed (documented); recovery credit is Module D.
+                notes.append(f"A5 {material} reuse: 0 processing emission assumed (documented); "
+                             "recovery credit belongs to Module D, not A5.")
+            else:
+                status = "incomplete_sources"
+                notes.append(f"A5 {material} {route_name}: no verified per-tonne factor → EXCLUDED "
+                             "(no landfill fallback). Supply a documented per-tonne override.")
 
     if not entered:
         return None, "unconnected", "A5 module on but no fuel/electricity/waste entered."
@@ -548,9 +648,9 @@ def run_scientific_lca_from_app_params(params):
     # A4 wired from the app editors. Explicit pre-built legs win; otherwise build from UI.
     a4_legs = params.get("a4_scientific_legs")
     if a4_legs:
-        a4_status, a4_note = "connected", ""
+        a4_status, a4_note, a4_activity_audit = "connected", "", []
     else:
-        a4_legs, a4_status, a4_note = build_a4_scientific_legs(params, masses)
+        a4_legs, a4_status, a4_note, a4_activity_audit = build_a4_scientific_legs(params, masses)
     a4 = calculate_transport_legs(a4_legs, "A4", default_scope="wtw") if a4_legs else {
         "stage": "A4", "total_tco2e": 0.0, "source_audit": [], "legs": []
     }
@@ -559,6 +659,7 @@ def run_scientific_lca_from_app_params(params):
     a4["by_mode"] = a4_by_mode
     a4["status"] = a4_status
     a4["note"] = a4_note
+    a4["activity_audit"] = a4_activity_audit
     a4["equation_id"] = "E3_A4_C2"
 
     grid_source = str(params.get("grid_source", "")).strip()
@@ -616,6 +717,20 @@ def run_scientific_lca_from_app_params(params):
     }
     b6 = calculate_b6(annual_pkm_by_year, grid_by_year, energy_intensity)
 
+    # Independent construction-year grid record (A5 electricity uses the CONSTRUCTION year's
+    # grid CI, which is NOT necessarily B6 operating year 1).
+    construction_year = int(params.get("a5_construction_year", 0)) or start_year
+    grid_construction = GridCarbonYear(
+        year=construction_year,
+        generation_kgco2e_per_kwh=float(params.get("grid_generation", 0.0)),
+        td_kgco2e_per_kwh=float(params.get("grid_td", 0.0)),
+        upstream_kgco2e_per_kwh=float(params.get("grid_upstream", 0.0)),
+        source_file=grid_source,
+        location=f"{grid_location}; construction calendar year {construction_year}",
+        geographic_scope="Egypt/project electricity supply (construction year)",
+        note="A5 construction-year grid CI (independent of B6 year 1).",
+    )
+
     # A5 wired from the app editors (fuel + electricity + waste production/transport/treatment).
     a5_prebuilt = params.get("a5_scientific_inputs")
     if a5_prebuilt:
@@ -623,13 +738,36 @@ def run_scientific_lca_from_app_params(params):
         a5_status, a5_note = "connected", ""
     else:
         a5_kwargs, a5_status, a5_note = build_a5_scientific_activity(
-            params, masses, grid_by_year.get(1))
+            params, masses, grid_construction)
         if a5_kwargs is not None:
             a5 = calculate_a5(**a5_kwargs)
         else:
             a5 = {"stage": "A5", "total_tco2e": 0.0, "source_audit": []}
     a5["status"] = a5_status
     a5["note"] = a5_note
+    # RICS official A5 subdivision (A5.1 pre-construction demolition, A5.2 construction
+    # activities, A5.3 waste management, A5.4 optional worker transport). The computed
+    # components are mapped onto A5.2 (fuel+electricity) and A5.3 (waste prod+transport+treat).
+    _predemo_status = str(params.get("a5_predemolition_status", "not_applicable"))
+    _predemo_note = str(params.get("a5_predemolition_note", "")).strip()
+    _worker_status = str(params.get("a5_worker_transport_status", "optional_not_reported"))
+    if _predemo_status == "not_applicable" and not _predemo_note:
+        # N/A without a justification is itself incomplete (must be explained, not silent).
+        if a5_status == "connected":
+            a5_status = "incomplete_sources"
+            a5["status"] = a5_status
+        a5["note"] = (a5["note"] + " A5.1 marked not_applicable but no justification was given.").strip()
+    a5["rics_subdivision"] = {
+        "A5.1_preconstruction_demolition": {
+            "status": _predemo_status, "justification": _predemo_note or "(none)"},
+        "A5.2_construction_activities_tco2e": (
+            float(a5.get("fuel_tco2e", 0.0)) + float(a5.get("electricity_tco2e", 0.0))),
+        "A5.3_waste_management_tco2e": (
+            float(a5.get("extra_waste_product_tco2e", 0.0))
+            + float(a5.get("waste_transport_tco2e", 0.0))
+            + float(a5.get("waste_treatment_tco2e", 0.0))),
+        "A5.4_worker_transport": {"status": _worker_status},
+    }
 
     b_events = params.get("b2_b5_scientific_events") or []
     b2b5_connected = bool(b_events)
