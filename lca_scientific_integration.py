@@ -124,6 +124,32 @@ def add_lca_source_inputs(st, assessment_lifetime_default=50):
         "Project energy-intensity source", value="", key="lca_project_ei_source"
     )
 
+    st.markdown("#### A4 transport-to-site provenance")
+    st.caption(
+        "A4 legs are built from the material masses and the A4 distance/mode set in the "
+        "main sidebar. The route distance needs its own source; without it A4 stays "
+        "unconnected (not a fabricated 50 km). WTW is preferred for whole-life carbon."
+    )
+    a4_route_source = st.text_input(
+        "A4 route/distance source",
+        value="",
+        placeholder="Route survey / logistics plan: origin, distance, payload, return assumption",
+        key="lca_a4_route_source",
+    )
+    a4_scope = st.selectbox(
+        "A4 emission-factor scope",
+        ["wtw", "direct", "wtt"],
+        index=0,
+        help="wtw = direct + upstream/WTT (preferred for whole-life carbon).",
+        key="lca_a4_scope",
+    )
+    a4_payload_assumption = st.text_input(
+        "A4 payload / return-trip assumption",
+        value="",
+        placeholder="e.g. average laden HGV; empty return not separately counted",
+        key="lca_a4_payload",
+    )
+
     return {
         "assessment_lifetime": int(assessment_lifetime),
         "assessment_lifetime_source": assessment_lifetime_source,
@@ -143,6 +169,9 @@ def add_lca_source_inputs(st, assessment_lifetime_default=50):
         "energy_intensity_choice": energy_intensity_choice,
         "project_ei": project_ei,
         "project_ei_source": project_ei_source,
+        "a4_route_source": a4_route_source,
+        "a4_scope": a4_scope,
+        "a4_payload_assumption": a4_payload_assumption,
     }
 
 
@@ -228,14 +257,65 @@ def build_material_masses_from_app_params(params):
     }
 
 
+def build_a4_scientific_legs(params, masses):
+    """Build A4 transport legs from the existing app A4 editor / simple inputs.
+
+    Returns (legs, connected, note). A4 only connects when an A4 route/distance
+    source is supplied: in publication we never invent an unsourced 50 km distance.
+    The distance value itself is attested by the route source; masses reuse the BOQ
+    source. EF comes from the registry mode/scope factor (WTW preferred).
+    """
+    route_source = str(params.get("a4_route_source", "")).strip()
+    if not route_source:
+        return [], False, "A4 route/distance source is open → A4 not connected (no fabricated distance)."
+
+    scope = str(params.get("a4_scope", "wtw")).lower()
+    boq_source = str(params.get("boq_source", "")).strip()
+    mode_default = str(params.get("transport_mode", "truck")).lower()
+    dist_default = float(params.get("transport_distance_km", 0.0))
+    a4_mode = str(params.get("a4_mode", "simple")).lower()
+
+    legs = []
+    advanced = params.get("a4_advanced_legs")
+    if a4_mode == "advanced" and advanced:
+        # Per-material / multi-leg rows from the advanced editor. A float ef override
+        # in the UI is intentionally NOT used as a scientific factor (no source); the
+        # sourced registry mode/scope factor is used instead.
+        for row in advanced:
+            legs.append({
+                "material": row.get("material", "not specified"),
+                "mass_kg": float(row.get("mass_kg", 0.0)),
+                "distance_km": float(row.get("distance_km", 0.0)),
+                "mode": str(row.get("mode", mode_default)).lower(),
+                "scope": scope,
+                "mass_source": boq_source,
+                "distance_source": route_source,
+            })
+    else:
+        # Simple mode: one leg per material using the sourced A1-A3 masses.
+        for material, quantity in masses.items():
+            mass_kg = float(quantity.value)
+            if mass_kg <= 0.0:
+                continue
+            legs.append({
+                "material": material,
+                "mass_kg": mass_kg,
+                "distance_km": dist_default,
+                "mode": mode_default,
+                "scope": scope,
+                "mass_source": boq_source or quantity.source,
+                "distance_source": route_source,
+            })
+    return legs, True, ""
+
+
 def run_scientific_lca_from_app_params(params):
     """Replacement for the scientific LCA part of calculate_core_lca_lcc().
 
-    Optional stage activity lists should be created from the existing A5/B2-B5/C1-C4
-    editors and passed through these keys:
-      a4_scientific_legs, a5_scientific_inputs, b2_b5_scientific_events,
-      c1_c4_scientific_inputs, module_d1_scientific_rows.
-    Empty lists/dicts mean the optional module is not included.
+    Connected now: A1-A3, A4 (from the app editor), B6. A5/B2-B5/C1-C4 accept
+    optional pre-built scientific inputs and otherwise report 0 as UNCONNECTED
+    (not negligible). publication_grade_full_wlca stays False until every stage is
+    connected and sourced.
     """
     rsp = int(params.get("assessment_lifetime", 0))
     if rsp <= 0 or not str(params.get("assessment_lifetime_source", "")).strip():
@@ -244,7 +324,12 @@ def run_scientific_lca_from_app_params(params):
     masses = build_material_masses_from_app_params(params)
     a1_a3 = calculate_a1_a3(masses)
 
-    a4_legs = params.get("a4_scientific_legs") or []
+    # A4 wired from the app editors. Explicit pre-built legs win; otherwise build from UI.
+    a4_legs = params.get("a4_scientific_legs")
+    if a4_legs:
+        a4_connected, a4_note = True, ""
+    else:
+        a4_legs, a4_connected, a4_note = build_a4_scientific_legs(params, masses)
     a4 = calculate_transport_legs(a4_legs, "A4", default_scope="wtw") if a4_legs else {
         "stage": "A4", "total_tco2e": 0.0, "source_audit": [], "legs": []
     }
@@ -305,11 +390,13 @@ def run_scientific_lca_from_app_params(params):
     b6 = calculate_b6(annual_pkm_by_year, grid_by_year, energy_intensity)
 
     a5_inputs = params.get("a5_scientific_inputs") or {}
+    a5_connected = bool(a5_inputs)
     a5 = calculate_a5(**a5_inputs) if a5_inputs else {
         "stage": "A5", "total_tco2e": 0.0, "source_audit": []
     }
 
     b_events = params.get("b2_b5_scientific_events") or []
+    b2b5_connected = bool(b_events)
     b2_b5 = calculate_b2_b5(b_events, grid_by_year) if b_events else {
         "stage": "B2-B5", "total_tco2e": 0.0, "source_audit": [],
         "material_added_kg": {}, "material_removed_kg": {}
@@ -321,6 +408,7 @@ def run_scientific_lca_from_app_params(params):
     )
 
     c_inputs = params.get("c1_c4_scientific_inputs") or {}
+    c1c4_connected = bool(c_inputs)
     c1_c4 = calculate_c1_c4(**c_inputs) if c_inputs else {
         "stage": "C1-C4", "total_tco2e": 0.0, "source_audit": []
     }
@@ -338,7 +426,40 @@ def run_scientific_lca_from_app_params(params):
         final_lca["source_audit"],
         assessment_period_years=rsp,
     )
+
+    # ── Two-level publication grade ──────────────────────────────────────────
+    # A1-A3 and B6 always reach this point sourced (else the run raised earlier).
+    scope_connected = {
+        "A1-A3": True,
+        "A4": bool(a4_connected),
+        "A5": a5_connected,
+        "B2-B5": b2b5_connected,
+        "B6": True,
+        "C1-C4": c1c4_connected,
+    }
+    # partial-scope grade = the CONNECTED stages are fully sourced (no OPEN factor,
+    # FRP handled, one grid record per year). This is what publication_checks verifies.
+    publication_grade_partial_scope = bool(checks.get("publication_grade", False))
+    # full whole-life grade additionally requires EVERY optional stage connected.
+    required_full = ["A4", "A5", "B2-B5", "C1-C4"]
+    publication_grade_full_wlca = (
+        publication_grade_partial_scope
+        and all(scope_connected[s] for s in required_full)
+    )
+
+    connected = [s for s, v in scope_connected.items() if v]
+    unconnected = [s for s, v in scope_connected.items() if not v]
+
     final_lca["publication_checks"] = checks
+    final_lca["publication_grade_partial_scope"] = publication_grade_partial_scope
+    final_lca["publication_grade_full_wlca"] = publication_grade_full_wlca
+    final_lca["scope_connected"] = scope_connected
+    final_lca["connected_stages"] = connected
+    final_lca["unconnected_stages"] = unconnected
+    # Alias: the combined value is a PARTIAL, connected-scope total until every stage is wired.
+    final_lca["connected_scope_tCO2e"] = final_lca["gross_A_C_tCO2e"]
+    final_lca["scope_label"] = "Scientific partial LCA: " + " + ".join(connected)
+    final_lca["a4_note"] = a4_note
     final_lca["mass_balance"] = mass_balance
     final_lca["modules"] = {
         "A1_A3": a1_a3,

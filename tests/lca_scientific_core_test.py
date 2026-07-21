@@ -127,8 +127,37 @@ full.update({
 res = run_scientific_lca_from_app_params(full)
 check("integration computes sourced gross > 0", res["gross_A_C_tCO2e"] > 0.0)
 check("integration GWP > 0", res["GWP_kgCO2e_per_pkm"] > 0.0)
-check("integration publication_grade True when fully sourced",
-      res["publication_checks"]["publication_grade"] is True)
+check("integration partial-scope grade True when A1-A3+B6 sourced",
+      res["publication_grade_partial_scope"] is True)
+
+# ── 9. Two-level publication grade + A4 wiring ─────────────────────────────────
+# A4 has no route source in `full` → A4 UNCONNECTED, partial True, full_wlca False.
+check("A4 unconnected without a route source", res["scope_connected"]["A4"] is False)
+check("A4 tCO2e == 0 while unconnected", abs(res["modules"]["A4"]["total_tco2e"]) < 1e-12)
+check("full_wlca False while A4/A5/B2-B5/C1-C4 unconnected",
+      res["publication_grade_full_wlca"] is False)
+check("unconnected stages reported (not silently negligible)",
+      set(res["unconnected_stages"]) == {"A4", "A5", "B2-B5", "C1-C4"})
+
+a4full = dict(full)
+a4full.update({"a4_mode": "simple", "transport_distance_km": 50.0,
+               "transport_mode": "truck", "a4_route_source": "route survey rev1", "a4_scope": "wtw"})
+res_a4 = run_scientific_lca_from_app_params(a4full)
+check("A4 connects with a route source", res_a4["scope_connected"]["A4"] is True)
+check("A4 contributes > 0 once connected", res_a4["modules"]["A4"]["total_tco2e"] > 0.0)
+check("scope label names connected stages A1-A3 + A4 + B6",
+      res_a4["scope_label"] == "Scientific partial LCA: A1-A3 + A4 + B6")
+check("full_wlca STILL False (A5/B2-B5/C1-C4 not wired)",
+      res_a4["publication_grade_full_wlca"] is False)
+
+# A4 leg identities: zero distance → 0, zero mass → 0.
+from lca_scientific_core import calculate_transport_legs as _ctl
+z_dist = _ctl([{"material": "steel", "mass_kg": 1e6, "distance_km": 0.0, "mode": "truck",
+                "scope": "wtw", "mass_source": "BOQ", "distance_source": "route"}], "A4")
+check("A4 zero distance → zero carbon", abs(z_dist["total_tco2e"]) < 1e-12)
+z_mass = _ctl([{"material": "steel", "mass_kg": 0.0, "distance_km": 100.0, "mode": "truck",
+                "scope": "wtw", "mass_source": "BOQ", "distance_source": "route"}], "A4")
+check("A4 zero mass → zero carbon", abs(z_mass["total_tco2e"]) < 1e-12)
 
 print("\nALL SCIENTIFIC CORE TESTS PASSED" if ok else "\nSOME TESTS FAILED")
 sys.exit(0 if ok else 1)

@@ -3304,24 +3304,45 @@ if 'sci_lca' in TABS:
 
         if scientific_lca is not None:
             _chk = scientific_lca.get("publication_checks", {})
-            _grade = bool(_chk.get("publication_grade", False))
+            _partial = bool(scientific_lca.get("publication_grade_partial_scope", False))
+            _full = bool(scientific_lca.get("publication_grade_full_wlca", False))
+            _connected = scientific_lca.get("connected_stages", [])
+            _unconnected = scientific_lca.get("unconnected_stages", [])
+            _scope_label = scientific_lca.get("scope_label", "Scientific partial LCA")
+
+            st.markdown(f"#### {_scope_label}")
             s1, s2, s3 = st.columns(3)
             with s1:
-                st.metric("Gross A–C (tCO₂e)", f"{scientific_lca['gross_A_C_tCO2e']:,.1f}")
+                st.metric("Partial LCA — connected scope (tCO₂e)",
+                          f"{scientific_lca['connected_scope_tCO2e']:,.1f}")
             with s2:
-                st.metric("GWP (kgCO₂e / pkm)", f"{scientific_lca['GWP_kgCO2e_per_pkm']:.5f}")
+                st.metric("GWP over connected scope (kgCO₂e / pkm)",
+                          f"{scientific_lca['GWP_kgCO2e_per_pkm']:.5f}")
             with s3:
                 st.metric("Module D (tCO₂e, separate)", f"{scientific_lca['module_D1_signed_tCO2e_separate']:,.1f}")
-            st.caption("Gross A–C = A1-A3 + A4 + A5 + B2-B5 + B6 + C1-C4. Module D is supplementary "
-                       "and is NEVER added to or subtracted from the gross headline.")
+            st.caption(f"**Connected stages:** {', '.join(_connected)}. "
+                       f"**Not yet connected (reported as 0 because unwired, NOT because negligible):** "
+                       f"{', '.join(_unconnected) if _unconnected else 'none'}. "
+                       "This is NOT a full Gross A–C until every stage is wired. Module D is "
+                       "supplementary and is NEVER added to or subtracted from the headline.")
+            if scientific_lca.get("a4_note"):
+                st.caption(f"A4 status: {scientific_lca['a4_note']}")
 
-            st.markdown(f"**Publication readiness:** {'🟢 publication-grade' if _grade else '🟡 not yet publication-grade'}")
+            f1, f2 = st.columns(2)
+            with f1:
+                st.markdown(f"**Partial-scope grade:** "
+                            f"{'🟢 sourced' if _partial else '🟡 sources open'} "
+                            "(connected stages only)")
+            with f2:
+                st.markdown(f"**Full WLCA grade:** "
+                            f"{'🟢 publication-grade' if _full else '🔴 not yet'} "
+                            "(needs A4+A5+B2-B5+C1-C4 all wired & sourced)")
             for _iss in _chk.get("issues", []):
                 st.markdown(f"- 🔴 {_iss}")
             for _warn in _chk.get("warnings", []):
                 st.markdown(f"- 🟠 {_warn}")
 
-            st.markdown("#### Stage contribution")
+            st.markdown("#### Stage contribution (connected scope)")
             st.dataframe(pd.DataFrame(scientific_lca['stage_contribution']),
                          use_container_width=True, hide_index=True)
 
@@ -3340,8 +3361,9 @@ if 'sci_lca' in TABS:
             with st.expander("📋 Still-open evidence register (what unlocks a publication number)", expanded=False):
                 _open_rows = [{"item": k, **v} for k, v in OPEN_SOURCE_REQUIREMENTS.items()]
                 st.dataframe(pd.DataFrame(_open_rows), use_container_width=True, hide_index=True)
-            st.caption("A4, A5, B2-B5 and C1-C4 scientific legs are wired to the existing editors "
-                       "in the next integration increment; A1-A3 and B6 are active now.")
+            st.caption("A1-A3, A4 and B6 are wired to the referenced core now. A5, B2-B5 and C1-C4 "
+                       "scientific legs are the next integration increments; until then they report "
+                       "0 as UNCONNECTED (not negligible), and full-WLCA grade stays False.")
 
 
 # ═══════════════════════════════════════════════════════════════
