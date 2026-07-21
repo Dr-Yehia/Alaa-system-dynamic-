@@ -421,7 +421,8 @@ check("constant grid → not project-specific annual",
       _r_lf["publication_readiness"]["grid_is_project_specific_annual"] is False
       and "constant" in _r_lf["grid_basis"])
 _ann = dict(_a5_lf); _ann["grid_mode"] = "annual_official_series"
-_ann["grid_annual_series"] = {2026 + i: {"generation": 0.40, "td": 0.03, "upstream": 0.05}
+_ann["grid_annual_series"] = {2026 + i: {"generation": 0.40, "td": 0.03, "upstream": 0.05,
+                                         "source_file": "Egypt grid 2025", "source_location": f"row {i}"}
                               for i in range(50)}
 _r_ann = run_scientific_lca_from_app_params(_ann)
 check("annual official series → project-specific annual flagged",
@@ -471,6 +472,88 @@ check("gross == Σ reported stage totals",
       abs(_r_lf["gross_A_C_tCO2e"] - _repsum) < 1e-6)
 check("GWP == gross*1000/lifetime_pkm (reported)",
       abs(_r_lf["GWP_kgCO2e_per_pkm"] - _r_lf["gross_A_C_tCO2e"] * 1000.0 / _r_lf["lifetime_pkm"]) < 1e-9)
+
+# ── 14. EPD overrides (14,15,16), annual-grid guards (10,11), empty-return unit,
+#        B2-B5 year (17), Module D from C3 (21) ──────────────────────────────────
+from lca_scientific_integration import (build_material_factor_overrides as _bmo,
+                                        build_a4_scientific_legs as _b4b,
+                                        build_module_d_rows_from_c3 as _bmd)
+from lca_scientific_core import ScientificInputError as _SIE, make_project_evidence as _mpe
+
+# FRP > 0 with an EPD override → passes; without → fails.
+_frp = dict(full); _frp["frp"] = 2.0  # 2 thousand tonnes FRP
+_r_frp_no = None
+try:
+    run_scientific_lca_from_app_params(dict(_frp)); _r_frp_no = "ran"
+except _SIE:
+    _r_frp_no = "blocked"
+check("FRP>0 without EPD → blocked", _r_frp_no == "blocked")
+_frp_ok = dict(_frp)
+_frp_ok["material_epd_overrides"] = [{"material": "frp", "gwp_kgco2e_per_kg": 6.5,
+                                      "source_file": "FRP EPD 2024", "source_location": "p3 tbl1",
+                                      "geography": "EU", "validity": "2029"}]
+_r_frp_ok = run_scientific_lca_from_app_params(_frp_ok)
+check("FRP>0 WITH EPD override → runs", _r_frp_ok["gross_A_C_tCO2e"] > 0.0)
+_ovr = _bmo(_frp_ok)
+check("EPD override built as Evidence for FRP", "frp" in _ovr and abs(_ovr["frp"].value - 6.5) < 1e-9)
+
+# recycled content on a market-average ICE factor must fail (E2 guard).
+from lca_scientific_core import calculate_effective_ef as _cee, MATERIAL_EF as _MEF
+try:
+    _cee(_MEF["steel"], 0.3, _MEF["steel"]); check("recycled-content on market-average fails", False)
+except _SIE:
+    check("recycled-content on market-average fails", True)
+
+# annual grid: missing year fails; row without source fails.
+_ann_miss = dict(_a5_lf); _ann_miss["grid_mode"] = "annual_official_series"
+_ann_miss["grid_annual_series"] = {2026: {"generation": 0.4, "td": 0.03, "upstream": 0.05,
+                                          "source_file": "s", "source_location": "r"}}
+try:
+    run_scientific_lca_from_app_params(_ann_miss); check("annual grid missing year fails", False)
+except _SIE:
+    check("annual grid missing year fails", True)
+_ann_nosrc = dict(_a5_lf); _ann_nosrc["grid_mode"] = "annual_official_series"
+_ann_nosrc["grid_annual_series"] = {2026 + i: {"generation": 0.4, "td": 0.03, "upstream": 0.05}
+                                    for i in range(50)}
+try:
+    run_scientific_lca_from_app_params(_ann_nosrc); check("annual grid row without source fails", False)
+except _SIE:
+    check("annual grid row without source fails", True)
+
+# A4 empty-return unit-aware: vehicle-km uses trips, not payload mass.
+_veh = {"a4_scope": "wtw", "boq_source": "BOQ", "a4_mode": "simple", "transport_mode": "truck",
+        "transport_distance_km": 100.0, "a4_route_source": "route",
+        "a4_empty_return_factor": 0.9, "a4_return_source": "veh doc",
+        "a4_return_factor_unit": "vehicle_km", "a4_number_of_trips": 40.0}
+_vl, _vst, _vn, _vaud = _b4b(_veh, {"steel": ProjectQuantity(1e6, "kg", "BOQ", "x")})
+check("A4 vehicle-km return leg present (trips-based)",
+      _vst == "connected" and any(a["leg"] == "return" for a in _vaud))
+
+# B2-B5 event year outside 1..RSP fails.
+_b2 = dict(_a5_lf)
+_b2["b2_b5_scientific_events"] = [{"module": "B2", "year": 999, "event_source": "OM plan"}]
+_r_b2 = run_scientific_lca_from_app_params(_b2)
+check("B2-B5 event year > RSP → validation_failed",
+      _r_b2["stage_status"]["B2-B5"] == "validation_failed")
+
+# Module D from C3: recovered output must not exceed C3 recovered mass.
+_c3res = {"treatment_rows": [{"material": "steel", "mass_kg": 1000.0,
+                             "reuse_share": 0.0, "recycle_share": 0.5, "disposal_share": 0.5}]}
+_prim = _mpe("PRIM", 1.61, "kgCO2e/kg", "D1", "ICE", "row", "A1-A3")
+_rec = _mpe("REC", 0.4, "kgCO2e/kg", "D1", "ICE", "row", "recovery")
+_ok_cfg = {"steel": {"recovered_output_kg": 400.0, "secondary_input_kg": 0.0,
+                     "substitution_ratio": 0.9, "flow_source": "eol", "substitution_source": "a",
+                     "primary_factor": _prim, "recovery_factor": _rec}}
+check("Module D from C3 within recovered mass builds a row", len(_bmd(_c3res, _ok_cfg)) == 1)
+_bad_cfg = dict(_ok_cfg); _bad_cfg["steel"] = dict(_ok_cfg["steel"], recovered_output_kg=900.0)
+try:
+    _bmd(_c3res, _bad_cfg); check("Module D recovered > C3 recovered fails", False)
+except _SIE:
+    check("Module D recovered > C3 recovered fails", True)
+
+# evidence granularity: default status is user-supplied, not 'verified'.
+check("make_project_evidence default status is user_supplied (not verified)",
+      _mpe("X", 1.0, "kgCO2e/kg", "A1-A3", "f", "l", "A1-A3").status == "project_specific_user_supplied")
 
 print("\nALL SCIENTIFIC CORE TESTS PASSED" if ok else "\nSOME TESTS FAILED")
 sys.exit(0 if ok else 1)

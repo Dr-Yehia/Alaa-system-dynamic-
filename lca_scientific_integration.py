@@ -6,6 +6,8 @@ lca_scientific_core.py is in the same directory as the Streamlit app.
 
 import math
 
+import pandas as pd
+
 from lca_scientific_core import (
     B6_ENERGY_INTENSITY,
     WASTE_EF,
@@ -69,6 +71,25 @@ def add_lca_source_inputs(st, assessment_lifetime_default=50):
         "Glass density source", value="", key="lca_glass_density_source"
     )
 
+    st.markdown("#### A1-A3 material EPD overrides (win over the ICE proxy)")
+    st.caption("Supply a product/project EPD to override the generic ICE factor for any material. "
+               "FRP has NO verified ICE factor → it needs an EPD here (or FRP mass = 0), otherwise "
+               "the A1-A3 result is blocked. Each row needs a value + source_file + source_location.")
+    _epd0 = pd.DataFrame({
+        "material": ["concrete", "steel", "aluminum", "wood", "frp", "glass"],
+        "gwp_kgco2e_per_kg": [0.0] * 6, "source_file": [""] * 6, "source_location": [""] * 6,
+        "geography": [""] * 6, "validity": [""] * 6, "factor_basis": ["project_specific"] * 6})
+    _epd_edit = st.data_editor(_epd0, hide_index=True, use_container_width=True,
+                               key="lca_material_epd_editor", disabled=["material"])
+    material_epd_overrides = []
+    for _, _r in pd.DataFrame(_epd_edit).iterrows():
+        if float(_r["gwp_kgco2e_per_kg"] or 0.0) > 0.0:
+            material_epd_overrides.append({
+                "material": str(_r["material"]), "gwp_kgco2e_per_kg": float(_r["gwp_kgco2e_per_kg"]),
+                "source_file": str(_r["source_file"]), "source_location": str(_r["source_location"]),
+                "geography": str(_r["geography"]), "validity": str(_r["validity"]),
+                "factor_basis": str(_r["factor_basis"])})
+
     st.markdown("#### Project-data sources")
     boq_source = st.text_input(
         "Material quantities / BOQ source",
@@ -116,6 +137,25 @@ def add_lca_source_inputs(st, assessment_lifetime_default=50):
     st.caption("A single factor repeated across 50 years is a constant-grid scenario, not an "
                "annual measured series — it is labelled as such and does not claim project-specific "
                "annual data.")
+    grid_annual_series = {}
+    if grid_mode == "annual_official_series":
+        _rsp = int(st.session_state.get("lca_rsp_years", assessment_lifetime_default) or
+                   assessment_lifetime_default)
+        _sy = int(st.session_state.get("start_year", 2026) or 2026)
+        _gdf0 = pd.DataFrame({
+            "calendar_year": [_sy + i for i in range(_rsp)],
+            "generation": [0.0] * _rsp, "td": [0.0] * _rsp, "upstream": [0.0] * _rsp,
+            "source_file": [""] * _rsp, "source_location": [""] * _rsp,
+            "geography": ["Egypt"] * _rsp})
+        _gedit = st.data_editor(_gdf0, hide_index=True, use_container_width=True,
+                                key="lca_grid_annual_editor", num_rows="dynamic")
+        for _, _r in pd.DataFrame(_gedit).iterrows():
+            grid_annual_series[int(_r["calendar_year"])] = {
+                "generation": float(_r["generation"]), "td": float(_r["td"]),
+                "upstream": float(_r["upstream"]), "source_file": str(_r["source_file"]),
+                "source_location": str(_r["source_location"]), "geography": str(_r["geography"])}
+        st.caption("Every study year needs a row with its OWN source_file + source_location. "
+                   "A missing year or an unsourced row blocks the result.")
 
     energy_intensity_choice = st.selectbox(
         "B6 energy-intensity basis",
@@ -230,6 +270,8 @@ def add_lca_source_inputs(st, assessment_lifetime_default=50):
         "grid_source": grid_source,
         "grid_location": grid_location,
         "grid_mode": grid_mode,
+        "grid_annual_series": grid_annual_series,
+        "material_epd_overrides": material_epd_overrides,
         "energy_intensity_choice": energy_intensity_choice,
         "project_ei": project_ei,
         "project_ei_source": project_ei_source,
@@ -333,6 +375,33 @@ def build_material_masses_from_app_params(params):
     }
 
 
+def build_material_factor_overrides(params):
+    """Build A1-A3 factor overrides from a per-material EPD editor.
+
+    Each row (params['material_epd_overrides']) must carry: material, gwp value,
+    declared unit, source_file, source_location. The EPD override takes priority over
+    the ICE proxy. factor_basis defaults to project_specific; set 'virgin' only when the
+    EPD is an explicitly virgin-route product (enables the recycled-content mix).
+    """
+    rows = params.get("material_epd_overrides") or []
+    overrides = {}
+    for row in rows:
+        material = str(row.get("material", "")).strip().lower()
+        val = row.get("gwp_kgco2e_per_kg")
+        src = str(row.get("source_file", "")).strip()
+        loc = str(row.get("source_location", "")).strip()
+        if not material or val in (None, "") or float(val) <= 0.0 or not src or not loc:
+            continue
+        overrides[material] = make_project_evidence(
+            code=f"EPD-{material}", value=float(val), unit="kgCO2e/kg", stage="A1-A3",
+            source_file=src, location=loc,
+            boundary_scope=str(row.get("boundary", "A1-A3")),
+            note=f"EPD override; geography={row.get('geography', 'n/a')}; "
+                 f"validity={row.get('validity', 'n/a')}",
+            factor_basis=str(row.get("factor_basis", "project_specific")))
+    return overrides
+
+
 def build_a4_scientific_legs(params, masses):
     """Build A4 transport legs from the existing app A4 editor / simple inputs.
 
@@ -361,9 +430,12 @@ def build_a4_scientific_legs(params, masses):
     entered = advanced_present or simple_entered
 
     # Documented road empty-return assumption (no hard-coded 0.5). Applied to road only.
+    # Unit-aware: tonne_km multiplies load mass; vehicle_km multiplies empty vehicle trips.
     return_fraction = float(params.get("a4_return_fraction", 0.0))
     empty_return_ef = float(params.get("a4_empty_return_factor", 0.0))
     return_source = str(params.get("a4_return_source", "")).strip()
+    return_unit = str(params.get("a4_return_factor_unit", "tonne_km")).lower()
+    return_trips = float(params.get("a4_number_of_trips", 0.0))
     payload = str(params.get("a4_payload_assumption", "")).strip()
     route_source = str(params.get("a4_route_source", "")).strip()
 
@@ -470,29 +542,57 @@ def build_a4_scientific_legs(params, masses):
                     "return_assumption": "none (outward only)",
                 })
                 # RICS road return journey — road only, only with a documented assumption.
-                if mode == "truck" and return_fraction > 0.0 and empty_return_ef > 0.0 and return_source:
-                    ret_ev = make_project_evidence(
-                        code=f"A4-ROAD-RETURN-{material}-{rid}-{seg['segment_no']}",
-                        value=empty_return_ef, unit="kgCO2e/tonne.km", stage="A4",
-                        source_file=return_source,
-                        location=f"documented empty-return: fraction={return_fraction}",
-                        boundary_scope="A4 road empty-return running",
-                        note=payload or "documented road return-trip assumption",
-                    )
-                    legs.append({
-                        "material": material, "mass_kg": route_mass,
-                        "distance_km": distance_km * return_fraction, "mode": mode, "scope": scope,
-                        "mass_source": mass_src, "distance_source": return_source,
-                        "factor_override": ret_ev,
-                    })
-                    audit.append({
-                        "stage": "A4", "material": material, "route_id": rid,
-                        "route_share": route["share"], "segment_no": seg["segment_no"], "leg": "return",
-                        "mass_kg": route_mass, "mass_source": mass_src,
-                        "distance_km": distance_km * return_fraction, "distance_source": return_source,
-                        "mode": mode, "scope": scope, "payload_assumption": payload or "not stated",
-                        "return_assumption": f"empty-return fraction={return_fraction}, EF={empty_return_ef}",
-                    })
+                # Unit-aware: a tonne-km factor multiplies the load mass; a vehicle-km factor
+                # multiplies the number of (empty) vehicle trips, never the payload mass.
+                if mode == "truck" and empty_return_ef > 0.0 and return_source:
+                    if return_unit == "vehicle_km":
+                        route_mass_t = route_mass / KG_PER_TONNE if False else route_mass / 1000.0
+                        if return_trips > 0.0 and route_mass_t > 0.0:
+                            # Express the vehicle-km return exactly through the tonne-km core by
+                            # using an equivalent per-tonne.km factor for this leg only.
+                            ef_eq = return_trips * empty_return_ef / route_mass_t
+                            ret_ev = make_project_evidence(
+                                code=f"A4-ROAD-RETURN-VEH-{material}-{rid}-{seg['segment_no']}",
+                                value=ef_eq, unit="kgCO2e/tonne.km", stage="A4",
+                                source_file=return_source,
+                                location=f"vehicle-km empty-return: trips={return_trips}, "
+                                         f"EF_vehicle_km={empty_return_ef}",
+                                boundary_scope="A4 road empty-return (vehicle-km basis)",
+                                note=payload or "documented vehicle-km return-trip assumption")
+                            legs.append({
+                                "material": material, "mass_kg": route_mass,
+                                "distance_km": distance_km, "mode": mode, "scope": scope,
+                                "mass_source": mass_src, "distance_source": return_source,
+                                "factor_override": ret_ev})
+                            audit.append({
+                                "stage": "A4", "material": material, "route_id": rid,
+                                "route_share": route["share"], "segment_no": seg["segment_no"],
+                                "leg": "return", "mass_kg": route_mass, "mass_source": mass_src,
+                                "distance_km": distance_km, "distance_source": return_source,
+                                "mode": mode, "scope": scope, "payload_assumption": payload or "not stated",
+                                "return_assumption": f"vehicle-km trips={return_trips}, "
+                                                     f"EF_vehicle_km={empty_return_ef}"})
+                    elif return_fraction > 0.0:  # tonne_km basis (default)
+                        ret_ev = make_project_evidence(
+                            code=f"A4-ROAD-RETURN-{material}-{rid}-{seg['segment_no']}",
+                            value=empty_return_ef, unit="kgCO2e/tonne.km", stage="A4",
+                            source_file=return_source,
+                            location=f"documented empty-return: fraction={return_fraction}",
+                            boundary_scope="A4 road empty-return running",
+                            note=payload or "documented road return-trip assumption")
+                        legs.append({
+                            "material": material, "mass_kg": route_mass,
+                            "distance_km": distance_km * return_fraction, "mode": mode, "scope": scope,
+                            "mass_source": mass_src, "distance_source": return_source,
+                            "factor_override": ret_ev})
+                        audit.append({
+                            "stage": "A4", "material": material, "route_id": rid,
+                            "route_share": route["share"], "segment_no": seg["segment_no"],
+                            "leg": "return", "mass_kg": route_mass, "mass_source": mass_src,
+                            "distance_km": distance_km * return_fraction, "distance_source": return_source,
+                            "mode": mode, "scope": scope, "payload_assumption": payload or "not stated",
+                            "return_assumption": f"tonne-km empty-return fraction={return_fraction}, "
+                                                 f"EF={empty_return_ef}"})
 
     # Every segment must carry its own distance source (per-route/segment, not one global).
     if any(a.get("distance_source") in (None, "", "MISSING") for a in audit):
@@ -761,6 +861,41 @@ def build_a5_scientific_activity(params, masses, grid_construction):
     return a5_kwargs, status, " ".join(notes), readiness
 
 
+def build_module_d_rows_from_c3(c1_c4_result, cfg):
+    """Derive Module D substitution rows from C3 recovered flows.
+
+    RecoveredOutput_D must NOT exceed the C3 recovered mass (reuse+recycle) of the
+    material. Module D stays separate from Gross A-C. cfg is a mapping:
+      {material: {recovered_output_kg, secondary_input_kg, substitution_ratio,
+                  flow_source, substitution_source, primary_factor, recovery_factor}}.
+    """
+    rows = []
+    per_material_recovered = {}
+    for r in c1_c4_result.get("treatment_rows", []):
+        m = r.get("material", "not specified")
+        recovered = float(r.get("mass_kg", 0.0)) * (
+            float(r.get("reuse_share", 0.0)) + float(r.get("recycle_share", 0.0)))
+        per_material_recovered[m] = per_material_recovered.get(m, 0.0) + recovered
+    for material, row in (cfg or {}).items():
+        recovered_output = float(row.get("recovered_output_kg", 0.0))
+        c3_recovered = per_material_recovered.get(material, 0.0)
+        if recovered_output > c3_recovered + 1e-6:
+            raise ScientificInputError(
+                f"Module D recovered output for {material} ({recovered_output} kg) exceeds the "
+                f"C3 recovered mass ({c3_recovered} kg).")
+        rows.append({
+            "material": material,
+            "recovered_output_kg": recovered_output,
+            "secondary_input_kg": float(row.get("secondary_input_kg", 0.0)),
+            "substitution_ratio": float(row.get("substitution_ratio", 0.0)),
+            "flow_source": row.get("flow_source", ""),
+            "substitution_source": row.get("substitution_source", ""),
+            "primary_factor": row.get("primary_factor"),
+            "recovery_to_substitution_factor": row.get("recovery_factor"),
+        })
+    return rows
+
+
 def run_scientific_lca_from_app_params(params):
     """Replacement for the scientific LCA part of calculate_core_lca_lcc().
 
@@ -774,7 +909,10 @@ def run_scientific_lca_from_app_params(params):
         raise ScientificInputError("RSP/assessment lifetime requires a project source.")
 
     masses = build_material_masses_from_app_params(params)
-    a1_a3 = calculate_a1_a3(masses)
+    material_overrides = build_material_factor_overrides(params)
+    # A1-A3 with per-material EPD overrides (EPD wins over the ICE proxy). FRP with a
+    # non-zero mass and NO override raises inside calculate_a1_a3 (factor value is None).
+    a1_a3 = calculate_a1_a3(masses, factor_overrides=material_overrides or None)
 
     # A4 wired from the app editors. Explicit pre-built legs win; otherwise build from UI.
     a4_legs = params.get("a4_scientific_legs")
@@ -815,17 +953,29 @@ def run_scientific_lca_from_app_params(params):
             gen = float(row.get("generation", 0.0))
             td = float(row.get("td", 0.0))
             up = float(row.get("upstream", 0.0))
-            note = "Annual official grid series (project-specific)."
-        else:
-            gen = float(params.get("grid_generation", 0.0))
-            td = float(params.get("grid_td", 0.0))
-            up = float(params.get("grid_upstream", 0.0))
-            note = "Constant-grid documented scenario (single factor repeated; NOT an annual series)."
+            # Each annual row must carry its OWN source (file + location) — a single global
+            # source cannot attest a per-year table it does not actually contain.
+            row_src = str(row.get("source_file", "")).strip()
+            row_loc = str(row.get("source_location", "")).strip()
+            if not row_src or not row_loc:
+                raise ScientificInputError(
+                    f"Annual grid row for calendar year {cal_year} needs its own source_file "
+                    "and source_location.")
+            return GridCarbonYear(
+                year=operating_year, generation_kgco2e_per_kwh=gen, td_kgco2e_per_kwh=td,
+                upstream_kgco2e_per_kwh=up, source_file=row_src,
+                location=f"{row_loc}; calendar year {cal_year}",
+                geographic_scope=str(row.get("geography", "Egypt/project electricity supply")),
+                note="Annual official grid series (project-specific).")
+        gen = float(params.get("grid_generation", 0.0))
+        td = float(params.get("grid_td", 0.0))
+        up = float(params.get("grid_upstream", 0.0))
         return GridCarbonYear(
             year=operating_year, generation_kgco2e_per_kwh=gen, td_kgco2e_per_kwh=td,
             upstream_kgco2e_per_kwh=up, source_file=grid_source,
             location=f"{grid_location}; calendar year {cal_year}",
-            geographic_scope="Egypt/project electricity supply", note=note)
+            geographic_scope="Egypt/project electricity supply",
+            note="Constant-grid documented scenario (single factor repeated; NOT an annual series).")
 
     grid_by_year = {}
     for offset in range(rsp):
@@ -932,16 +1082,33 @@ def run_scientific_lca_from_app_params(params):
     }
 
     b_events = params.get("b2_b5_scientific_events") or []
-    b2b5_connected = bool(b_events)
-    b2_b5 = calculate_b2_b5(b_events, grid_by_year) if b_events else {
-        "stage": "B2-B5", "total_tco2e": 0.0, "source_audit": [],
-        "material_added_kg": {}, "material_removed_kg": {}
-    }
+    b2b5_status = "unconnected"
+    b2b5_note = ""
+    if b_events:
+        # Every B2-B5 event year must be within 1..RSP (the core only checks > 0).
+        _bad_year = [int(e.get("year", 0)) for e in b_events
+                     if not (1 <= int(e.get("year", 0)) <= rsp)]
+        if _bad_year:
+            b2b5_status = "validation_failed"
+            b2b5_note = f"B2-B5 event year(s) outside 1..{rsp}: {_bad_year}."
+            b2_b5 = {"stage": "B2-B5", "total_tco2e": 0.0, "source_audit": [],
+                     "material_added_kg": {}, "material_removed_kg": {}}
+        else:
+            b2_b5 = calculate_b2_b5(b_events, grid_by_year)
+            b2b5_status = "connected"
+    else:
+        b2_b5 = {"stage": "B2-B5", "total_tco2e": 0.0, "source_audit": [],
+                 "material_added_kg": {}, "material_removed_kg": {}}
+    b2b5_connected = (b2b5_status == "connected")
+    b2_b5["status"] = b2b5_status
+    b2_b5["note"] = b2b5_note
     mass_balance = update_mass_balance(
         masses,
         b2_b5.get("material_added_kg", {}),
         b2_b5.get("material_removed_kg", {}),
     )
+    # Remaining masses after B4/B5 removals — this is the ONLY mass C1-C4 may use.
+    remaining_masses = mass_balance.get("remaining_masses_kg", masses)
 
     c_inputs = params.get("c1_c4_scientific_inputs") or {}
     c1c4_connected = bool(c_inputs)
@@ -949,7 +1116,11 @@ def run_scientific_lca_from_app_params(params):
         "stage": "C1-C4", "total_tco2e": 0.0, "source_audit": []
     }
 
+    # Module D: derive from C3 recovered flows when requested (RecoveredOutput_D must not
+    # exceed the C3 recovered mass). Otherwise use explicit rows / none.
     d_rows = params.get("module_d1_scientific_rows") or []
+    if params.get("module_d_from_c3") and c1c4_connected:
+        d_rows = build_module_d_rows_from_c3(c1_c4, params.get("module_d_from_c3"))
     module_d1 = calculate_module_d1(d_rows) if d_rows else {
         "stage": "D1", "signed_tco2e": 0.0, "source_audit": [],
         "reporting_note": "Module D not calculated."
@@ -966,7 +1137,7 @@ def run_scientific_lca_from_app_params(params):
         "A1-A3": "connected",   # reached here only if masses were sourced
         "A4": a4_status,
         "A5": a5_status,
-        "B2-B5": _optional_status(b2b5_connected),
+        "B2-B5": b2b5_status,
         "B6": "connected",      # reached here only if grid + ridership + RSP sourced
         "C1-C4": _optional_status(c1c4_connected),
     }

@@ -847,12 +847,26 @@ def make_project_evidence(
     boundary_scope: str,
     note: str = "",
     factor_basis: str = "project_specific",
+    status: str = "project_specific_user_supplied",
 ) -> Evidence:
-    """Create a sourced project-specific factor, e.g. an EPD or Egypt grid value."""
+    """Create a sourced project-specific factor, e.g. an EPD or Egypt grid value.
+
+    NOTE: text in a form field does NOT prove scientific verification. The default
+    status is 'project_specific_user_supplied'. Only pass a stronger status
+    ('project_specific_documented' / 'project_specific_verified') when the evidence
+    carries file + edition/year + sheet/table/page + row/clause + unit + boundary +
+    geography (+ EPD validity). Allowed statuses:
+      project_specific_user_supplied, project_specific_documented,
+      project_specific_verified, verified_proxy, scenario_only, source_open.
+    """
     _require_source(source_file, f"{code} source_file")
     _require_source(location, f"{code} location")
     if not math.isfinite(float(value)):
         raise ScientificInputError(f"{code} value must be finite.")
+    _allowed = {"project_specific_user_supplied", "project_specific_documented",
+                "project_specific_verified", "verified_proxy", "scenario_only", "source_open"}
+    if status not in _allowed:
+        status = "project_specific_user_supplied"
     return Evidence(
         code=code,
         value=float(value),
@@ -860,7 +874,7 @@ def make_project_evidence(
         stage=stage,
         source_file=source_file,
         location=location,
-        status="project_specific_verified_by_user",
+        status=status,
         boundary_scope=boundary_scope,
         note=note,
         factor_basis=factor_basis,
