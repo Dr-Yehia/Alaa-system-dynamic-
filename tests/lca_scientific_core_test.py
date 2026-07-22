@@ -701,5 +701,33 @@ _veh_note = dict(_veh_cap)
 _nl, _nst, _nnote, _naud = _b4b(_veh_note, {"steel": ProjectQuantity(1e6, "kg", "BOQ", "x")})
 check("outward-only note gone when a vehicle-km return leg was added", "outward-only" not in _nnote)
 
+# ── 18. B2-B5 activity-based events ───────────────────────────────────────────
+from lca_scientific_integration import build_b2b5_events_from_rows as _bb5
+_b4row = [{"event_id": "E1", "module": "B4", "year": 25, "event_source": "OM plan p4",
+           "new_material": "steel", "new_material_kg": 5000.0, "material_source": "BOQ",
+           "removed_material": "steel", "removed_material_kg": 5000.0,
+           "transport_km": 30.0, "transport_source": "route", "transport_mode": "truck"}]
+_ev, _mstat, _mnote = _bb5(_b4row, 50)
+check("B2-B5 event built; added/removed DERIVED from activity",
+      len(_ev) == 1 and _ev[0]["added_mass_kg"] == {"steel": 5000.0}
+      and _ev[0]["removed_mass_kg"] == {"steel": 5000.0})
+check("B2-B5 per-module status independent (only B4 connected)",
+      _mstat == {"B2": "unconnected", "B3": "unconnected", "B4": "connected", "B5": "unconnected"})
+check("B2-B5 event year > RSP → module incomplete, event dropped",
+      _bb5([{"event_id": "E", "module": "B2", "year": 999, "event_source": "x",
+             "diesel_l": 100, "diesel_source": "s"}], 50)[1]["B2"] == "incomplete_sources")
+check("B2-B5 event with source but NO activity → module incomplete",
+      _bb5([{"event_id": "E", "module": "B3", "year": 10, "event_source": "x"}], 50)[1]["B3"]
+      == "incomplete_sources")
+
+# integration: B2-B5 rows connect the stage and update the mass balance.
+_b2b5_full = dict(_a5_lf); _b2b5_full["b2b5_event_rows"] = _b4row
+_r_b2b5 = run_scientific_lca_from_app_params(_b2b5_full)
+check("integration B2-B5 rows → stage connected", _r_b2b5["stage_status"]["B2-B5"] == "connected")
+check("integration B2-B5 module_status exposed",
+      _r_b2b5["modules"]["B2_B5"]["module_status"]["B4"] == "connected")
+check("B2-B5 mass balance neutral for like-for-like B4 (added == removed)",
+      abs(sum(r["added_B4_B5_kg"] - r["removed_B4_B5_kg"] for r in _r_b2b5["mass_balance"]["rows"])) < 1e-6)
+
 print("\nALL SCIENTIFIC CORE TESTS PASSED" if ok else "\nSOME TESTS FAILED")
 sys.exit(0 if ok else 1)

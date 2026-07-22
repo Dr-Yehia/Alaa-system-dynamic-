@@ -1062,6 +1062,107 @@ def build_module_d_rows_from_c3(c1_c4_result, cfg):
     return rows
 
 
+_B2B5_MODULES = ("B2", "B3", "B4", "B5")
+
+
+def build_b2b5_events_from_rows(rows, rsp):
+    """Build validated B2-B5 events from a flat editor (one material-activity per row).
+
+    Returns (events, module_status, note). Rules enforced (activity-based, NOT a % of
+    A1-A3 and NOT cost-to-carbon):
+      * module ∈ {B2,B3,B4,B5}; 1 ≤ year ≤ RSP; event_source required.
+      * added/removed mass are DERIVED from the row activities (new_material_kg /
+        removed_material_kg), never accepted as free dictionaries.
+      * an event with NO real activity is not 'complete' just because it has a source.
+      * each of B2/B3/B4/B5 gets an INDEPENDENT status; an invalid event marks its module
+        incomplete and its rows are excluded (they never enter the reported total).
+    """
+    by_event = {}
+    for r in rows or []:
+        eid = str(r.get("event_id", "")).strip()
+        if not eid:
+            continue
+        by_event.setdefault(eid, []).append(r)
+
+    events = []
+    module_seen = set()
+    module_bad = set()
+    notes = []
+    for eid, erows in by_event.items():
+        head = erows[0]
+        module = str(head.get("module", "")).strip().upper()
+        year = int(float(head.get("year", 0) or 0)) if str(head.get("year", "")).strip() else 0
+        esrc = str(head.get("event_source", "")).strip()
+        if module not in _B2B5_MODULES:
+            notes.append(f"Event {eid}: module must be B2/B3/B4/B5."); continue
+        module_seen.add(module)
+        if not (1 <= year <= rsp):
+            module_bad.add(module); notes.append(f"Event {eid}: year {year} outside 1..{rsp}."); continue
+        if not esrc:
+            module_bad.add(module); notes.append(f"Event {eid}: event_source required."); continue
+
+        new_materials, added, removed = {}, {}, {}
+        diesel = elec = None
+        transport_legs, waste_items = [], []
+        has_activity = False
+        for r in erows:
+            mat = str(r.get("new_material", "")).strip().lower()
+            nkg = float(r.get("new_material_kg", 0.0) or 0.0)
+            if mat and nkg > 0.0:
+                msrc = str(r.get("material_source", "")).strip() or esrc
+                new_materials[mat] = ProjectQuantity(nkg, "kg", msrc, f"{module} new material")
+                added[mat] = added.get(mat, 0.0) + nkg
+                has_activity = True
+            rmat = str(r.get("removed_material", "")).strip().lower()
+            rkg = float(r.get("removed_material_kg", 0.0) or 0.0)
+            if rmat and rkg > 0.0:
+                removed[rmat] = removed.get(rmat, 0.0) + rkg
+                has_activity = True
+            dl = float(r.get("diesel_l", 0.0) or 0.0)
+            if dl > 0.0 and str(r.get("diesel_source", "")).strip():
+                diesel = ProjectQuantity(dl, "L", str(r.get("diesel_source")).strip(), f"{module} diesel")
+                has_activity = True
+            ek = float(r.get("elec_kwh", 0.0) or 0.0)
+            if ek > 0.0 and str(r.get("elec_source", "")).strip():
+                elec = ProjectQuantity(ek, "kWh", str(r.get("elec_source")).strip(), f"{module} electricity")
+                has_activity = True
+            tkm = float(r.get("transport_km", 0.0) or 0.0)
+            if tkm > 0.0 and str(r.get("transport_source", "")).strip() and nkg > 0.0:
+                transport_legs.append({
+                    "material": mat or "not specified", "mass_kg": nkg, "distance_km": tkm,
+                    "mode": str(r.get("transport_mode", "truck")).strip().lower() or "truck",
+                    "scope": "wtw", "mass_source": esrc,
+                    "distance_source": str(r.get("transport_source")).strip()})
+                has_activity = True
+            wkg = float(r.get("waste_kg", 0.0) or 0.0)
+            wcode = str(r.get("waste_factor_code", "")).strip()
+            if wkg > 0.0 and wcode and str(r.get("waste_source", "")).strip():
+                waste_items.append({"material": rmat or mat or "not specified", "waste_kg": wkg,
+                                    "waste_source": str(r.get("waste_source")).strip(),
+                                    "factor_code": wcode})
+                has_activity = True
+
+        if not has_activity:
+            module_bad.add(module)
+            notes.append(f"Event {eid} ({module}): no real activity → not a complete event.")
+            continue
+        events.append({
+            "module": module, "year": year, "event_source": esrc,
+            "new_materials_kg": new_materials, "diesel_litres": diesel, "diesel_scope": "wtw",
+            "electricity_kwh": elec, "transport_legs": transport_legs, "waste_items": waste_items,
+            "added_mass_kg": added, "removed_mass_kg": removed})
+
+    module_status = {}
+    for m in _B2B5_MODULES:
+        if m not in module_seen:
+            module_status[m] = "unconnected"
+        elif m in module_bad:
+            module_status[m] = "incomplete_sources"
+        else:
+            module_status[m] = "connected"
+    return events, module_status, " ".join(notes)
+
+
 def run_scientific_lca_from_app_params(params):
     """Replacement for the scientific LCA part of calculate_core_lca_lcc().
 
@@ -1264,11 +1365,12 @@ def run_scientific_lca_from_app_params(params):
         "A5.4_worker_transport": {"status": _worker_status},
     }
 
-    b_events = params.get("b2_b5_scientific_events") or []
-    b2b5_status = "unconnected"
+    # B2-B5: prebuilt events win; otherwise build from the flat event editor rows.
+    b2b5_module_status = {m: "unconnected" for m in _B2B5_MODULES}
     b2b5_note = ""
-    if b_events:
-        # Every B2-B5 event year must be within 1..RSP (the core only checks > 0).
+    b_prebuilt = params.get("b2_b5_scientific_events")
+    if b_prebuilt is not None:
+        b_events = b_prebuilt
         _bad_year = [int(e.get("year", 0)) for e in b_events
                      if not (1 <= int(e.get("year", 0)) <= rsp)]
         if _bad_year:
@@ -1277,14 +1379,33 @@ def run_scientific_lca_from_app_params(params):
             b2_b5 = {"stage": "B2-B5", "total_tco2e": 0.0, "source_audit": [],
                      "material_added_kg": {}, "material_removed_kg": {}}
         else:
-            b2_b5 = calculate_b2_b5(b_events, grid_by_year)
-            b2b5_status = "connected"
+            b2_b5 = calculate_b2_b5(b_events, grid_by_year) if b_events else {
+                "stage": "B2-B5", "total_tco2e": 0.0, "source_audit": [],
+                "material_added_kg": {}, "material_removed_kg": {}}
+            b2b5_status = "connected" if b_events else "unconnected"
     else:
-        b2_b5 = {"stage": "B2-B5", "total_tco2e": 0.0, "source_audit": [],
-                 "material_added_kg": {}, "material_removed_kg": {}}
+        _rows = params.get("b2b5_event_rows") or []
+        b_events, b2b5_module_status, b2b5_note = build_b2b5_events_from_rows(_rows, rsp)
+        if not _rows:
+            b2_b5 = {"stage": "B2-B5", "total_tco2e": 0.0, "source_audit": [],
+                     "material_added_kg": {}, "material_removed_kg": {}}
+            b2b5_status = "unconnected"
+        else:
+            b2_b5 = calculate_b2_b5(b_events, grid_by_year) if b_events else {
+                "stage": "B2-B5", "total_tco2e": 0.0, "source_audit": [],
+                "material_added_kg": {}, "material_removed_kg": {}}
+            # Stage is connected only when every SEEN module is connected (none incomplete).
+            _seen = [m for m, s in b2b5_module_status.items() if s != "unconnected"]
+            if any(b2b5_module_status[m] == "incomplete_sources" for m in _seen):
+                b2b5_status = "incomplete_sources"
+            elif _seen:
+                b2b5_status = "connected"
+            else:
+                b2b5_status = "unconnected"
     b2b5_connected = (b2b5_status == "connected")
     b2_b5["status"] = b2b5_status
     b2_b5["note"] = b2b5_note
+    b2_b5["module_status"] = b2b5_module_status
     mass_balance = update_mass_balance(
         masses,
         b2_b5.get("material_added_kg", {}),

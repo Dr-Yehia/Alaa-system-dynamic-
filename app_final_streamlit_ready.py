@@ -2675,9 +2675,33 @@ with st.sidebar:
         b4_cost_per_event_m, b4_waste_ef, b4_transport_km = 0.0, 0.0, 0.0
         b4_table = None
         lcca_maint_mode = 'simple_annual'
+        b2b5_event_rows = []
         if include_b2b5:
             st.markdown("### 🔁 B2–B5 Maintenance & Replacement")
             st.caption("Activity-based scenario unless project records are supplied.")
+            if SCI_LCA_AVAILABLE:
+                with st.expander("🔬 Scientific B2–B5 event editor (activity-based)", expanded=False):
+                    st.caption("One row per material-activity within an event (same event_id groups "
+                               "rows). added/removed mass are DERIVED from new_material_kg / "
+                               "removed_material_kg — never free values. No %A1-A3, no cost-to-carbon. "
+                               "Each B2/B3/B4/B5 gets an independent status; year must be within RSP.")
+                    _b2b5_df0 = pd.DataFrame({
+                        "event_id": ["E1"], "module": ["B4"], "year": [25], "event_source": [""],
+                        "asset": [""], "new_material": ["steel"], "new_material_kg": [0.0],
+                        "material_source": [""], "removed_material": ["steel"], "removed_material_kg": [0.0],
+                        "diesel_l": [0.0], "diesel_source": [""], "elec_kwh": [0.0], "elec_source": [""],
+                        "transport_km": [0.0], "transport_mode": ["truck"], "transport_source": [""],
+                        "waste_kg": [0.0], "waste_factor_code": [""], "waste_source": [""]})
+                    _b2b5_edit = pd.DataFrame(st.data_editor(
+                        _b2b5_df0, hide_index=True, use_container_width=True,
+                        key="b2b5_event_editor", num_rows="dynamic"))
+                    _b2b5_num = {"year", "new_material_kg", "removed_material_kg", "diesel_l",
+                                 "elec_kwh", "transport_km", "waste_kg"}
+                    for _, _r in _b2b5_edit.iterrows():
+                        if str(_r["event_id"]).strip():
+                            b2b5_event_rows.append(
+                                {k: (float(_r[k] or 0.0) if k in _b2b5_num else str(_r[k]))
+                                 for k in _b2b5_df0.columns})
             b2_use_sd_schedule = st.checkbox("Link B2 to SD schedule", value=True, key="b2_use_sd")
             b2_interval = st.number_input("B2 interval (yr)", value=5, min_value=0, step=1, key="b2_interval")
             b2_material_pct = st.number_input("B2 material/event (% A1-A3)", value=0.05, min_value=0.0, step=0.05, format="%.2f", key="b2_material_pct")
@@ -2855,6 +2879,7 @@ current_params = {
     'b4_frac_concrete': b4_frac_concrete, 'b4_cost_per_event_m': b4_cost_per_event_m,
     'b4_waste_ef': b4_waste_ef, 'b4_transport_km': b4_transport_km, 'b4_table': b4_table,
     'lcca_maint_mode': lcca_maint_mode,
+    'b2b5_event_rows': b2b5_event_rows,
     'include_c1c4': include_c1c4, 'c1_diesel_l': c1_diesel_l, 'c1_elec_kwh': c1_elec_kwh,
     'eol_transport_km': eol_transport_km, 'eol_reuse_ef': eol_reuse_ef, 'eol_recycle_ef': eol_recycle_ef,
     'eol_disposal_ef': eol_disposal_ef, 'eol_recovery_eta': eol_recovery_eta, 'eol_cost_m': eol_cost_m,
