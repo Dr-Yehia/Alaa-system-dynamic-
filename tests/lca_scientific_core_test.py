@@ -614,5 +614,48 @@ check("user-supplied EPD → user_supplied_evidence_used flagged",
 check("user-supplied evidence blocks standards_reporting_complete",
       _r_us["closure_gate"]["standards_reporting_complete"] is False)
 
+# ── 16. Tranche-4 real-bug fixes ──────────────────────────────────────────────
+# EPD unit conversion applied NUMERICALLY (per-tonne EPD → /1000), not assumed per kg.
+_epd_conv = {"material": "concrete", "gwp_kgco2e_per_kg": 300.0, "factor_unit": "kgCO2e/tonne",
+             "conversion_factor_to_kg_basis": 0.001, "conversion_source": "unit def",
+             "declared_unit": "1 tonne", "declared_boundary": "A1-A3",
+             "source_file": "EPD", "source_location": "p2", "verification_status": "third_party_verified"}
+_ovr_conv = _bmo({"material_epd_overrides": [_epd_conv]})
+check("EPD per-tonne value converted to per-kg (300/1000 = 0.3)",
+      abs(_ovr_conv["concrete"].value - 0.3) < 1e-9)
+check("third_party_verified EPD → status verified",
+      _ovr_conv["concrete"].status == "project_specific_verified")
+# non-per-kg EPD without a numeric conversion factor → fails (no silent assumption).
+_epd_noconv = dict(_epd_conv); _epd_noconv["conversion_factor_to_kg_basis"] = 0.0
+try:
+    _bmo({"material_epd_overrides": [_epd_noconv]}); check("EPD non-kg unit w/o conversion → fails", False)
+except _SIE:
+    check("EPD non-kg unit w/o conversion → fails", True)
+# declared boundary not covering A1-A3 → fails.
+_epd_bad_b = dict(_epd_conv); _epd_bad_b["declared_boundary"] = "A4 only"
+try:
+    _bmo({"material_epd_overrides": [_epd_bad_b]}); check("EPD boundary not covering A1-A3 → fails", False)
+except _SIE:
+    check("EPD boundary not covering A1-A3 → fails", True)
+# programme_operator_verified → documented; blank verification → user_supplied.
+_epd_doc = dict(_epd_conv, factor_unit="kgCO2e/kg", verification_status="programme_operator_verified")
+check("programme_operator_verified → documented",
+      _bmo({"material_epd_overrides": [_epd_doc]})["concrete"].status == "project_specific_documented")
+_epd_usr = dict(_epd_conv, factor_unit="kgCO2e/kg", verification_status="")
+check("blank verification → user_supplied",
+      _bmo({"material_epd_overrides": [_epd_usr]})["concrete"].status == "project_specific_user_supplied")
+
+# A4 vehicle-km: trips derived from capacity; both trips+capacity → conflict.
+_veh_cap = {"a4_scope": "wtw", "boq_source": "BOQ", "a4_mode": "simple", "transport_mode": "truck",
+            "transport_distance_km": 100.0, "a4_route_source": "route",
+            "a4_empty_return_factor": 0.9, "a4_return_source": "veh doc",
+            "a4_return_factor_unit": "vehicle_km", "a4_vehicle_capacity": 20.0, "a4_load_factor": 1.0}
+_cl, _cst, _cn, _caud = _b4b(_veh_cap, {"steel": ProjectQuantity(1e6, "kg", "BOQ", "x")})
+check("A4 vehicle-km trips derived from capacity → connected + return leg",
+      _cst == "connected" and any(a["leg"] == "return" for a in _caud))
+_veh_both = dict(_veh_cap, a4_number_of_trips=5.0)
+check("A4 vehicle-km both trips and capacity → validation_failed",
+      _b4b(_veh_both, {"steel": ProjectQuantity(1e6, "kg", "BOQ", "x")})[1] == "validation_failed")
+
 print("\nALL SCIENTIFIC CORE TESTS PASSED" if ok else "\nSOME TESTS FAILED")
 sys.exit(0 if ok else 1)

@@ -77,21 +77,27 @@ def add_lca_source_inputs(st, assessment_lifetime_default=50):
                "the A1-A3 result is blocked. Each row needs a value + source_file + source_location.")
     _mats6 = ["concrete", "steel", "aluminum", "wood", "frp", "glass"]
     _epd0 = pd.DataFrame({
-        "material": _mats6, "gwp_kgco2e_per_kg": [0.0] * 6,
-        "factor_unit": ["kgCO2e/kg"] * 6, "conversion_to_kg_basis": [""] * 6,
+        "material": _mats6, "gwp_value": [0.0] * 6,
+        "factor_unit": ["kgCO2e/kg"] * 6, "conversion_factor_to_kg_basis": [0.0] * 6,
+        "conversion_source": [""] * 6,
         "declared_unit": [""] * 6, "declared_boundary": [""] * 6,
         "source_file": [""] * 6, "source_location": [""] * 6,
         "manufacturer": [""] * 6, "product_name": [""] * 6, "epd_number": [""] * 6,
         "programme_operator": [""] * 6, "issue_date": [""] * 6, "expiry_date": [""] * 6,
-        "geography": [""] * 6, "verification_status": [""] * 6,
-        "factor_basis": ["project_specific"] * 6})
+        "geography": [""] * 6,
+        "verification_status": [""] * 6, "factor_basis": ["project_specific"] * 6})
+    st.caption("gwp_value is in factor_unit. If factor_unit ≠ kgCO2e/kg, a NUMERIC "
+               "conversion_factor_to_kg_basis + source are required (per tonne → 0.001; per m³ → "
+               "1/density). verification_status: third_party_verified / programme_operator_verified.")
     _epd_edit = st.data_editor(_epd0, hide_index=True, use_container_width=True,
                                key="lca_material_epd_editor", disabled=["material"])
+    _num = {"gwp_value", "conversion_factor_to_kg_basis"}
     material_epd_overrides = []
     for _, _r in pd.DataFrame(_epd_edit).iterrows():
-        if float(_r["gwp_kgco2e_per_kg"] or 0.0) > 0.0:
-            material_epd_overrides.append({k: (float(_r[k]) if k == "gwp_kgco2e_per_kg" else str(_r[k]))
-                                           for k in _epd0.columns})
+        if float(_r["gwp_value"] or 0.0) > 0.0:
+            _row = {k: (float(_r[k]) if k in _num else str(_r[k])) for k in _epd0.columns}
+            _row["gwp_kgco2e_per_kg"] = _row.pop("gwp_value")  # value in factor_unit; converted downstream
+            material_epd_overrides.append(_row)
 
     st.markdown("#### Project-data sources")
     boq_source = st.text_input(
@@ -141,6 +147,8 @@ def add_lca_source_inputs(st, assessment_lifetime_default=50):
                "annual measured series — it is labelled as such and does not claim project-specific "
                "annual data.")
     grid_annual_series = {}
+    grid_annual_duplicate_years = []
+    grid_annual_invalid_years = False
     if grid_mode == "annual_official_series":
         _rsp = int(st.session_state.get("lca_rsp_years", assessment_lifetime_default) or
                    assessment_lifetime_default)
@@ -150,15 +158,29 @@ def add_lca_source_inputs(st, assessment_lifetime_default=50):
             "generation": [0.0] * _rsp, "td": [0.0] * _rsp, "upstream": [0.0] * _rsp,
             "source_file": [""] * _rsp, "source_location": [""] * _rsp,
             "geography": ["Egypt"] * _rsp})
-        _gedit = st.data_editor(_gdf0, hide_index=True, use_container_width=True,
-                                key="lca_grid_annual_editor", num_rows="dynamic")
-        for _, _r in pd.DataFrame(_gedit).iterrows():
-            grid_annual_series[int(_r["calendar_year"])] = {
+        _gedit = pd.DataFrame(st.data_editor(_gdf0, hide_index=True, use_container_width=True,
+                                             key="lca_grid_annual_editor", num_rows="dynamic"))
+        # Detect duplicate / invalid years in the UI BEFORE collapsing to a dict (a dict
+        # would silently overwrite a repeated year).
+        _years = []
+        for _v in _gedit["calendar_year"].tolist():
+            try:
+                _years.append(int(_v))
+            except (TypeError, ValueError):
+                _years.append(None)
+        grid_annual_duplicate_years = sorted({y for y in _years if y is not None and _years.count(y) > 1})
+        grid_annual_invalid_years = any(y is None for y in _years)
+        for _, _r in _gedit.iterrows():
+            try:
+                _yr = int(_r["calendar_year"])
+            except (TypeError, ValueError):
+                continue
+            grid_annual_series[_yr] = {
                 "generation": float(_r["generation"]), "td": float(_r["td"]),
                 "upstream": float(_r["upstream"]), "source_file": str(_r["source_file"]),
                 "source_location": str(_r["source_location"]), "geography": str(_r["geography"])}
         st.caption("Every study year needs a row with its OWN source_file + source_location. "
-                   "A missing year or an unsourced row blocks the result.")
+                   "A missing year, a duplicate year, or an unsourced row blocks the result.")
 
     energy_intensity_choice = st.selectbox(
         "B6 energy-intensity basis",
@@ -221,10 +243,15 @@ def add_lca_source_inputs(st, assessment_lifetime_default=50):
         "A4 number of empty return trips — vehicle_km only", value=0.0, min_value=0.0,
         step=1.0, key="lca_a4_number_of_trips")
     a4_vehicle_capacity = st.number_input(
-        "A4 vehicle capacity (tonnes) — vehicle_km only", value=0.0, min_value=0.0,
-        step=1.0, key="lca_a4_vehicle_capacity")
+        "A4 vehicle capacity (tonnes) — vehicle_km, derives trips", value=0.0, min_value=0.0,
+        step=1.0, key="lca_a4_vehicle_capacity",
+        help="If given (and trips left 0), trips = ceil(route mass / (capacity × load factor)). "
+             "Do not give both capacity and an explicit trip count.")
+    a4_load_factor = st.number_input(
+        "A4 load factor (0–1) — vehicle_km derivation", value=1.0, min_value=0.01, max_value=1.0,
+        step=0.05, format="%.2f", key="lca_a4_load_factor")
     a4_return_source = st.text_input(
-        "A4 return-assumption source", value="", key="lca_a4_return_source")
+        "A4 return-assumption source (file + location)", value="", key="lca_a4_return_source")
 
     st.markdown("#### A5 construction provenance")
     st.caption(
@@ -263,6 +290,24 @@ def add_lca_source_inputs(st, assessment_lifetime_default=50):
         ["optional_not_reported", "not_applicable"], index=0,
         help="Worker transport has no calculator yet → optional_not_reported or N/A only.",
         key="lca_a5_4_status")
+    st.caption("A5 component declarations: mark any component you did NOT enter as documented_zero "
+               "/ not_applicable_with_justification / optional_not_reported (with a justification + "
+               "source). A blank 'not_entered' keeps A5 incomplete.")
+    _a5comps = ["A5.2_site_fuel", "A5.2_site_electricity", "A5.2_temporary_works",
+                "A5.3_waste_generation", "A5.3_waste_transport", "A5.3_waste_treatment"]
+    _a5decl0 = pd.DataFrame({
+        "component": _a5comps, "declaration": [""] * len(_a5comps),
+        "justification": [""] * len(_a5comps), "source": [""] * len(_a5comps)})
+    _a5decl_edit = pd.DataFrame(st.data_editor(
+        _a5decl0, hide_index=True, use_container_width=True,
+        key="lca_a5_component_decl_editor", disabled=["component"]))
+    a5_component_declarations = {}
+    for _, _r in _a5decl_edit.iterrows():
+        _decl = str(_r["declaration"]).strip()
+        if _decl in ("documented_zero", "not_applicable_with_justification", "optional_not_reported"):
+            # documented_zero / N-A must carry a justification or source.
+            if _decl == "optional_not_reported" or str(_r["justification"]).strip() or str(_r["source"]).strip():
+                a5_component_declarations[str(_r["component"])] = _decl
 
     return {
         "assessment_lifetime": int(assessment_lifetime),
@@ -282,6 +327,8 @@ def add_lca_source_inputs(st, assessment_lifetime_default=50):
         "grid_location": grid_location,
         "grid_mode": grid_mode,
         "grid_annual_series": grid_annual_series,
+        "grid_annual_duplicate_years": grid_annual_duplicate_years,
+        "grid_annual_invalid_years": grid_annual_invalid_years,
         "material_epd_overrides": material_epd_overrides,
         "energy_intensity_choice": energy_intensity_choice,
         "project_ei": project_ei,
@@ -295,12 +342,14 @@ def add_lca_source_inputs(st, assessment_lifetime_default=50):
         "a4_return_factor_unit": a4_return_factor_unit,
         "a4_number_of_trips": a4_number_of_trips,
         "a4_vehicle_capacity": a4_vehicle_capacity,
+        "a4_load_factor": a4_load_factor,
         "a5_diesel_scope": a5_diesel_scope,
         "a5_diesel_source": a5_diesel_source,
         "a5_electricity_source": a5_electricity_source,
         "a5_waste_source": a5_waste_source,
         "a5_waste_route_source": a5_waste_route_source,
         "a5_construction_year": int(a5_construction_year),
+        "a5_component_declarations": a5_component_declarations,
         "a5_predemolition_status": a5_predemolition_status,
         "a5_predemolition_note": a5_predemolition_note,
         "a5_worker_transport_status": a5_worker_transport_status,
@@ -416,20 +465,40 @@ def build_material_factor_overrides(params):
             raise ScientificInputError(
                 f"EPD entered for {material} but excluded because {', '.join(missing)} is "
                 "incomplete; the ICE proxy was NOT silently substituted.")
-        # factor_unit must be per-kg or carry a documented conversion.
-        factor_unit = str(row.get("factor_unit", "kgCO2e/kg")).strip() or "kgCO2e/kg"
-        if factor_unit != "kgCO2e/kg" and not str(row.get("conversion_to_kg_basis", "")).strip():
+        # The declared boundary must actually cover A1-A3.
+        if "a1" not in boundary.lower():
             raise ScientificInputError(
-                f"EPD for {material} is in {factor_unit}; a documented conversion_to_kg_basis is required.")
-        # Full EPD metadata → 'documented'; otherwise 'user_supplied'.
-        full_meta = all(str(row.get(k, "")).strip() for k in
-                        ("manufacturer", "product_name", "epd_number", "programme_operator",
-                         "issue_date", "expiry_date", "verification_status"))
-        status = "project_specific_documented" if full_meta else "project_specific_user_supplied"
+                f"EPD for {material} declared_boundary '{boundary}' must cover A1-A3.")
+        # UNIT CONVERSION — applied NUMERICALLY, never assumed. EF_kg = EF_declared × conv.
+        factor_unit = str(row.get("factor_unit", "kgCO2e/kg")).strip() or "kgCO2e/kg"
+        original_val = float(val)
+        if factor_unit == "kgCO2e/kg":
+            ef_kg = original_val
+            conv_note = "already per kg"
+        else:
+            conv = float(row.get("conversion_factor_to_kg_basis", 0.0) or 0.0)
+            conv_src = str(row.get("conversion_source", "")).strip()
+            if conv <= 0.0 or not conv_src:
+                raise ScientificInputError(
+                    f"EPD for {material} is in {factor_unit}; it needs a positive numeric "
+                    "conversion_factor_to_kg_basis and a conversion_source (e.g. per tonne → "
+                    "×0.001; per m³ → ×1/density).")
+            ef_kg = original_val * conv
+            conv_note = (f"converted {original_val} {factor_unit} × {conv} = {ef_kg} kgCO2e/kg "
+                         f"(source: {conv_src})")
+        # Verification status → evidence status (enum-driven, not text-presence).
+        vstat = str(row.get("verification_status", "")).strip().lower()
+        if vstat == "third_party_verified":
+            status = "project_specific_verified"
+        elif vstat == "programme_operator_verified":
+            status = "project_specific_documented"
+        else:
+            status = "project_specific_user_supplied"
         overrides[material] = make_project_evidence(
-            code=f"EPD-{material}", value=float(val), unit="kgCO2e/kg", stage="A1-A3",
+            code=f"EPD-{material}", value=ef_kg, unit="kgCO2e/kg", stage="A1-A3",
             source_file=src, location=loc, boundary_scope=boundary,
-            note=f"EPD override; declared_unit={declared_unit}; geography={row.get('geography', 'n/a')}; "
+            note=f"EPD override; declared_unit={declared_unit}; {conv_note}; "
+                 f"geography={row.get('geography', 'n/a')}; "
                  f"validity={row.get('expiry_date', row.get('validity', 'n/a'))}",
             factor_basis=str(row.get("factor_basis", "project_specific")), status=status)
     return overrides
@@ -469,6 +538,8 @@ def build_a4_scientific_legs(params, masses):
     return_source = str(params.get("a4_return_source", "")).strip()
     return_unit = str(params.get("a4_return_factor_unit", "tonne_km")).lower()
     return_trips = float(params.get("a4_number_of_trips", 0.0))
+    vehicle_capacity_t = float(params.get("a4_vehicle_capacity", 0.0))
+    return_load_factor = float(params.get("a4_load_factor", 1.0)) or 1.0
     payload = str(params.get("a4_payload_assumption", "")).strip()
     route_source = str(params.get("a4_route_source", "")).strip()
 
@@ -580,15 +651,24 @@ def build_a4_scientific_legs(params, masses):
                 if mode == "truck" and empty_return_ef > 0.0 and return_source:
                     if return_unit == "vehicle_km":
                         route_mass_t = route_mass / 1000.0  # kg → tonnes
-                        if return_trips > 0.0 and route_mass_t > 0.0:
+                        # Trips are either explicitly counted OR derived from vehicle
+                        # capacity × load factor — never both (that would double-specify).
+                        if return_trips > 0.0 and vehicle_capacity_t > 0.0:
+                            return ([], "validation_failed",
+                                    "A4 vehicle-km return: give EITHER number_of_trips OR "
+                                    "vehicle_capacity (+load factor), not both.", [])
+                        trips = return_trips
+                        if trips <= 0.0 and vehicle_capacity_t > 0.0 and route_mass_t > 0.0:
+                            trips = math.ceil(route_mass_t / (vehicle_capacity_t * return_load_factor))
+                        if trips > 0.0 and route_mass_t > 0.0:
                             # Express the vehicle-km return exactly through the tonne-km core by
                             # using an equivalent per-tonne.km factor for this leg only.
-                            ef_eq = return_trips * empty_return_ef / route_mass_t
+                            ef_eq = trips * empty_return_ef / route_mass_t
                             ret_ev = make_project_evidence(
                                 code=f"A4-ROAD-RETURN-VEH-{material}-{rid}-{seg['segment_no']}",
                                 value=ef_eq, unit="kgCO2e/tonne.km", stage="A4",
                                 source_file=return_source,
-                                location=f"vehicle-km empty-return: trips={return_trips}, "
+                                location=f"vehicle-km empty-return: trips={trips}, "
                                          f"EF_vehicle_km={empty_return_ef}",
                                 boundary_scope="A4 road empty-return (vehicle-km basis)",
                                 note=payload or "documented vehicle-km return-trip assumption")
@@ -603,7 +683,7 @@ def build_a4_scientific_legs(params, masses):
                                 "leg": "return", "mass_kg": route_mass, "mass_source": mass_src,
                                 "distance_km": distance_km, "distance_source": return_source,
                                 "mode": mode, "scope": scope, "payload_assumption": payload or "not stated",
-                                "return_assumption": f"vehicle-km trips={return_trips}, "
+                                "return_assumption": f"vehicle-km trips={trips}, "
                                                      f"EF_vehicle_km={empty_return_ef}"})
                     elif return_fraction > 0.0:  # tonne_km basis (default)
                         ret_ev = make_project_evidence(
@@ -1003,6 +1083,8 @@ def run_scientific_lca_from_app_params(params):
         if params.get("grid_annual_duplicate_years"):
             raise ScientificInputError(
                 f"Annual grid has duplicate calendar years: {params['grid_annual_duplicate_years']}.")
+        if params.get("grid_annual_invalid_years"):
+            raise ScientificInputError("Annual grid has a missing/invalid calendar year value.")
         if not grid_annual_series:
             raise ScientificInputError("annual_official_series selected but no grid rows were provided.")
 
