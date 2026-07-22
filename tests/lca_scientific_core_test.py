@@ -706,6 +706,7 @@ from lca_scientific_integration import build_b2b5_events_from_rows as _bb5
 _b4row = [{"event_id": "E1", "module": "B4", "year": 25, "event_source": "OM plan p4",
            "new_material": "steel", "new_material_kg": 5000.0, "material_source": "BOQ",
            "removed_material": "steel", "removed_material_kg": 5000.0,
+           "removed_material_source": "OM removal log",
            "transport_km": 30.0, "transport_source": "route", "transport_mode": "truck"}]
 _ev, _mstat, _mnote = _bb5(_b4row, 50)
 check("B2-B5 event built; added/removed DERIVED from activity",
@@ -720,14 +721,66 @@ check("B2-B5 event with source but NO activity → module incomplete",
       _bb5([{"event_id": "E", "module": "B3", "year": 10, "event_source": "x"}], 50)[1]["B3"]
       == "incomplete_sources")
 
-# integration: B2-B5 rows connect the stage and update the mass balance.
-_b2b5_full = dict(_a5_lf); _b2b5_full["b2b5_event_rows"] = _b4row
+# B4-only does NOT close the whole stage; B2/B3/B5 must be declared or entered.
+_b4row_src = [dict(_b4row[0], removed_material_source="OM removal log")]
+_b2b5_partial = dict(_a5_lf); _b2b5_partial["b2b5_event_rows"] = _b4row_src
+_r_partial = run_scientific_lca_from_app_params(_b2b5_partial)
+check("B4-only → B2-B5 stage NOT connected (other modules undeclared)",
+      _r_partial["stage_status"]["B2-B5"] != "connected")
+check("integration B2-B5 module_status independent (B4 connected)",
+      _r_partial["modules"]["B2_B5"]["module_status"]["B4"] == "connected")
+
+# With B2/B3/B5 declared documented_zero/N-A → stage closes.
+_b2b5_full = dict(_b2b5_partial)
+_b2b5_full["b2b5_module_declarations"] = {
+    "B2": {"status": "not_applicable_with_justification", "justification": "no B2", "source": "plan"},
+    "B3": {"status": "documented_zero", "justification": "no repairs", "source": "plan"},
+    "B5": {"status": "not_applicable_with_justification", "justification": "no refurb", "source": "plan"}}
 _r_b2b5 = run_scientific_lca_from_app_params(_b2b5_full)
-check("integration B2-B5 rows → stage connected", _r_b2b5["stage_status"]["B2-B5"] == "connected")
-check("integration B2-B5 module_status exposed",
-      _r_b2b5["modules"]["B2_B5"]["module_status"]["B4"] == "connected")
+check("B2-B5 closes when B4 connected + B2/B3/B5 declared", _r_b2b5["stage_status"]["B2-B5"] == "connected")
 check("B2-B5 mass balance neutral for like-for-like B4 (added == removed)",
       abs(sum(r["added_B4_B5_kg"] - r["removed_B4_B5_kg"] for r in _r_b2b5["mass_balance"]["rows"])) < 1e-6)
+
+# Aggregation: two steel rows in one event are SUMMED (not overwritten).
+_agg_rows = [
+    dict(_b4row_src[0], new_material_kg=3000.0, removed_material_kg=3000.0),
+    dict(_b4row_src[0], new_material_kg=2000.0, removed_material_kg=2000.0)]
+_aev, _amst, _an = _bb5(_agg_rows, 50)
+check("B2-B5 same-material rows summed (3000+2000=5000)",
+      len(_aev) == 1 and abs(_aev[0]["added_mass_kg"]["steel"] - 5000.0) < 1e-6)
+
+# Positive value without source → module incomplete (not silently ignored).
+_nosrc = [{"event_id": "E", "module": "B2", "year": 10, "event_source": "plan",
+           "diesel_l": 500.0, "diesel_source": ""}]
+check("B2-B5 diesel>0 without source → module incomplete",
+      _bb5(_nosrc, 50)[1]["B2"] == "incomplete_sources")
+
+# Fractional event year rejected.
+_frac = [{"event_id": "E", "module": "B2", "year": 10.5, "event_source": "plan",
+          "diesel_l": 100.0, "diesel_source": "s"}]
+check("B2-B5 fractional year rejected", _bb5(_frac, 50)[1]["B2"] == "incomplete_sources")
+
+# Rows of same event disagree on module → validation.
+_disagree = [{"event_id": "E", "module": "B2", "year": 10, "event_source": "p", "diesel_l": 100, "diesel_source": "s"},
+             {"event_id": "E", "module": "B3", "year": 10, "event_source": "p", "diesel_l": 50, "diesel_source": "s"}]
+_dev, _dmst, _dn = _bb5(_disagree, 50)
+check("B2-B5 event rows disagreeing on module → incomplete", _dmst["B2"] == "incomplete_sources")
+
+# mass_role consumable does NOT enter the mass balance (added).
+_consum = [{"event_id": "E", "module": "B2", "year": 10, "event_source": "p",
+            "new_material": "steel", "new_material_kg": 1000.0, "material_source": "s",
+            "mass_role": "consumable"}]
+_cev, _cmst, _cn = _bb5(_consum, 50)
+check("B2-B5 consumable new material NOT added to mass balance",
+      _cev[0]["added_mass_kg"] == {} and _cev[0]["new_materials_kg"]["steel"].value == 1000.0)
+
+# Chronological mass balance: remove 100t in yr5 before adding in yr25 → negative → fail.
+from lca_scientific_integration import chronological_mass_balance as _cmb
+_init = {"steel": ProjectQuantity(50000.0, "kg", "BOQ", "x")}
+_evs = [{"event_id": "R", "year": 5, "module": "B4", "removed_mass_kg": {"steel": 100000.0}, "added_mass_kg": {}},
+        {"event_id": "A", "year": 25, "module": "B4", "removed_mass_kg": {}, "added_mass_kg": {"steel": 100000.0}}]
+_rem, _rws, _cok, _cerr = _cmb(_init, _evs)
+check("chronological mass balance catches negative intermediate mass", _cok is False)
 
 print("\nALL SCIENTIFIC CORE TESTS PASSED" if ok else "\nSOME TESTS FAILED")
 sys.exit(0 if ok else 1)

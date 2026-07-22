@@ -2676,6 +2676,7 @@ with st.sidebar:
         b4_table = None
         lcca_maint_mode = 'simple_annual'
         b2b5_event_rows = []
+        b2b5_module_declarations = {}
         if include_b2b5:
             st.markdown("### 🔁 B2–B5 Maintenance & Replacement")
             st.caption("Activity-based scenario unless project records are supplied.")
@@ -2688,7 +2689,9 @@ with st.sidebar:
                     _b2b5_df0 = pd.DataFrame({
                         "event_id": ["E1"], "module": ["B4"], "year": [25], "event_source": [""],
                         "asset": [""], "new_material": ["steel"], "new_material_kg": [0.0],
-                        "material_source": [""], "removed_material": ["steel"], "removed_material_kg": [0.0],
+                        "material_source": [""], "mass_role": ["retained_in_asset"],
+                        "removed_material": ["steel"], "removed_material_kg": [0.0],
+                        "removed_material_source": [""],
                         "diesel_l": [0.0], "diesel_source": [""], "elec_kwh": [0.0], "elec_source": [""],
                         "transport_km": [0.0], "transport_mode": ["truck"], "transport_source": [""],
                         "waste_kg": [0.0], "waste_factor_code": [""], "waste_source": [""]})
@@ -2702,6 +2705,25 @@ with st.sidebar:
                             b2b5_event_rows.append(
                                 {k: (float(_r[k] or 0.0) if k in _b2b5_num else str(_r[k]))
                                  for k in _b2b5_df0.columns})
+                    st.caption("mass_role: retained_in_asset (default, enters C-stage mass) / "
+                               "consumable / temporary / removed_same_event. removed material needs "
+                               "its own source. The mass balance is applied event-by-event in year order.")
+                    # Declare B2/B3/B4/B5 modules you did NOT enter as documented_zero / N-A so the
+                    # stage can close (B4-only never closes the whole stage on its own).
+                    _b2b5decl0 = pd.DataFrame({
+                        "module": ["B2", "B3", "B4", "B5"], "declaration": [""] * 4,
+                        "justification": [""] * 4, "source": [""] * 4})
+                    _b2b5decl = pd.DataFrame(st.data_editor(
+                        _b2b5decl0, hide_index=True, use_container_width=True,
+                        key="b2b5_module_decl_editor", disabled=["module"]))
+                    b2b5_module_declarations = {}
+                    for _, _r in _b2b5decl.iterrows():
+                        _d = str(_r["declaration"]).strip()
+                        if _d in ("documented_zero", "not_applicable_with_justification") and \
+                                str(_r["justification"]).strip() and str(_r["source"]).strip():
+                            b2b5_module_declarations[str(_r["module"])] = {
+                                "status": _d, "justification": str(_r["justification"]).strip(),
+                                "source": str(_r["source"]).strip()}
             b2_use_sd_schedule = st.checkbox("Link B2 to SD schedule", value=True, key="b2_use_sd")
             b2_interval = st.number_input("B2 interval (yr)", value=5, min_value=0, step=1, key="b2_interval")
             b2_material_pct = st.number_input("B2 material/event (% A1-A3)", value=0.05, min_value=0.0, step=0.05, format="%.2f", key="b2_material_pct")
@@ -2879,7 +2901,7 @@ current_params = {
     'b4_frac_concrete': b4_frac_concrete, 'b4_cost_per_event_m': b4_cost_per_event_m,
     'b4_waste_ef': b4_waste_ef, 'b4_transport_km': b4_transport_km, 'b4_table': b4_table,
     'lcca_maint_mode': lcca_maint_mode,
-    'b2b5_event_rows': b2b5_event_rows,
+    'b2b5_event_rows': b2b5_event_rows, 'b2b5_module_declarations': b2b5_module_declarations,
     'include_c1c4': include_c1c4, 'c1_diesel_l': c1_diesel_l, 'c1_elec_kwh': c1_elec_kwh,
     'eol_transport_km': eol_transport_km, 'eol_reuse_ef': eol_reuse_ef, 'eol_recycle_ef': eol_recycle_ef,
     'eol_disposal_ef': eol_disposal_ef, 'eol_recovery_eta': eol_recovery_eta, 'eol_cost_m': eol_cost_m,
