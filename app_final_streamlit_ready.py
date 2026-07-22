@@ -2457,7 +2457,17 @@ with st.sidebar:
         recycled_content_inputs, ef_secondary_inputs = {}, {}
         ef_secondary_sources, ef_secondary_basis = {}, {}
         recycled_secondary_documented_ok = True
-        with st.expander("♻️ Recycled content (effective A1-A3 EF — EN 15804)", expanded=False):
+        # Publication mode: the scientific engine governs A1-A3 via documented EPD/factor
+        # overrides — the legacy generic recycled-content EF is hidden to avoid a second,
+        # non-authoritative A1-A3 path. Defaults (RC=0, no secondary EF) keep params valid.
+        if publication_mode:
+            for _m in MATERIALS_UI:
+                recycled_content_inputs[_m] = 0.0
+                ef_secondary_inputs[_m] = None
+                ef_secondary_sources[_m] = ""
+                ef_secondary_basis[_m] = "virgin"
+        else:
+          with st.expander("♻️ Recycled content (effective A1-A3 EF — EN 15804)", expanded=False):
             st.caption("EF_eff = (1−RC)·EF_virgin + RC·EF_secondary. Applied per material only when "
                        "BOTH a recycled-content % AND a *documented* secondary EF (with a source) are given; "
                        "an undocumented secondary EF is ignored (virgin factor kept) and the result is flagged "
@@ -3135,13 +3145,19 @@ with TABS['results']:
         sc_df['tCO2e'] = sc_df['tCO2e'].map(lambda v: f"{v:,.1f}")
         sc_df['% of gross'] = sc_df['% of gross'].map(lambda v: f"{v:.1f}%")
         st.dataframe(sc_df, use_container_width=True, hide_index=True)
+        _net_incl = ("" if publication_mode else
+                     f"Net incl. Module D (supplementary) = {results['net_with_module_d_tons']:,.1f} t. ")
         st.caption(
             f"Gross modular A1-C4 LCA total = {results['gross_a1_c4_tons']:,.1f} t CO₂e · "
             f"GWP = {results['gwp_pkm_gross']:.5f} kg/pkm (gross, never net) · "
             f"Module D (separate) = −{results['module_d_tons']:,.1f} t · "
-            f"Net incl. Module D (supplementary) = {results['net_with_module_d_tons']:,.1f} t. "
+            + _net_incl +
             "Each stage is independently toggleable; statuses are shown above."
         )
+        if publication_mode:
+            st.caption("Publication mode: Module D is reported separately — there is no "
+                       "'net incl. Module D' headline. The authoritative numbers are the "
+                       "scientific-engine cards and Supplementary S1 above.")
         if not results.get('publication_grade_full_lca', True):
             st.error("🚫 Full-LCA result is NOT publication-grade (see FRP/EPD warning above).")
 
@@ -3179,10 +3195,15 @@ with TABS['results']:
             with e3: st.metric("C3 processing", f"{cc['c3_tons']:,.1f}")
             with e4: st.metric("C4 disposal", f"{cc['c4_tons']:,.1f}")
             with e5: st.metric("C1–C4 total", f"{cc['c1_c4_total_tons']:,.1f}")
-            g1, g2, g3 = st.columns(3)
-            with g1: st.metric("Gross A1–C4", f"{results['gross_a1_c4_tons']:,.1f} t")
-            with g2: st.metric("Module D (separate)", f"−{results['module_d_tons']:,.1f} t")
-            with g3: st.metric("Net incl. Module D", f"{results['net_with_module_d_tons']:,.1f} t")
+            if publication_mode:
+                g1, g2 = st.columns(2)
+                with g1: st.metric("Gross A1–C4", f"{results['gross_a1_c4_tons']:,.1f} t")
+                with g2: st.metric("Module D (separate)", f"−{results['module_d_tons']:,.1f} t")
+            else:
+                g1, g2, g3 = st.columns(3)
+                with g1: st.metric("Gross A1–C4", f"{results['gross_a1_c4_tons']:,.1f} t")
+                with g2: st.metric("Module D (separate)", f"−{results['module_d_tons']:,.1f} t")
+                with g3: st.metric("Net incl. Module D", f"{results['net_with_module_d_tons']:,.1f} t")
             st.markdown("**End-of-life by material** (on remaining masses after B4/B5)")
             st.dataframe(pd.DataFrame(cc['eol_by_material']), use_container_width=True, hide_index=True)
             st.markdown("**Module D by material** (recovery credit — separate, never in gross)")
