@@ -282,10 +282,15 @@ check("A5 purchased waste W = M*WR",
       abs(_wm(1_000_000.0, 0.05, "purchased") - 1_000_000.0 * 0.05) < 1e-6)
 
 # integration-level A5: on/off, missing source, purchased no-production, unsupported route
+# Declare the A5 components not exercised by a given fixture as documented_zero so the
+# component-gating (not_entered ≠ connected) does not block those fixtures.
+_A5_DECL = {"A5.2_site_fuel": "documented_zero", "A5.2_site_electricity": "documented_zero",
+            "A5.2_temporary_works": "documented_zero", "A5.3_waste_generation": "documented_zero",
+            "A5.3_waste_transport": "documented_zero", "A5.3_waste_treatment": "documented_zero"}
 _a5base = dict(full)
 _a5base.update({"a4_route_source": "route survey"})  # A4 connected too
 _a5on = dict(_a5base)
-_a5on.update(include_a5=True, a5_boq_mode="installed",
+_a5on.update(include_a5=True, a5_boq_mode="installed", a5_component_declarations=_A5_DECL,
              a5_predemolition_status="not_applicable",
              a5_predemolition_note="Greenfield; no demolition in boundary",
              a5_diesel_l=100000.0, a5_diesel_mode="simple", a5_diesel_scope="wtw",
@@ -321,7 +326,7 @@ check("full_wlca STILL False after A4+A5 (B2-B5/C1-C4 unwired)",
 
 # ── 11. A5 critical review items ──────────────────────────────────────────────
 _a5crit = dict(_a5base)
-_a5crit.update(include_a5=True, a5_boq_mode="installed",
+_a5crit.update(include_a5=True, a5_boq_mode="installed", a5_component_declarations=_A5_DECL,
                a5_predemolition_status="not_applicable",
                a5_predemolition_note="Greenfield; no demolition in boundary",
                a5_waste_source="waste plan", a5_waste_route_source="haul",
@@ -491,6 +496,7 @@ check("FRP>0 without EPD → blocked", _r_frp_no == "blocked")
 _frp_ok = dict(_frp)
 _frp_ok["material_epd_overrides"] = [{"material": "frp", "gwp_kgco2e_per_kg": 6.5,
                                       "source_file": "FRP EPD 2024", "source_location": "p3 tbl1",
+                                      "declared_unit": "kgCO2e/kg", "declared_boundary": "A1-A3",
                                       "geography": "EU", "validity": "2029"}]
 _r_frp_ok = run_scientific_lca_from_app_params(_frp_ok)
 check("FRP>0 WITH EPD override → runs", _r_frp_ok["gross_A_C_tCO2e"] > 0.0)
@@ -554,6 +560,59 @@ except _SIE:
 # evidence granularity: default status is user-supplied, not 'verified'.
 check("make_project_evidence default status is user_supplied (not verified)",
       _mpe("X", 1.0, "kgCO2e/kg", "A1-A3", "f", "l", "A1-A3").status == "project_specific_user_supplied")
+
+# ── 15. Tranche-3 corrections: A5 gating, EPD partial, annual global-source, evidence gate
+# A5 with un-declared not_entered components → incomplete (not connected).
+_a5_gap = dict(_a5on); _a5_gap.pop("a5_component_declarations", None)
+_a5_gap["a5_elec_kwh"] = 0.0  # electricity now not_entered and undeclared
+_r_gap = run_scientific_lca_from_app_params(_a5_gap)
+check("A5 not_entered component (undeclared) → incomplete_sources",
+      _r_gap["stage_status"]["A5"] == "incomplete_sources")
+
+# EPD row with a value but missing source → raises (no silent ICE fallback).
+_epd_partial = dict(full); _epd_partial["frp"] = 0.0
+_epd_partial["material_epd_overrides"] = [{"material": "steel", "gwp_kgco2e_per_kg": 1.5}]
+try:
+    run_scientific_lca_from_app_params(_epd_partial); check("partial EPD row → blocked (no silent fallback)", False)
+except _SIE:
+    check("partial EPD row → blocked (no silent fallback)", True)
+
+# Annual mode does NOT require the global grid source.
+_ann_noglobal = dict(_a5_lf)
+_ann_noglobal.update(grid_mode="annual_official_series", grid_source="", grid_location="",
+                     grid_annual_series={2026 + i: {"generation": 0.4, "td": 0.03, "upstream": 0.05,
+                                         "source_file": "Egypt grid", "source_location": f"r{i}"}
+                                         for i in range(50)})
+_r_ang = run_scientific_lca_from_app_params(_ann_noglobal)
+check("annual mode runs without a global grid source", _r_ang["stage_status"]["B6"] == "connected")
+
+# Annual duplicate years flagged → fails.
+_ann_dup = dict(_ann_noglobal); _ann_dup["grid_annual_duplicate_years"] = [2030]
+try:
+    run_scientific_lca_from_app_params(_ann_dup); check("annual duplicate years → fails", False)
+except _SIE:
+    check("annual duplicate years → fails", True)
+
+# Annual row with CI total 0 → fails.
+_ann_zero = dict(_ann_noglobal)
+_ann_zero["grid_annual_series"] = dict(_ann_noglobal["grid_annual_series"])
+_ann_zero["grid_annual_series"][2026] = {"generation": 0.0, "td": 0.0, "upstream": 0.0,
+                                         "source_file": "x", "source_location": "y"}
+try:
+    run_scientific_lca_from_app_params(_ann_zero); check("annual row CI total 0 → fails", False)
+except _SIE:
+    check("annual row CI total 0 → fails", True)
+
+# user-supplied EPD evidence blocks standards_reporting_complete (but calc can still run).
+_us = dict(_a5_lf)
+_us["material_epd_overrides"] = [{"material": "steel", "gwp_kgco2e_per_kg": 1.5,
+                                  "source_file": "note", "source_location": "email",
+                                  "declared_unit": "kgCO2e/kg", "declared_boundary": "A1-A3"}]
+_r_us = run_scientific_lca_from_app_params(_us)
+check("user-supplied EPD → user_supplied_evidence_used flagged",
+      _r_us["publication_readiness"]["user_supplied_evidence_used"] is True)
+check("user-supplied evidence blocks standards_reporting_complete",
+      _r_us["closure_gate"]["standards_reporting_complete"] is False)
 
 print("\nALL SCIENTIFIC CORE TESTS PASSED" if ok else "\nSOME TESTS FAILED")
 sys.exit(0 if ok else 1)

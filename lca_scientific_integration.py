@@ -75,20 +75,23 @@ def add_lca_source_inputs(st, assessment_lifetime_default=50):
     st.caption("Supply a product/project EPD to override the generic ICE factor for any material. "
                "FRP has NO verified ICE factor → it needs an EPD here (or FRP mass = 0), otherwise "
                "the A1-A3 result is blocked. Each row needs a value + source_file + source_location.")
+    _mats6 = ["concrete", "steel", "aluminum", "wood", "frp", "glass"]
     _epd0 = pd.DataFrame({
-        "material": ["concrete", "steel", "aluminum", "wood", "frp", "glass"],
-        "gwp_kgco2e_per_kg": [0.0] * 6, "source_file": [""] * 6, "source_location": [""] * 6,
-        "geography": [""] * 6, "validity": [""] * 6, "factor_basis": ["project_specific"] * 6})
+        "material": _mats6, "gwp_kgco2e_per_kg": [0.0] * 6,
+        "factor_unit": ["kgCO2e/kg"] * 6, "conversion_to_kg_basis": [""] * 6,
+        "declared_unit": [""] * 6, "declared_boundary": [""] * 6,
+        "source_file": [""] * 6, "source_location": [""] * 6,
+        "manufacturer": [""] * 6, "product_name": [""] * 6, "epd_number": [""] * 6,
+        "programme_operator": [""] * 6, "issue_date": [""] * 6, "expiry_date": [""] * 6,
+        "geography": [""] * 6, "verification_status": [""] * 6,
+        "factor_basis": ["project_specific"] * 6})
     _epd_edit = st.data_editor(_epd0, hide_index=True, use_container_width=True,
                                key="lca_material_epd_editor", disabled=["material"])
     material_epd_overrides = []
     for _, _r in pd.DataFrame(_epd_edit).iterrows():
         if float(_r["gwp_kgco2e_per_kg"] or 0.0) > 0.0:
-            material_epd_overrides.append({
-                "material": str(_r["material"]), "gwp_kgco2e_per_kg": float(_r["gwp_kgco2e_per_kg"]),
-                "source_file": str(_r["source_file"]), "source_location": str(_r["source_location"]),
-                "geography": str(_r["geography"]), "validity": str(_r["validity"]),
-                "factor_basis": str(_r["factor_basis"])})
+            material_epd_overrides.append({k: (float(_r[k]) if k == "gwp_kgco2e_per_kg" else str(_r[k]))
+                                           for k in _epd0.columns})
 
     st.markdown("#### Project-data sources")
     boq_source = st.text_input(
@@ -203,15 +206,23 @@ def add_lca_source_inputs(st, assessment_lifetime_default=50):
         placeholder="e.g. average laden HGV; empty return not separately counted",
         key="lca_a4_payload",
     )
-    st.caption("Road return trip (RICS): outward-laden + fraction·empty-running. Applied to road "
-               "only, and only with a documented empty-running factor + fraction + source. No "
-               "hard-coded 0.5. Leave the factor at 0 to report outward-only.")
+    st.caption("Road return trip (RICS): outward-laden + documented empty-running. Applied to road "
+               "only. No hard-coded 0.5. Unit-aware: a tonne-km factor multiplies the load mass; a "
+               "vehicle-km factor multiplies the number of empty vehicle trips (never the payload).")
+    a4_return_factor_unit = st.selectbox(
+        "A4 return-factor unit", ["tonne_km", "vehicle_km"], index=0, key="lca_a4_return_unit")
     a4_return_fraction = st.number_input(
-        "A4 road empty-return fraction (0 = off)", value=0.0, min_value=0.0, max_value=1.0,
+        "A4 empty-return fraction — tonne_km only (0 = off)", value=0.0, min_value=0.0, max_value=1.0,
         step=0.05, format="%.2f", key="lca_a4_return_fraction")
     a4_empty_return_factor = st.number_input(
-        "A4 empty-running EF (kgCO2e/tonne.km, 0 = off)", value=0.0, min_value=0.0,
+        "A4 empty-running EF (per tonne.km OR per vehicle.km, 0 = off)", value=0.0, min_value=0.0,
         step=0.001, format="%.5f", key="lca_a4_empty_return_factor")
+    a4_number_of_trips = st.number_input(
+        "A4 number of empty return trips — vehicle_km only", value=0.0, min_value=0.0,
+        step=1.0, key="lca_a4_number_of_trips")
+    a4_vehicle_capacity = st.number_input(
+        "A4 vehicle capacity (tonnes) — vehicle_km only", value=0.0, min_value=0.0,
+        step=1.0, key="lca_a4_vehicle_capacity")
     a4_return_source = st.text_input(
         "A4 return-assumption source", value="", key="lca_a4_return_source")
 
@@ -281,6 +292,9 @@ def add_lca_source_inputs(st, assessment_lifetime_default=50):
         "a4_return_fraction": a4_return_fraction,
         "a4_empty_return_factor": a4_empty_return_factor,
         "a4_return_source": a4_return_source,
+        "a4_return_factor_unit": a4_return_factor_unit,
+        "a4_number_of_trips": a4_number_of_trips,
+        "a4_vehicle_capacity": a4_vehicle_capacity,
         "a5_diesel_scope": a5_diesel_scope,
         "a5_diesel_source": a5_diesel_source,
         "a5_electricity_source": a5_electricity_source,
@@ -388,17 +402,36 @@ def build_material_factor_overrides(params):
     for row in rows:
         material = str(row.get("material", "")).strip().lower()
         val = row.get("gwp_kgco2e_per_kg")
+        if not material or val in (None, "") or float(val) <= 0.0:
+            continue  # row not started
         src = str(row.get("source_file", "")).strip()
         loc = str(row.get("source_location", "")).strip()
-        if not material or val in (None, "") or float(val) <= 0.0 or not src or not loc:
-            continue
+        declared_unit = str(row.get("declared_unit", "")).strip()
+        boundary = str(row.get("declared_boundary", row.get("boundary", "")).strip() or "").strip()
+        # A row with a value BUT incomplete provenance must NOT silently fall back to ICE.
+        missing = [k for k, v in (("source_file", src), ("source_location", loc),
+                                  ("declared_unit", declared_unit), ("declared_boundary", boundary))
+                   if not v]
+        if missing:
+            raise ScientificInputError(
+                f"EPD entered for {material} but excluded because {', '.join(missing)} is "
+                "incomplete; the ICE proxy was NOT silently substituted.")
+        # factor_unit must be per-kg or carry a documented conversion.
+        factor_unit = str(row.get("factor_unit", "kgCO2e/kg")).strip() or "kgCO2e/kg"
+        if factor_unit != "kgCO2e/kg" and not str(row.get("conversion_to_kg_basis", "")).strip():
+            raise ScientificInputError(
+                f"EPD for {material} is in {factor_unit}; a documented conversion_to_kg_basis is required.")
+        # Full EPD metadata → 'documented'; otherwise 'user_supplied'.
+        full_meta = all(str(row.get(k, "")).strip() for k in
+                        ("manufacturer", "product_name", "epd_number", "programme_operator",
+                         "issue_date", "expiry_date", "verification_status"))
+        status = "project_specific_documented" if full_meta else "project_specific_user_supplied"
         overrides[material] = make_project_evidence(
             code=f"EPD-{material}", value=float(val), unit="kgCO2e/kg", stage="A1-A3",
-            source_file=src, location=loc,
-            boundary_scope=str(row.get("boundary", "A1-A3")),
-            note=f"EPD override; geography={row.get('geography', 'n/a')}; "
-                 f"validity={row.get('validity', 'n/a')}",
-            factor_basis=str(row.get("factor_basis", "project_specific")))
+            source_file=src, location=loc, boundary_scope=boundary,
+            note=f"EPD override; declared_unit={declared_unit}; geography={row.get('geography', 'n/a')}; "
+                 f"validity={row.get('expiry_date', row.get('validity', 'n/a'))}",
+            factor_basis=str(row.get("factor_basis", "project_specific")), status=status)
     return overrides
 
 
@@ -546,7 +579,7 @@ def build_a4_scientific_legs(params, masses):
                 # multiplies the number of (empty) vehicle trips, never the payload mass.
                 if mode == "truck" and empty_return_ef > 0.0 and return_source:
                     if return_unit == "vehicle_km":
-                        route_mass_t = route_mass / KG_PER_TONNE if False else route_mass / 1000.0
+                        route_mass_t = route_mass / 1000.0  # kg → tonnes
                         if return_trips > 0.0 and route_mass_t > 0.0:
                             # Express the vehicle-km return exactly through the tonne-km core by
                             # using an equivalent per-tonne.km factor for this leg only.
@@ -844,9 +877,30 @@ def build_a5_scientific_activity(params, masses, grid_construction):
             ("incomplete_sources" if status in ("incomplete_sources", "validation_failed")
              else "documented_zero"))
 
+    # A5.2 temporary works — a scope component that must be addressed (declared or computed).
+    readiness.setdefault("A5.2_temporary_works", "not_entered")
+
+    # Per-component declarations let the user mark an un-entered component as documented_zero
+    # or not_applicable (with reason) or optional_not_reported. A bare 'not_entered' is NOT
+    # a completed state.
+    declarations = params.get("a5_component_declarations") or {}
+    _ALLOWED_DECL = {"documented_zero", "not_applicable_with_justification", "optional_not_reported"}
+    for comp, st_val in list(readiness.items()):
+        if st_val == "not_entered":
+            decl = str(declarations.get(comp, "")).strip()
+            if decl in _ALLOWED_DECL:
+                readiness[comp] = decl
+
     if not entered:
         return (None, "unconnected", "A5 module on but no fuel/electricity/waste entered.",
                 readiness)
+
+    # A5 is 'connected' only when NO component is still not_entered or incomplete_sources.
+    _bad = [c for c, v in readiness.items() if v in ("not_entered", "incomplete_sources")]
+    if _bad and status == "connected":
+        status = "incomplete_sources"
+        notes.append("A5 components not fully addressed (declare documented_zero / N-A / "
+                     f"optional, or complete them): {', '.join(sorted(_bad))}.")
 
     a5_kwargs = dict(
         diesel_litres=diesel_litres,
@@ -933,16 +987,24 @@ def run_scientific_lca_from_app_params(params):
 
     grid_source = str(params.get("grid_source", "")).strip()
     grid_location = str(params.get("grid_location", "")).strip()
-    if not grid_source or not grid_location:
-        raise ScientificInputError(
-            "Egypt/project grid CI is still OPEN. Supply the official source file and table/page."
-        )
     start_year = int(params.get("analysis_start_year", 1))
     # Grid mode: an ANNUAL official series (a real per-calendar-year table) is project-
     # specific; a CONSTANT value repeated across years is only a documented scenario and
     # must never be described as an annual measured series.
     grid_mode = str(params.get("grid_mode", "constant_documented_scenario")).lower()
     grid_annual_series = params.get("grid_annual_series") or {}  # {calendar_year: {gen,td,up}}
+    # The GLOBAL grid source is required only for the constant scenario; in annual mode
+    # each row is its own source, so a global source is not demanded.
+    if grid_mode != "annual_official_series" and (not grid_source or not grid_location):
+        raise ScientificInputError(
+            "Egypt/project grid CI is still OPEN. Supply the official source file and table/page."
+        )
+    if grid_mode == "annual_official_series":
+        if params.get("grid_annual_duplicate_years"):
+            raise ScientificInputError(
+                f"Annual grid has duplicate calendar years: {params['grid_annual_duplicate_years']}.")
+        if not grid_annual_series:
+            raise ScientificInputError("annual_official_series selected but no grid rows were provided.")
 
     def _grid_for_calendar_year(cal_year, operating_year):
         if grid_mode == "annual_official_series":
@@ -961,6 +1023,13 @@ def run_scientific_lca_from_app_params(params):
                 raise ScientificInputError(
                     f"Annual grid row for calendar year {cal_year} needs its own source_file "
                     "and source_location.")
+            if not all(math.isfinite(x) and x >= 0.0 for x in (gen, td, up)):
+                raise ScientificInputError(
+                    f"Annual grid row {cal_year} has a non-finite or negative CI component.")
+            if (gen + td + up) <= 0.0:
+                raise ScientificInputError(
+                    f"Annual grid row {cal_year} total CI must be > 0 (a zero grid needs explicit "
+                    "official evidence, not a blank row).")
             return GridCarbonYear(
                 year=operating_year, generation_kgco2e_per_kwh=gen, td_kgco2e_per_kwh=td,
                 upstream_kgco2e_per_kwh=up, source_file=row_src,
@@ -1211,11 +1280,15 @@ def run_scientific_lca_from_app_params(params):
                               and "validation_failed" not in stage_status.values())
     stage_applicability_complete = all(stage_status[s] in _DONE for s in required_full)
     # Any verified-proxy factor was used → not fully project-specific.
+    # Any user-supplied (unverified) factor was used → not standards-reporting-complete.
     _aud = final_lca.get("source_audit")
     proxy_used = False
+    user_supplied_used = False
     try:
         if hasattr(_aud, "empty") and not _aud.empty and "status" in _aud.columns:
-            proxy_used = _aud["status"].astype(str).str.contains("proxy", case=False, na=False).any()
+            _stat = _aud["status"].astype(str)
+            proxy_used = _stat.str.contains("proxy", case=False, na=False).any()
+            user_supplied_used = _stat.str.contains("user_supplied", case=False, na=False).any()
     except Exception:
         proxy_used = False
     publication_readiness = {
@@ -1228,6 +1301,7 @@ def run_scientific_lca_from_app_params(params):
         "grid_mode": grid_mode,
         "grid_is_project_specific_annual": bool(grid_project_specific),
         "proxy_factors_used": bool(proxy_used),
+        "user_supplied_evidence_used": bool(user_supplied_used),
         "uncertainty_complete": False,  # Phase-4 MC wiring for the scientific engine is pending
     }
 
@@ -1238,9 +1312,11 @@ def run_scientific_lca_from_app_params(params):
         publication_grade_partial_scope and _all_stages_done
         and _no_validation_failed and mass_balance_valid)
     # 2) standards_reporting_complete: also all factor/activity sources documented
-    #    (no OPEN factor / no open issues), Module D kept separate.
+    #    (no OPEN factor / no open issues) AND no unverified user-supplied factor,
+    #    Module D kept separate.
     standards_reporting_complete = bool(
-        full_wlca_calculation_complete and not checks.get("issues"))
+        full_wlca_calculation_complete and not checks.get("issues")
+        and not user_supplied_used)
     # 3) q1_evidence_ready: also project-specific (annual grid, no undisclosed proxy)
     #    and uncertainty complete.
     q1_evidence_ready = bool(
