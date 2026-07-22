@@ -165,7 +165,9 @@ def add_lca_source_inputs(st, assessment_lifetime_default=50):
         _years = []
         for _v in _gedit["calendar_year"].tolist():
             try:
-                _years.append(int(_v))
+                _f = float(_v)
+                # A non-integer year (e.g. 2026.5) must be REJECTED, not silently truncated.
+                _years.append(int(_f) if math.isfinite(_f) and _f.is_integer() else None)
             except (TypeError, ValueError):
                 _years.append(None)
         grid_annual_duplicate_years = sorted({y for y in _years if y is not None and _years.count(y) > 1})
@@ -304,10 +306,16 @@ def add_lca_source_inputs(st, assessment_lifetime_default=50):
     a5_component_declarations = {}
     for _, _r in _a5decl_edit.iterrows():
         _decl = str(_r["declaration"]).strip()
-        if _decl in ("documented_zero", "not_applicable_with_justification", "optional_not_reported"):
-            # documented_zero / N-A must carry a justification or source.
-            if _decl == "optional_not_reported" or str(_r["justification"]).strip() or str(_r["source"]).strip():
-                a5_component_declarations[str(_r["component"])] = _decl
+        _just = str(_r["justification"]).strip()
+        _src = str(_r["source"]).strip()
+        if _decl not in ("documented_zero", "not_applicable_with_justification", "optional_not_reported"):
+            continue
+        # documented_zero and N-A must carry BOTH a justification and a source; optional
+        # only needs a disclosure note. Store the FULL record so it reaches audit/gate.
+        if _decl in ("documented_zero", "not_applicable_with_justification") and not (_just and _src):
+            continue
+        a5_component_declarations[str(_r["component"])] = {
+            "status": _decl, "justification": _just, "source": _src}
 
     return {
         "assessment_lifetime": int(assessment_lifetime),
@@ -438,6 +446,14 @@ def build_material_masses_from_app_params(params):
     }
 
 
+def _boundary_covers_a1a3(boundary):
+    """True only when the declared boundary covers the FULL A1-A3 product stage."""
+    s = str(boundary).lower().replace("–", "-").replace("—", "-").replace(" ", "")
+    if any(tok in s for tok in ("a1-a3", "a1toa3", "a1+a2+a3", "cradletogate", "cradle-to-gate")):
+        return True
+    return ("a1" in s) and ("a2" in s) and ("a3" in s)
+
+
 def build_material_factor_overrides(params):
     """Build A1-A3 factor overrides from a per-material EPD editor.
 
@@ -465,10 +481,11 @@ def build_material_factor_overrides(params):
             raise ScientificInputError(
                 f"EPD entered for {material} but excluded because {', '.join(missing)} is "
                 "incomplete; the ICE proxy was NOT silently substituted.")
-        # The declared boundary must actually cover A1-A3.
-        if "a1" not in boundary.lower():
+        # The declared boundary must actually cover A1-A3 (not just mention A1).
+        if not _boundary_covers_a1a3(boundary):
             raise ScientificInputError(
-                f"EPD for {material} declared_boundary '{boundary}' must cover A1-A3.")
+                f"EPD for {material} declared_boundary '{boundary}' must cover the FULL A1-A3 "
+                "(e.g. 'A1-A3', 'A1 + A2 + A3', or 'cradle-to-gate including A1, A2 and A3').")
         # UNIT CONVERSION — applied NUMERICALLY, never assumed. EF_kg = EF_declared × conv.
         factor_unit = str(row.get("factor_unit", "kgCO2e/kg")).strip() or "kgCO2e/kg"
         original_val = float(val)
@@ -617,7 +634,16 @@ def build_a4_scientific_legs(params, masses):
                     f"A4 mass reconciliation failed for '{material}': Σ route_share = {share_sum:.6f} "
                     "(must equal 1).", [])
 
+    # In ADVANCED mode a single GLOBAL explicit trip count would be applied to every
+    # material/segment → double counting. Advanced vehicle-km must derive trips per segment
+    # from vehicle capacity; an explicit global trip count is only allowed in simple mode.
+    if advanced_present and return_unit == "vehicle_km" and return_trips > 0.0:
+        return ([], "validation_failed",
+                "A4 advanced + vehicle-km: a global number_of_trips would be double-counted across "
+                "segments. Use vehicle_capacity (per-segment derivation) instead.", [])
+
     legs, audit = [], []
+    return_leg_added = False
     for material, quantity in masses.items():
         mat_mass = float(quantity.value)
         if mat_mass <= 0.0:
@@ -685,6 +711,7 @@ def build_a4_scientific_legs(params, masses):
                                 "mode": mode, "scope": scope, "payload_assumption": payload or "not stated",
                                 "return_assumption": f"vehicle-km trips={trips}, "
                                                      f"EF_vehicle_km={empty_return_ef}"})
+                            return_leg_added = True
                     elif return_fraction > 0.0:  # tonne_km basis (default)
                         ret_ev = make_project_evidence(
                             code=f"A4-ROAD-RETURN-{material}-{rid}-{seg['segment_no']}",
@@ -706,6 +733,7 @@ def build_a4_scientific_legs(params, masses):
                             "mode": mode, "scope": scope, "payload_assumption": payload or "not stated",
                             "return_assumption": f"tonne-km empty-return fraction={return_fraction}, "
                                                  f"EF={empty_return_ef}"})
+                        return_leg_added = True
 
     # Every segment must carry its own distance source (per-route/segment, not one global).
     if any(a.get("distance_source") in (None, "", "MISSING") for a in audit):
@@ -715,9 +743,12 @@ def build_a4_scientific_legs(params, masses):
     note = ""
     road_present = any(s["mode"] == "truck" for mr in routes.values() for r in mr.values()
                        for s in r["segments"])
-    if road_present and not (return_fraction > 0.0 and empty_return_ef > 0.0 and return_source):
+    # Outward-only note keys off whether a return leg was ACTUALLY added (tonne-km OR
+    # vehicle-km), not off return_fraction alone.
+    if road_present and not return_leg_added:
         note = ("Road legs are outward-only (average-laden factor); a documented empty-return "
-                "assumption (fraction + empty-running EF + source) is required to add the return trip.")
+                "assumption (empty-running EF + source, and fraction or vehicle trips) is required "
+                "to add the return trip.")
     return legs, "connected", note, audit
 
 
@@ -967,7 +998,8 @@ def build_a5_scientific_activity(params, masses, grid_construction):
     _ALLOWED_DECL = {"documented_zero", "not_applicable_with_justification", "optional_not_reported"}
     for comp, st_val in list(readiness.items()):
         if st_val == "not_entered":
-            decl = str(declarations.get(comp, "")).strip()
+            _d = declarations.get(comp, "")
+            decl = str(_d.get("status", "") if isinstance(_d, dict) else _d).strip()
             if decl in _ALLOWED_DECL:
                 readiness[comp] = decl
 

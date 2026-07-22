@@ -657,5 +657,49 @@ _veh_both = dict(_veh_cap, a4_number_of_trips=5.0)
 check("A4 vehicle-km both trips and capacity → validation_failed",
       _b4b(_veh_both, {"steel": ProjectQuantity(1e6, "kg", "BOQ", "x")})[1] == "validation_failed")
 
+# ── 17. Tranche-5 corrections ─────────────────────────────────────────────────
+from lca_scientific_integration import _boundary_covers_a1a3 as _bcov
+check("EPD boundary 'A1 only' rejected", _bcov("A1 only") is False)
+check("EPD boundary 'A1-A2' rejected", _bcov("A1-A2") is False)
+check("EPD boundary 'A1-A3' accepted", _bcov("A1-A3") is True)
+check("EPD boundary 'A1 + A2 + A3' accepted", _bcov("A1 + A2 + A3") is True)
+check("EPD boundary 'cradle-to-gate' accepted", _bcov("cradle-to-gate incl A1,A2,A3") is True)
+# EPD builder enforces full A1-A3 boundary.
+_epd_a1only = dict(_epd_conv, factor_unit="kgCO2e/kg", declared_boundary="A1 only")
+try:
+    _bmo({"material_epd_overrides": [_epd_a1only]}); check("EPD builder rejects A1-only boundary", False)
+except _SIE:
+    check("EPD builder rejects A1-only boundary", True)
+
+# A5 declaration stored as a FULL record (status + justification + source), and
+# documented_zero without justification+source is ignored (stays not_entered → incomplete).
+_a5_decl_full = dict(_a5crit)
+_a5_decl_full["a5_component_declarations"] = {
+    "A5.2_site_fuel": {"status": "documented_zero", "justification": "no site diesel", "source": "site log"},
+    "A5.2_site_electricity": {"status": "documented_zero", "justification": "grid-free", "source": "log"},
+    "A5.2_temporary_works": {"status": "not_applicable_with_justification",
+                             "justification": "none in boundary", "source": "brief"},
+    "A5.3_waste_generation": {"status": "documented_zero", "justification": "n", "source": "s"},
+    "A5.3_waste_transport": {"status": "documented_zero", "justification": "n", "source": "s"},
+    "A5.3_waste_treatment": {"status": "documented_zero", "justification": "n", "source": "s"}}
+_r_declfull = run_scientific_lca_from_app_params(_a5_decl_full)
+check("A5 dict declarations (full record) accepted → connected",
+      _r_declfull["stage_status"]["A5"] == "connected")
+
+# A4 advanced + global vehicle-km trips → validation_failed (double-count guard).
+_veh_adv = {"a4_scope": "wtw", "boq_source": "BOQ", "a4_mode": "advanced",
+            "a4_empty_return_factor": 0.9, "a4_return_source": "veh", "a4_return_factor_unit": "vehicle_km",
+            "a4_number_of_trips": 40.0,
+            "a4_advanced_legs": [{"material": "steel", "route_id": "1", "route_share": 1.0,
+                                  "segment_no": 1, "distance_km": 50.0, "mode": "truck",
+                                  "distance_source": "s"}]}
+check("A4 advanced + global vehicle-km trips → validation_failed",
+      _b4b(_veh_adv, {"steel": ProjectQuantity(1e6, "kg", "BOQ", "x")})[1] == "validation_failed")
+
+# outward-only note is absent once a vehicle-km return leg is added.
+_veh_note = dict(_veh_cap)
+_nl, _nst, _nnote, _naud = _b4b(_veh_note, {"steel": ProjectQuantity(1e6, "kg", "BOQ", "x")})
+check("outward-only note gone when a vehicle-km return leg was added", "outward-only" not in _nnote)
+
 print("\nALL SCIENTIFIC CORE TESTS PASSED" if ok else "\nSOME TESTS FAILED")
 sys.exit(0 if ok else 1)
