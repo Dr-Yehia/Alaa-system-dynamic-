@@ -782,5 +782,61 @@ _evs = [{"event_id": "R", "year": 5, "module": "B4", "removed_mass_kg": {"steel"
 _rem, _rws, _cok, _cerr = _cmb(_init, _evs)
 check("chronological mass balance catches negative intermediate mass", _cok is False)
 
+# B2-B5 hardening extras: declarations-only close, enum validation, invalid declaration.
+_declonly = dict(_a5_lf); _declonly["b2b5_event_rows"] = []
+_declonly["b2b5_module_declarations"] = {
+    m: {"status": "documented_zero", "justification": "none", "source": "plan"} for m in ("B2", "B3", "B4", "B5")}
+check("B2-B5 closes at documented-zero with NO events but all 4 declared",
+      run_scientific_lca_from_app_params(_declonly)["stage_status"]["B2-B5"] == "connected")
+check("B2-B5 declaration without justification/source is ignored",
+      _bb5([], 50, {"B2": {"status": "documented_zero"}})[1]["B2"] == "unconnected")
+check("B2-B5 unknown material rejected",
+      _bb5([{"event_id": "E", "module": "B2", "year": 5, "event_source": "p",
+             "new_material": "titanium", "new_material_kg": 100.0, "material_source": "s"}], 50)[1]["B2"]
+      == "incomplete_sources")
+check("B2-B5 invalid mass_role rejected",
+      _bb5([{"event_id": "E", "module": "B2", "year": 5, "event_source": "p", "new_material": "steel",
+             "new_material_kg": 100.0, "material_source": "s", "mass_role": "retained_asset"}], 50)[1]["B2"]
+      == "incomplete_sources")
+
+# ── 19. C1-C4 from remaining mass + Module D from C3 ──────────────────────────
+_c1c4 = dict(_a5_lf)
+_c1c4.update(include_c1c4=True, c1_diesel_l=5000.0, c1_diesel_source="demolition log",
+             c1c4_rows=[
+                 {"material": "steel", "reuse_share": 0.0, "recycle_share": 0.0, "disposal_share": 1.0,
+                  "share_source": "EOL plan", "c2_distance_km": 40.0, "c2_source": "haul", "c2_mode": "truck"},
+                 {"material": "concrete", "reuse_share": 0.0, "recycle_share": 0.5, "disposal_share": 0.5,
+                  "share_source": "EOL plan", "c2_distance_km": 40.0, "c2_source": "haul", "c2_mode": "truck"}])
+_r_c = run_scientific_lca_from_app_params(_c1c4)
+_cm = _r_c["modules"]["C1_C4"]
+check("C1-C4 connects from remaining mass", _r_c["stage_status"]["C1-C4"] == "connected")
+check("C1-C4 = C1 + C2 + C3 + C4",
+      abs(_cm["total_tco2e"] - (_cm["C1_tco2e"] + _cm["C2_tco2e"] + _cm["C3_tco2e"] + _cm["C4_tco2e"])) < 1e-6)
+check("C1-C4 in the connected scope + reported total", "C1-C4" in _r_c["connected_stages"]
+      and abs(_r_c["reported_stage_tco2e"]["C1-C4"] - _cm["total_tco2e"]) < 1e-6)
+# EOL shares that do not sum to 1 → validation_failed.
+_c_bad = dict(_c1c4)
+_c_bad["c1c4_rows"] = [{"material": "steel", "reuse_share": 0.0, "recycle_share": 0.3,
+                       "disposal_share": 0.3, "share_source": "x"}]
+check("C1-C4 shares ≠ 1 → validation_failed",
+      run_scientific_lca_from_app_params(_c_bad)["stage_status"]["C1-C4"] == "validation_failed")
+# recycle with no verified factor → incomplete (no fallback) — steel has no registry recycle code.
+_c_rec = dict(_c1c4)
+_c_rec["c1c4_rows"] = [{"material": "steel", "reuse_share": 0.0, "recycle_share": 1.0,
+                       "disposal_share": 0.0, "share_source": "x"}]
+check("C1-C4 recycle w/o verified factor → incomplete (no fallback)",
+      run_scientific_lca_from_app_params(_c_rec)["stage_status"]["C1-C4"] == "incomplete_sources")
+
+# Module D from C3 stays SEPARATE from gross and respects the ≤ C3 recovered constraint.
+_cd = dict(_c1c4)
+_cd["module_d_from_c3"] = {"concrete": {"recovered_output_kg": 1e6, "secondary_input_kg": 0.0,
+                                        "substitution_ratio": 0.9, "flow_source": "eol",
+                                        "substitution_source": "a", "primary_factor": _prim,
+                                        "recovery_factor": _rec}}
+_r_cd = run_scientific_lca_from_app_params(_cd)
+check("Module D (from C3) is non-zero and SEPARATE from gross",
+      abs(_r_cd["module_D1_signed_tCO2e_separate"]) > 0.0
+      and abs(_r_cd["gross_A_C_tCO2e"] - sum(_r_cd["reported_stage_tco2e"].values())) < 1e-6)
+
 print("\nALL SCIENTIFIC CORE TESTS PASSED" if ok else "\nSOME TESTS FAILED")
 sys.exit(0 if ok else 1)

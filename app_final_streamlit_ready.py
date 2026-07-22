@@ -2687,7 +2687,7 @@ with st.sidebar:
                                "removed_material_kg — never free values. No %A1-A3, no cost-to-carbon. "
                                "Each B2/B3/B4/B5 gets an independent status; year must be within RSP.")
                     _b2b5_df0 = pd.DataFrame({
-                        "event_id": ["E1"], "module": ["B4"], "year": [25], "event_source": [""],
+                        "event_id": [""], "module": ["B4"], "year": [25], "event_source": [""],
                         "asset": [""], "new_material": ["steel"], "new_material_kg": [0.0],
                         "material_source": [""], "mass_role": ["retained_in_asset"],
                         "removed_material": ["steel"], "removed_material_kg": [0.0],
@@ -2758,11 +2758,34 @@ with st.sidebar:
         eol_recovery_eta, eol_cost_m = 1.0, 0.0
         eol_table = {m: {'reuse': 0.0, 'recycle': 0.0, 'secondary_ef': 0.0} for m in MATERIALS_UI}
         c2_routes = None
+        c1c4_rows = []
+        c1_diesel_source_sci, c1_electricity_source_sci = "", ""
         if include_c1c4:
             st.markdown("### ♻️ C1–C4 End-of-Life")
             st.caption("EOL scenario. Treatment shares must sum to 1 (uses remaining masses after B4/B5).")
             c1_diesel_l = st.number_input("C1 diesel (L)", value=0.0, min_value=0.0, step=1000.0, key="c1_diesel_l")
             c1_elec_kwh = st.number_input("C1 electricity (kWh)", value=0.0, min_value=0.0, step=1000.0, key="c1_elec_kwh")
+            if SCI_LCA_AVAILABLE:
+                with st.expander("🔬 Scientific C1–C4 editor (mass = remaining after B2-B5)", expanded=False):
+                    st.caption("C-stage mass is the chronological remaining mass after B2-B5 (you cannot "
+                               "type a free mass). Per material: reuse+recycle+disposal = 1 with a source; "
+                               "C2 is a sourced route; disposal/recycle use verified per-tonne factors; C1 "
+                               "electricity uses the EOL-year grid CI.")
+                    c1_diesel_source_sci = st.text_input("C1 diesel source", value="", key="c1_diesel_source_sci")
+                    c1_electricity_source_sci = st.text_input("C1 electricity source", value="", key="c1_elec_source_sci")
+                    _c1c4_df0 = pd.DataFrame({
+                        "material": MATERIALS_UI, "reuse_share": [0.0]*6, "recycle_share": [0.0]*6,
+                        "disposal_share": [1.0]*6, "share_source": [""]*6,
+                        "c2_distance_km": [0.0]*6, "c2_mode": ["truck"]*6, "c2_source": [""]*6,
+                        "ef_reuse": [0.0]*6, "ef_recycle": [0.0]*6, "ef_landfill": [0.0]*6, "source": [""]*6})
+                    _c1c4_edit = pd.DataFrame(st.data_editor(
+                        _c1c4_df0, hide_index=True, use_container_width=True,
+                        key="c1c4_sci_editor", disabled=["material"]))
+                    _c1c4_num = {"reuse_share", "recycle_share", "disposal_share", "c2_distance_km",
+                                 "ef_reuse", "ef_recycle", "ef_landfill"}
+                    for _, _r in _c1c4_edit.iterrows():
+                        c1c4_rows.append({k: (float(_r[k] or 0.0) if k in _c1c4_num else str(_r[k]))
+                                          for k in _c1c4_df0.columns})
             eol_transport_km = st.number_input("EOL transport (km)", value=50.0, min_value=0.0, step=10.0, key="eol_transport_km")
             eol_reuse_ef = st.number_input("Reuse EF (kgCO₂e/kg)", value=0.0, min_value=0.0, step=0.01, format="%.3f", key="eol_reuse_ef")
             eol_recycle_ef = st.number_input("Recycle EF (kgCO₂e/kg)", value=0.0, min_value=0.0, step=0.01, format="%.3f", key="eol_recycle_ef")
@@ -2903,6 +2926,8 @@ current_params = {
     'lcca_maint_mode': lcca_maint_mode,
     'b2b5_event_rows': b2b5_event_rows, 'b2b5_module_declarations': b2b5_module_declarations,
     'include_c1c4': include_c1c4, 'c1_diesel_l': c1_diesel_l, 'c1_elec_kwh': c1_elec_kwh,
+    'c1c4_rows': c1c4_rows, 'c1_diesel_source': c1_diesel_source_sci,
+    'c1_electricity_source': c1_electricity_source_sci,
     'eol_transport_km': eol_transport_km, 'eol_reuse_ef': eol_reuse_ef, 'eol_recycle_ef': eol_recycle_ef,
     'eol_disposal_ef': eol_disposal_ef, 'eol_recovery_eta': eol_recovery_eta, 'eol_cost_m': eol_cost_m,
     'c2_routes': c2_routes,

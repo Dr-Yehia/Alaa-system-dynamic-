@@ -1063,6 +1063,22 @@ def build_module_d_rows_from_c3(c1_c4_result, cfg):
 
 
 _B2B5_MODULES = ("B2", "B3", "B4", "B5")
+_A1A3_MATERIALS = ("concrete", "steel", "aluminum", "wood", "frp", "glass")
+_TRANSPORT_MODES = ("truck", "rail", "ship")
+# removed_same_event is intentionally NOT allowed yet (needs removed-flow reconciliation).
+_MASS_ROLES = ("retained_in_asset", "consumable", "temporary")
+
+
+def _valid_module_declaration(decl):
+    """A module declaration counts only with status + justification + source (file)."""
+    if not isinstance(decl, dict):
+        return None
+    status = str(decl.get("status", "")).strip()
+    if status not in ("documented_zero", "not_applicable_with_justification"):
+        return None
+    just = str(decl.get("justification", "")).strip()
+    src = str(decl.get("source", "") or decl.get("source_file", "")).strip()
+    return status if (just and src) else None
 
 
 def _pos_int_year(raw):
@@ -1151,10 +1167,14 @@ def build_b2b5_events_from_rows(rows, rsp, module_declarations=None):
                     if nkg is None:
                         bad = True; notes.append(f"Event {eid}: invalid new_material_kg.")
                     elif nkg > 0.0:
-                        if not str(r.get("material_source", "")).strip():
+                        role = str(r.get("mass_role", "retained_in_asset")).strip() or "retained_in_asset"
+                        if mat not in _A1A3_MATERIALS:
+                            bad = True; notes.append(f"Event {eid}: unknown new_material '{mat}'.")
+                        elif role not in _MASS_ROLES:
+                            bad = True; notes.append(f"Event {eid}: invalid mass_role '{role}'.")
+                        elif not str(r.get("material_source", "")).strip():
                             bad = True; notes.append(f"Event {eid} {mat}: new material without source.")
                         else:
-                            role = str(r.get("mass_role", "retained_in_asset")).strip() or "retained_in_asset"
                             new_materials_kg_sum[mat] = new_materials_kg_sum.get(mat, 0.0) + nkg
                             if role == "retained_in_asset":
                                 added[mat] = added.get(mat, 0.0) + nkg
@@ -1190,12 +1210,14 @@ def build_b2b5_events_from_rows(rows, rsp, module_declarations=None):
                 if tkm is None:
                     bad = True; notes.append(f"Event {eid}: invalid transport_km.")
                 elif tkm > 0.0:
+                    _tmode = str(r.get("transport_mode", "truck")).strip().lower() or "truck"
                     if not (str(r.get("transport_source", "")).strip() and mat and nkg):
                         bad = True; notes.append(f"Event {eid}: transport without source/material.")
+                    elif _tmode not in _TRANSPORT_MODES:
+                        bad = True; notes.append(f"Event {eid}: unknown transport mode '{_tmode}'.")
                     else:
                         transport_legs.append({
-                            "material": mat, "mass_kg": nkg, "distance_km": tkm,
-                            "mode": str(r.get("transport_mode", "truck")).strip().lower() or "truck",
+                            "material": mat, "mass_kg": nkg, "distance_km": tkm, "mode": _tmode,
                             "scope": "wtw", "mass_source": esrc,
                             "distance_source": str(r.get("transport_source")).strip()})
                         has_activity = True
@@ -1225,22 +1247,24 @@ def build_b2b5_events_from_rows(rows, rsp, module_declarations=None):
             elec = ProjectQuantity(elec_total, "kWh", "; ".join(elec_srcs), f"{module} electricity (summed)") \
                 if elec_total > 0.0 else None
             events.append({
-                "event_id": eid, "asset": asset, "module": module, "year": year, "event_source": esrc,
+                "event_id": eid, "asset": asset, "module": module, "year": year,
+                "event_sequence": _pos_int_year(head.get("event_sequence", 1)) or 1,
+                "event_source": esrc,
                 "new_materials_kg": new_materials, "diesel_litres": diesel, "diesel_scope": "wtw",
                 "electricity_kwh": elec, "transport_legs": transport_legs, "waste_items": waste_items,
                 "added_mass_kg": added, "removed_mass_kg": removed})
 
     # Per-module status; a seen-but-not-bad module with at least one event is connected.
+    # A module declaration only counts when it carries status + justification + source.
     _has_event = {m: any(e["module"] == m for e in events) for m in _B2B5_MODULES}
     module_status = {}
     for m in _B2B5_MODULES:
-        decl = module_declarations.get(m)
-        decl_status = (decl.get("status") if isinstance(decl, dict) else decl)
+        decl_status = _valid_module_declaration(module_declarations.get(m))
         if m in module_bad:
             module_status[m] = "incomplete_sources"
         elif _has_event[m]:
             module_status[m] = "connected"
-        elif decl_status in ("documented_zero", "not_applicable_with_justification"):
+        elif decl_status:
             module_status[m] = decl_status
         else:
             module_status[m] = "unconnected"
@@ -1253,7 +1277,10 @@ def chronological_mass_balance(initial_masses, events):
     running = {m: float(q.value) for m, q in initial_masses.items()}
     src = {m: q.source for m, q in initial_masses.items()}
     rows = []
-    for e in sorted(events, key=lambda x: int(x.get("year", 0))):
+    # Order within the same year is defined by event_sequence, then event_id (deterministic).
+    for e in sorted(events, key=lambda x: (int(x.get("year", 0)),
+                                           int(x.get("event_sequence", 1)),
+                                           str(x.get("event_id", "")))):
         for mat, kg in (e.get("removed_mass_kg") or {}).items():
             running[mat] = running.get(mat, 0.0) - float(kg)
         for mat, kg in (e.get("added_mass_kg") or {}).items():
@@ -1270,6 +1297,116 @@ def chronological_mass_balance(initial_masses, events):
                                     "after B2-B5 events")
                  for m, v in running.items()}
     return remaining, rows, True, ""
+
+
+def build_c1c4_scientific_inputs(params, remaining_masses, grid_eol):
+    """Build calculate_c1_c4 inputs from the C-stage editor, using the REMAINING mass
+    after B2-B5 (the user cannot type a free C-stage mass).
+
+    Returns (c_inputs_or_None, status, note, recovered_by_material). Per material:
+    reuse+recycle+disposal shares must sum to 1 with a share source; C2 is a sourced
+    route leg; disposal/recycle use verified per-tonne registry codes (or a documented
+    override), reuse needs a documented (even 0) processing EF. C1 uses the EOL-year grid.
+    """
+    if not bool(params.get("include_c1c4", False)):
+        return None, "unconnected", "C1-C4 module off.", {}
+    rows = params.get("c1c4_rows") or []
+    if not rows:
+        return None, "unconnected", "C1-C4 on but no rows entered.", {}
+
+    status, notes = "connected", []
+    # C1 deconstruction fuel/electricity (EOL-year grid).
+    c1_diesel = None
+    dl = float(params.get("c1_diesel_l", 0.0) or 0.0)
+    if dl > 0.0:
+        if str(params.get("c1_diesel_source", "")).strip():
+            c1_diesel = ProjectQuantity(dl, "L", str(params.get("c1_diesel_source")).strip(), "C1 diesel")
+        else:
+            status = "incomplete_sources"; notes.append("C1 diesel without source → excluded.")
+    c1_elec = None
+    ek = float(params.get("c1_elec_kwh", 0.0) or 0.0)
+    if ek > 0.0:
+        if str(params.get("c1_electricity_source", "")).strip() and grid_eol is not None:
+            c1_elec = ProjectQuantity(ek, "kWh", str(params.get("c1_electricity_source")).strip(), "C1 electricity")
+        else:
+            status = "incomplete_sources"; notes.append("C1 electricity without source → excluded.")
+
+    c2_legs, treatment_rows, recovered = [], [], {}
+    for row in rows:
+        mat = str(row.get("material", "")).strip().lower()
+        if mat not in remaining_masses:
+            continue
+        mass = float(remaining_masses[mat].value)
+        if mass <= 0.0:
+            continue
+        reuse = float(row.get("reuse_share", 0.0) or 0.0)
+        recycle = float(row.get("recycle_share", 0.0) or 0.0)
+        disposal = float(row.get("disposal_share", 0.0) or 0.0)
+        share_src = str(row.get("share_source", "")).strip()
+        if not share_src:
+            status = "incomplete_sources"
+            notes.append(f"C1-C4 {mat}: EOL shares need a source → excluded."); continue
+        if min(reuse, recycle, disposal) < 0.0 or abs(reuse + recycle + disposal - 1.0) > 1e-9:
+            status = "validation_failed"
+            notes.append(f"C1-C4 {mat}: reuse+recycle+disposal must equal 1."); continue
+
+        # C2 transport of the remaining mass (route/segment-style single leg).
+        dist = float(row.get("c2_distance_km", 0.0) or 0.0)
+        if dist > 0.0:
+            if str(row.get("c2_source", "")).strip():
+                c2_legs.append({"material": mat, "mass_kg": mass, "distance_km": dist,
+                                "mode": str(row.get("c2_mode", "truck")).strip().lower() or "truck",
+                                "scope": "wtw", "mass_source": remaining_masses[mat].source,
+                                "distance_source": str(row.get("c2_source")).strip()})
+            else:
+                status = "incomplete_sources"; notes.append(f"C1-C4 {mat}: C2 distance without source.")
+
+        route_codes = _A5_WASTE_ROUTE.get(mat, {})
+        reuse_f = recycle_f = disposal_f = None
+        row_bad = False
+        if reuse > 0.0:
+            ov, doc = _a5_treatment_override(mat, "reuse", {mat: row})
+            if doc:
+                reuse_f = ov
+            else:
+                status = "incomplete_sources"; row_bad = True
+                notes.append(f"C1-C4 {mat}: reuse processing EF (even 0) needs a documented source.")
+        if recycle > 0.0:
+            ov, doc = _a5_treatment_override(mat, "recycle", {mat: row})
+            if doc:
+                recycle_f = ov
+            elif route_codes.get("recycle"):
+                recycle_f = WASTE_EF[route_codes["recycle"]]
+            else:
+                status = "incomplete_sources"; row_bad = True
+                notes.append(f"C1-C4 {mat}: no verified recycle factor (no fallback).")
+        if disposal > 0.0:
+            ov, doc = _a5_treatment_override(mat, "landfill", {mat: row})
+            if doc:
+                disposal_f = ov
+            elif route_codes.get("landfill"):
+                disposal_f = WASTE_EF[route_codes["landfill"]]
+            else:
+                status = "incomplete_sources"; row_bad = True
+                notes.append(f"C1-C4 {mat}: no verified disposal factor (no fallback).")
+
+        # An incomplete treatment row is EXCLUDED (not passed to the core, which would raise).
+        if row_bad:
+            recovered.pop(mat, None)
+            continue
+
+        treatment_rows.append({
+            "material": mat, "mass_kg": mass, "mass_source": remaining_masses[mat].source,
+            "reuse_share": reuse, "recycle_share": recycle, "disposal_share": disposal,
+            "share_source": share_src, "reuse_factor": reuse_f, "recycle_factor": recycle_f,
+            "disposal_factor": disposal_f})
+        recovered[mat] = mass * (reuse + recycle)
+
+    c_inputs = dict(
+        c1_diesel_litres=c1_diesel, c1_diesel_scope="wtw", c1_electricity_kwh=c1_elec,
+        c1_grid=grid_eol if c1_elec is not None else None,
+        c2_transport_legs=c2_legs, treatment_rows=treatment_rows)
+    return c_inputs, status, " ".join(notes), recovered
 
 
 def run_scientific_lca_from_app_params(params):
@@ -1496,25 +1633,24 @@ def run_scientific_lca_from_app_params(params):
             b2b5_status = "connected" if b_events else "unconnected"
     else:
         _rows = params.get("b2b5_event_rows") or []
-        b_events, b2b5_module_status, b2b5_note = build_b2b5_events_from_rows(
-            _rows, rsp, params.get("b2b5_module_declarations"))
-        if not _rows:
-            b2_b5 = {"stage": "B2-B5", "total_tco2e": 0.0, "source_audit": [],
-                     "material_added_kg": {}, "material_removed_kg": {}}
-            b2b5_status = "unconnected"
+        _decls = params.get("b2b5_module_declarations")
+        # Always evaluate declarations, even with NO event rows, so a fully-declared
+        # (documented_zero / N-A) B2-B5 closes at a documented zero.
+        b_events, b2b5_module_status, b2b5_note = build_b2b5_events_from_rows(_rows, rsp, _decls)
+        b2_b5 = calculate_b2_b5(b_events, grid_by_year, material_overrides or None) if b_events else {
+            "stage": "B2-B5", "total_tco2e": 0.0, "source_audit": [],
+            "material_added_kg": {}, "material_removed_kg": {}}
+        # The STAGE closes only when ALL FOUR modules are done (connected / documented_zero
+        # / N-A). A single B4 event no longer makes the whole stage 'connected'; and an
+        # all-declared-zero stage closes even with no events.
+        if any(b2b5_module_status[m] == "incomplete_sources" for m in _B2B5_MODULES):
+            b2b5_status = "incomplete_sources"
+        elif all(b2b5_module_status[m] in _DONE_MOD for m in _B2B5_MODULES):
+            b2b5_status = "connected"
+        elif any(b2b5_module_status[m] != "unconnected" for m in _B2B5_MODULES):
+            b2b5_status = "incomplete_sources"  # some module still unconnected/undeclared
         else:
-            # Pass EPD/material overrides so replacement events use the right factor.
-            b2_b5 = calculate_b2_b5(b_events, grid_by_year, material_overrides or None) if b_events else {
-                "stage": "B2-B5", "total_tco2e": 0.0, "source_audit": [],
-                "material_added_kg": {}, "material_removed_kg": {}}
-            # The STAGE closes only when ALL FOUR modules are done (connected / documented_zero
-            # / N-A). A single B4 event no longer makes the whole stage 'connected'.
-            if any(b2b5_module_status[m] == "incomplete_sources" for m in _B2B5_MODULES):
-                b2b5_status = "incomplete_sources"
-            elif all(b2b5_module_status[m] in _DONE_MOD for m in _B2B5_MODULES):
-                b2b5_status = "connected"
-            else:
-                b2b5_status = "incomplete_sources"  # some module still unconnected/undeclared
+            b2b5_status = "unconnected"  # nothing entered or declared at all
     # Chronological mass balance: mass must stay ≥ 0 after EACH event, not only at the end.
     _remaining, _chrono_rows, _chrono_ok, _chrono_err = chronological_mass_balance(masses, b_events)
     if not _chrono_ok:
@@ -1534,11 +1670,31 @@ def run_scientific_lca_from_app_params(params):
     # Remaining masses after chronological B4/B5 events — the ONLY mass C1-C4 may use.
     remaining_masses = _remaining if _chrono_ok else mass_balance.get("remaining_masses_kg", masses)
 
-    c_inputs = params.get("c1_c4_scientific_inputs") or {}
-    c1c4_connected = bool(c_inputs)
-    c1_c4 = calculate_c1_c4(**c_inputs) if c_inputs else {
-        "stage": "C1-C4", "total_tco2e": 0.0, "source_audit": []
-    }
+    c1c4_note = ""
+    c_prebuilt = params.get("c1_c4_scientific_inputs")
+    # EOL-year grid (C1 electricity uses the grid CI at end of life, not year 1). Built
+    # only when C1-C4 is active so an annual series need only cover the years it actually uses.
+    grid_eol = None
+    if bool(params.get("include_c1c4", False)) or c_prebuilt:
+        grid_eol = _grid_for_calendar_year(start_year + rsp, rsp)
+    if c_prebuilt:
+        c1_c4 = calculate_c1_c4(**c_prebuilt)
+        c1c4_status = "connected"
+    else:
+        c_inputs, c1c4_status, c1c4_note, _c3_recovered = build_c1c4_scientific_inputs(
+            params, remaining_masses, grid_eol)
+        if c_inputs is None:
+            c1_c4 = {"stage": "C1-C4", "total_tco2e": 0.0, "source_audit": []}
+        else:
+            try:
+                c1_c4 = calculate_c1_c4(**c_inputs)
+            except ScientificInputError as _ce:
+                c1_c4 = {"stage": "C1-C4", "total_tco2e": 0.0, "source_audit": []}
+                c1c4_status = "validation_failed"
+                c1c4_note = (c1c4_note + " " + str(_ce)).strip()
+    c1c4_connected = (c1c4_status == "connected")
+    c1_c4["status"] = c1c4_status
+    c1_c4["note"] = c1c4_note
 
     # Module D: derive from C3 recovered flows when requested (RecoveredOutput_D must not
     # exceed the C3 recovered mass). Otherwise use explicit rows / none.
@@ -1563,7 +1719,7 @@ def run_scientific_lca_from_app_params(params):
         "A5": a5_status,
         "B2-B5": b2b5_status,
         "B6": "connected",      # reached here only if grid + ridership + RSP sourced
-        "C1-C4": _optional_status(c1c4_connected),
+        "C1-C4": c1c4_status,
     }
     _DONE = {"connected", "not_applicable"}
     scope_connected = {s: (st == "connected") for s, st in stage_status.items()}
