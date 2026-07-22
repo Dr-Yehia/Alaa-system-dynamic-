@@ -30,11 +30,13 @@ def scientific_headline(scientific_lca: Mapping[str, Any]) -> dict:
 
 
 def scientific_csv(scientific_lca: Mapping[str, Any]) -> str:
-    """CSV of the canonical headline (same numbers as the cards)."""
+    """CSV of the canonical headline (same numbers as the cards).
+
+    Built with pandas so metric names that contain a comma (e.g. "Module D (tCO2e,
+    separate)") are properly quoted and the file always has exactly two columns.
+    """
     h = scientific_headline(scientific_lca)
-    lines = ["metric,value"]
-    lines += [f"{k},{v}" for k, v in h.items()]
-    return "\n".join(lines) + "\n"
+    return pd.DataFrame({"metric": list(h.keys()), "value": list(h.values())}).to_csv(index=False)
 
 
 def scientific_report_text(scientific_lca: Mapping[str, Any]) -> str:
@@ -135,16 +137,18 @@ def scientific_excel_bytes(scientific_lca: Mapping[str, Any]) -> bytes:
 
 
 def export_parity_ok(scientific_lca: Mapping[str, Any]) -> bool:
-    """True when the headline, the CSV and the Excel Summary carry identical numbers."""
+    """True when the headline, the SERIALIZED CSV and the SERIALIZED Excel Summary carry
+    identical numbers. Both files are re-parsed from bytes (not read from internal dicts),
+    so this proves the actual downloads match the cards."""
     h = scientific_headline(scientific_lca)
-    # CSV parity.
-    csv_map = {}
-    for line in scientific_csv(scientific_lca).strip().splitlines()[1:]:
-        k, v = line.rsplit(",", 1)
-        csv_map[k] = float(v)
-    if any(abs(csv_map.get(k, None) - float(v)) > 1e-9 for k, v in h.items()):
+    # CSV parity — re-parse the serialized CSV; it must have exactly two columns.
+    csv_df = pd.read_csv(io.StringIO(scientific_csv(scientific_lca)))
+    if list(csv_df.columns) != ["metric", "value"]:
         return False
-    # Excel Summary parity.
-    summary = scientific_excel_sheets(scientific_lca)["Summary"]
-    xl_map = {r["metric"]: float(r["value"]) for _, r in summary.iterrows()}
-    return all(abs(xl_map.get(k, None) - float(v)) <= 1e-9 for k, v in h.items())
+    csv_map = {r["metric"]: float(r["value"]) for _, r in csv_df.iterrows()}
+    if any(k not in csv_map or abs(csv_map[k] - float(v)) > 1e-9 for k, v in h.items()):
+        return False
+    # Excel parity — re-parse the serialized workbook's Summary sheet from bytes.
+    xl = pd.read_excel(io.BytesIO(scientific_excel_bytes(scientific_lca)), sheet_name="Summary")
+    xl_map = {r["metric"]: float(r["value"]) for _, r in xl.iterrows()}
+    return all(k in xl_map and abs(xl_map[k] - float(v)) <= 1e-9 for k, v in h.items())

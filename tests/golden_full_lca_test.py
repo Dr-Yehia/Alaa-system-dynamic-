@@ -109,11 +109,25 @@ check("Supplementary S1 has all 15 sheets",
 check("scientific CSV headline matches the cards",
       f"Gross A-C (tCO2e),{h['Gross A-C (tCO2e)']}" in scientific_csv(r))
 
-# End-to-end gate flips True once export parity is confirmed and passed back.
-G2 = dict(G); G2["_export_parity_ok"] = export_parity_ok(r)
+# CSV is a valid 2-column file even though a metric name contains a comma.
+import io as _io
+import pandas as _pd
+_csv_df = _pd.read_csv(_io.StringIO(scientific_csv(r)))
+check("scientific CSV re-parses to exactly two columns (comma-safe)",
+      list(_csv_df.columns) == ["metric", "value"])
+
+# End-to-end gate is computed INTERNALLY (parity verified from serialized files) and only
+# in publication mode — it is NOT an injected parameter.
+G2 = dict(G); G2["publication_mode"] = True
 r2 = run_scientific_lca_from_app_params(G2)
-check("lca_application_end_to_end_complete True with parity confirmed",
+check("lca_application_end_to_end_complete True (internally verified, publication mode)",
       r2["closure_gate"]["lca_application_end_to_end_complete"] is True)
+G3 = dict(G); G3["publication_mode"] = False
+check("end-to-end gate False outside publication mode",
+      run_scientific_lca_from_app_params(G3)["closure_gate"]["lca_application_end_to_end_complete"] is False)
+check("injecting _export_parity_ok does NOT flip the gate",
+      run_scientific_lca_from_app_params(dict(G, _export_parity_ok=True))
+      ["closure_gate"]["lca_application_end_to_end_complete"] is False)
 
 print("\nGOLDEN FULL LCA TESTS PASSED" if ok else "\nGOLDEN TESTS FAILED")
 sys.exit(0 if ok else 1)

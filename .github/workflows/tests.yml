@@ -33,7 +33,8 @@ jobs:
             tests/phase4_acceptance.py \
             tests/phase5_acceptance.py \
             tests/lca_scientific_core_test.py \
-            tests/golden_full_lca_test.py ; do
+            tests/golden_full_lca_test.py \
+            tests/publication_scientific_test.py ; do
             echo "=== $t ==="
             python "$t"
           done

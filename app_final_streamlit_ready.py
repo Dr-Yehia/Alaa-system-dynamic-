@@ -15,7 +15,7 @@ try:
     from lca_scientific_core import ScientificInputError, render_lca_audit_streamlit, OPEN_SOURCE_REQUIREMENTS
     from lca_scientific_integration import add_lca_source_inputs, run_scientific_lca_from_app_params
     from lca_scientific_reporting import (scientific_report_text, scientific_csv, scientific_excel_bytes,
-                                          export_parity_ok)
+                                          export_parity_ok, scientific_headline)
     SCI_LCA_AVAILABLE = True
 except Exception as _sci_import_err:  # pragma: no cover - defensive
     SCI_LCA_AVAILABLE = False
@@ -2973,6 +2973,17 @@ if run_btn or 'results' not in st.session_state:
 results = st.session_state['results']
 params = st.session_state['params']
 
+# ── Central scientific result (authoritative in Publication mode) ──
+# Computed ONCE and reused by the Results cards/exports and the Scientific tab. When the
+# scientific engine cannot yet compute (open sources), Publication falls back to the
+# legacy engine with a clear banner; the scientific engine governs whenever it computes.
+scientific_pub = None
+if SCI_LCA_AVAILABLE and publication_mode:
+    try:
+        scientific_pub = run_scientific_lca_from_app_params(params)
+    except Exception:
+        scientific_pub = None
+
 if not results.get('publication_grade', True):
     st.error(
         "🚫 **NOT publication-grade:** FRP is included but has NO verified A1-A3 carbon factor. "
@@ -3024,59 +3035,90 @@ TABS = {k: _created[i] for i, k in enumerate(_order)}
 # TAB 1: RESULTS & ANALYSIS
 # ═══════════════════════════════════════════════════════════════
 with TABS['results']:
-    if SCI_LCA_AVAILABLE:
-        st.info("ℹ️ The values in this tab are produced by the **legacy/scenario engine**. The "
-                "**🔬 Scientific LCA (referenced)** tab is the authoritative, fully-sourced reporting "
-                "path for publication. During migration the two engines can differ; cite the "
-                "referenced tab. Legacy will move to Developer-mode only once every stage is wired.")
-    # Key metrics row
-    m1, m2, m3, m4, m5 = st.columns(5)
-    with m1:
-        co2_pkm = results['gwp_pkm_gross']
-        st.markdown(f"""
-        <div class="metric-card">
-            <div class="metric-value">{co2_pkm:.4f}</div>
-            <div class="metric-label">kg CO₂e / passenger-km (gross)</div>
-            <div class="metric-delta">A1-C4 gross · B6 {results['active_b6_mode']}</div>
-        </div>""", unsafe_allow_html=True)
-    with m2:
-        st.markdown(f"""
-        <div class="metric-card">
-            <div class="metric-value">{results['gross_a1_c4_tons']:,.0f}</div>
-            <div class="metric-label">Gross A1-C4 LCA CO₂ (tons)</div>
-            <div class="metric-delta">A5: {results['a5']['a5_total_tons']:,.0f}t · Module D separate</div>
-        </div>""", unsafe_allow_html=True)
-    with m3:
-        st.markdown(f"""
-        <div class="metric-card">
-            <div class="metric-value">{results['total_ee']/1000:,.0f}</div>
-            <div class="metric-label">Embodied Energy (GJ)</div>
-            <div class="metric-delta">Annual Op: {results['annual_operational_energy']:,.0f} kWh</div>
-        </div>""", unsafe_allow_html=True)
-    with m4:
-        st.markdown(f"""
-        <div class="metric-card">
-            <div class="metric-value">${results['npv_lcc_m']:,.0f}M</div>
-            <div class="metric-label">LCC NPV Cost</div>
-            <div class="metric-delta">Jobs: {results['total_jobs']:,.0f}</div>
-        </div>""", unsafe_allow_html=True)
-    with m5:
-        if publication_mode:
-            # R7: renewable is a dashboard-only input → hidden in publication mode.
-            # Show the publication-grade net result (Module D reported separately).
+    if scientific_pub is not None:
+        # PUBLICATION: the headline cards are produced by the SCIENTIFIC engine (canonical).
+        # Module D is shown SEPARATELY — there is no "Net incl. Module D" card.
+        _h = scientific_headline(scientific_pub)
+        st.success("🟢 **Publication mode — scientific engine is authoritative.** These headline "
+                   "cards, the report, CSV and Excel below are produced by the referenced "
+                   "scientific engine (identical to the 🔬 Scientific LCA tab). Legacy dashboards "
+                   "are Developer-mode only.")
+        m1, m2, m3, m4, m5 = st.columns(5)
+        with m1:
+            st.markdown(f"""<div class="metric-card"><div class="metric-value">{_h['GWP (kgCO2e/pkm)']:.4f}</div>
+                <div class="metric-label">kg CO₂e / passenger-km (gross)</div>
+                <div class="metric-delta">Scientific A1-C4 (connected scope)</div></div>""", unsafe_allow_html=True)
+        with m2:
+            st.markdown(f"""<div class="metric-card"><div class="metric-value">{_h['Gross A-C (tCO2e)']:,.0f}</div>
+                <div class="metric-label">Gross A1-C4 (tCO₂e)</div>
+                <div class="metric-delta">A5 {_h['A5 (tCO2e)']:,.0f}t · C1-C4 {_h['C1-C4 (tCO2e)']:,.0f}t</div></div>""", unsafe_allow_html=True)
+        with m3:
+            st.markdown(f"""<div class="metric-card"><div class="metric-value">{_h['Module D (tCO2e, separate)']:,.0f}</div>
+                <div class="metric-label">Module D (tCO₂e) — SEPARATE</div>
+                <div class="metric-delta">never inside Gross A-C</div></div>""", unsafe_allow_html=True)
+        with m4:
+            st.markdown(f"""<div class="metric-card"><div class="metric-value">${results['npv_lcc_m']:,.0f}M</div>
+                <div class="metric-label">LCC NPV Cost</div>
+                <div class="metric-delta">LCCA (separate from LCA)</div></div>""", unsafe_allow_html=True)
+        with m5:
+            _g = scientific_pub.get("closure_gate", {})
+            st.markdown(f"""<div class="metric-card"><div class="metric-value">{'🟢' if _g.get('full_wlca_calculation_complete') else '🟡'}</div>
+                <div class="metric-label">Full-WLCA calculation</div>
+                <div class="metric-delta">{scientific_pub.get('scope_label','')[:38]}</div></div>""", unsafe_allow_html=True)
+    else:
+        if SCI_LCA_AVAILABLE and publication_mode:
+            st.warning("🟡 **Publication mode — scientific sources still open.** The scientific engine "
+                       "cannot yet report a number (fill the 🔬 provenance inputs). The cards below are "
+                       "the legacy/scenario engine, shown ONLY until the scientific sources are complete.")
+        elif SCI_LCA_AVAILABLE:
+            st.info("ℹ️ Developer mode: legacy/scenario cards. The 🔬 Scientific LCA tab is the "
+                    "authoritative publication path.")
+        # Key metrics row (legacy)
+        m1, m2, m3, m4, m5 = st.columns(5)
+        with m1:
+            co2_pkm = results['gwp_pkm_gross']
             st.markdown(f"""
             <div class="metric-card">
-                <div class="metric-value">{results['net_with_module_d_tons']:,.0f}</div>
-                <div class="metric-label">Net A1-C4 incl. Module D (tons)</div>
-                <div class="metric-delta">Module D credit {results['module_d_tons']:,.0f}t reported separately</div>
+                <div class="metric-value">{co2_pkm:.4f}</div>
+                <div class="metric-label">kg CO₂e / passenger-km (gross)</div>
+                <div class="metric-delta">A1-C4 gross · B6 {results['active_b6_mode']}</div>
             </div>""", unsafe_allow_html=True)
-        else:
+        with m2:
             st.markdown(f"""
             <div class="metric-card">
-                <div class="metric-value">{params['renewable_share']}%</div>
-                <div class="metric-label">Renewable (dashboard-only)</div>
-                <div class="metric-delta">Grid carbon: {results['effective_carbon_intensity']:.3f} kg/kWh</div>
+                <div class="metric-value">{results['gross_a1_c4_tons']:,.0f}</div>
+                <div class="metric-label">Gross A1-C4 LCA CO₂ (tons)</div>
+                <div class="metric-delta">A5: {results['a5']['a5_total_tons']:,.0f}t · Module D separate</div>
             </div>""", unsafe_allow_html=True)
+        with m3:
+            st.markdown(f"""
+            <div class="metric-card">
+                <div class="metric-value">{results['total_ee']/1000:,.0f}</div>
+                <div class="metric-label">Embodied Energy (GJ)</div>
+                <div class="metric-delta">Annual Op: {results['annual_operational_energy']:,.0f} kWh</div>
+            </div>""", unsafe_allow_html=True)
+        with m4:
+            st.markdown(f"""
+            <div class="metric-card">
+                <div class="metric-value">${results['npv_lcc_m']:,.0f}M</div>
+                <div class="metric-label">LCC NPV Cost</div>
+                <div class="metric-delta">Jobs: {results['total_jobs']:,.0f}</div>
+            </div>""", unsafe_allow_html=True)
+        with m5:
+            if publication_mode:
+                st.markdown(f"""
+                <div class="metric-card">
+                    <div class="metric-value">{results['gross_a1_c4_tons']:,.0f}</div>
+                    <div class="metric-label">Gross A1-C4 (tons)</div>
+                    <div class="metric-delta">Module D {results['module_d_tons']:,.0f}t reported separately</div>
+                </div>""", unsafe_allow_html=True)
+            else:
+                st.markdown(f"""
+                <div class="metric-card">
+                    <div class="metric-value">{params['renewable_share']}%</div>
+                    <div class="metric-label">Renewable (dashboard-only)</div>
+                    <div class="metric-delta">Grid carbon: {results['effective_carbon_intensity']:.3f} kg/kWh</div>
+                </div>""", unsafe_allow_html=True)
 
     if results.get('sd_enabled'):
         st.info(
@@ -3357,6 +3399,9 @@ Assessment Date: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
 Methodology: Gross modular A1-C4 LCA (A1-A3 + A4 + optional A5 + activity-based B2-B5 + active B6 + optional C1-C4) + NPV-based LCCA.
 Carbon factors: ICE Database Educational V4.1 (Oct 2025). Module D (recycling) reported separately per EN 15804. Li and Zhu (2022) is benchmark-only.
 """
+        # PUBLICATION: the report + downloads are the canonical scientific output.
+        if scientific_pub is not None:
+            report = scientific_report_text(scientific_pub)
         st.code(report, language=None)
 
         # Export buttons
@@ -3381,7 +3426,8 @@ Carbon factors: ICE Database Educational V4.1 (Oct 2025). Module D (recycling) r
             ]
             if not publication_mode:
                 csv_rows.append({'Category': 'Display-only', 'Metric': 'Dashboard Display Score', 'Value': f"{results['dashboard_display_score']:.1f}", 'Unit': '/100'})
-            csv_data = pd.DataFrame(csv_rows).to_csv(index=False)
+            csv_data = (scientific_csv(scientific_pub) if scientific_pub is not None
+                        else pd.DataFrame(csv_rows).to_csv(index=False))
             st.download_button("📥 Download CSV", csv_data,
                               file_name=f"monorail_data_{datetime.now().strftime('%Y%m%d')}.csv")
         with exp3:
@@ -3403,7 +3449,9 @@ Carbon factors: ICE Database Educational V4.1 (Oct 2025). Module D (recycling) r
                 xl_metric.append('Dashboard Display Score'); xl_value.append(results['dashboard_display_score']); xl_unit.append('/100 display-only')
             with pd.ExcelWriter(excel_buf, engine='openpyxl') as writer:
                 pd.DataFrame({'Metric': xl_metric, 'Value': xl_value, 'Unit': xl_unit}).to_excel(writer, sheet_name='Summary', index=False)
-            st.download_button("📥 Download Excel", excel_buf.getvalue(),
+            _excel_out = (scientific_excel_bytes(scientific_pub) if scientific_pub is not None
+                          else excel_buf.getvalue())
+            st.download_button("📥 Download Excel", _excel_out,
                               file_name=f"monorail_report_{datetime.now().strftime('%Y%m%d')}.xlsx",
                               mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 

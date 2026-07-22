@@ -1911,10 +1911,20 @@ def run_scientific_lca_from_app_params(params):
         and publication_readiness["project_specific_data_complete"]
         and publication_readiness["uncertainty_complete"])
     # 2b) lca_application_end_to_end_complete: the scientific engine governs the reported
-    #     outputs and the exports are parity-checked. This is set by the caller/exporter
-    #     when it confirms cards == CSV == Excel from the scientific core; default False.
+    #     outputs AND the SERIALIZED exports (CSV + Excel) match the headline. Parity is
+    #     verified INTERNALLY here (re-parsing the actual files), never injected by the
+    #     caller, and it only holds in publication mode where the scientific engine is the
+    #     single source.
+    export_parity_internal = False
+    if full_wlca_calculation_complete:
+        try:
+            from lca_scientific_reporting import export_parity_ok as _epok
+            export_parity_internal = bool(_epok(final_lca))
+        except Exception:
+            export_parity_internal = False
     lca_application_end_to_end_complete = bool(
-        full_wlca_calculation_complete and params.get("_export_parity_ok", False))
+        full_wlca_calculation_complete and export_parity_internal
+        and bool(params.get("publication_mode", False)))
     closure_gate = {
         "full_wlca_calculation_complete": full_wlca_calculation_complete,
         "standards_reporting_complete": standards_reporting_complete,
