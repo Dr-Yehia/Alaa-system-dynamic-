@@ -839,5 +839,17 @@ check("Module D (from C3) is non-zero and SEPARATE from gross",
       abs(_r_cd["module_D1_signed_tCO2e_separate"]) > 0.0
       and abs(_r_cd["gross_A_C_tCO2e"] - sum(_r_cd["reported_stage_tco2e"].values())) < 1e-6)
 
+# A5 no default 100% landfill in publication mode: a waste material without entered shares
+# → incomplete (a documented scenario is required, not a silent default).
+_a5_nolf = dict(_a5_lf); _a5_nolf["publication_mode"] = True
+_a5_nolf["a5_treatment_shares"] = {}  # concrete has a waste rate but NO shares entered
+_r_nolf = run_scientific_lca_from_app_params(_a5_nolf)
+check("A5 no default 100% landfill in publication (shares required)",
+      _r_nolf["stage_status"]["A5"] == "incomplete_sources")
+
+# C1/C2/C3/C4 independent sub-statuses are exposed.
+check("C1-C4 exposes independent submodule statuses",
+      set(_r_c["modules"]["C1_C4"]["submodule_status"]) == {"C1", "C2", "C3", "C4"})
+
 print("\nALL SCIENTIFIC CORE TESTS PASSED" if ok else "\nSOME TESTS FAILED")
 sys.exit(0 if ok else 1)

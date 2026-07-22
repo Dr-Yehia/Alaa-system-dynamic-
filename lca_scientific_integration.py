@@ -936,7 +936,16 @@ def build_a5_scientific_activity(params, masses, grid_construction):
 
         # A5.3 waste treatment — verified per-tonne factors only; shares must be valid;
         # NO landfill-as-recycling fallback (a missing recycling factor → incomplete_sources).
-        shares = shares_ui.get(material, {"landfill": 1.0, "recycle": 0.0, "reuse": 0.0})
+        # In publication mode there is NO default 100% landfill: shares must be entered.
+        if material not in shares_ui:
+            if bool(params.get("publication_mode", False)):
+                status = "incomplete_sources"
+                notes.append(f"A5 {material}: treatment shares not entered (no default 100% "
+                             "landfill in publication mode).")
+                continue
+            shares = {"landfill": 1.0, "recycle": 0.0, "reuse": 0.0}
+        else:
+            shares = shares_ui.get(material)
         lf = float(shares.get("landfill", 0.0))
         rc = float(shares.get("recycle", 0.0))
         ru = float(shares.get("reuse", 0.0))
