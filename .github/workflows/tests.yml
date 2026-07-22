@@ -32,7 +32,33 @@ jobs:
             tests/phase3c_acceptance.py \
             tests/phase4_acceptance.py \
             tests/phase5_acceptance.py \
-            tests/lca_scientific_core_test.py ; do
+            tests/lca_scientific_core_test.py \
+            tests/golden_full_lca_test.py ; do
             echo "=== $t ==="
             python "$t"
           done
+
+  real-streamlit-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install the real runtime (incl. Streamlit)
+        run: python -m pip install --upgrade pip -r requirements.txt
+      - name: Launch the real Streamlit app headless and probe health
+        run: |
+          set -e
+          streamlit run app_final_streamlit_ready.py --server.headless true --server.port 8599 &
+          APP_PID=$!
+          for i in $(seq 1 30); do
+            if curl -sf http://localhost:8599/_stcore/health >/dev/null; then
+              echo "Streamlit health OK"; break
+            fi
+            sleep 2
+          done
+          curl -sf http://localhost:8599/_stcore/health
+          kill $APP_PID || true
+      - name: Golden fixture + export parity (scientific engine)
+        run: python tests/golden_full_lca_test.py

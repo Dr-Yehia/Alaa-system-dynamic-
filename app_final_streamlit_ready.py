@@ -14,6 +14,8 @@ import io
 try:
     from lca_scientific_core import ScientificInputError, render_lca_audit_streamlit, OPEN_SOURCE_REQUIREMENTS
     from lca_scientific_integration import add_lca_source_inputs, run_scientific_lca_from_app_params
+    from lca_scientific_reporting import (scientific_report_text, scientific_csv, scientific_excel_bytes,
+                                          export_parity_ok)
     SCI_LCA_AVAILABLE = True
 except Exception as _sci_import_err:  # pragma: no cover - defensive
     SCI_LCA_AVAILABLE = False
@@ -2759,6 +2761,7 @@ with st.sidebar:
         eol_table = {m: {'reuse': 0.0, 'recycle': 0.0, 'secondary_ef': 0.0} for m in MATERIALS_UI}
         c2_routes = None
         c1c4_rows = []
+        module_d_rows = []
         c1_diesel_source_sci, c1_electricity_source_sci = "", ""
         if include_c1c4:
             st.markdown("### ♻️ C1–C4 End-of-Life")
@@ -2786,6 +2789,24 @@ with st.sidebar:
                     for _, _r in _c1c4_edit.iterrows():
                         c1c4_rows.append({k: (float(_r[k] or 0.0) if k in _c1c4_num else str(_r[k]))
                                           for k in _c1c4_df0.columns})
+                with st.expander("🔬 Module D editor (from C3 recovered flows only)", expanded=False):
+                    st.caption("Module D is derived ONLY from C3 recovered flows (RecoveredOutput_D ≤ "
+                               "C3 recovered mass) and is reported SEPARATELY — never inside Gross A-C.")
+                    _md0 = pd.DataFrame({
+                        "material": MATERIALS_UI, "recovered_output_kg": [0.0]*6,
+                        "secondary_input_kg": [0.0]*6, "substitution_ratio": [0.0]*6,
+                        "primary_ef": [0.0]*6, "primary_source": [""]*6,
+                        "recovery_ef": [0.0]*6, "recovery_source": [""]*6,
+                        "flow_source": [""]*6, "substitution_source": [""]*6})
+                    _md_edit = pd.DataFrame(st.data_editor(
+                        _md0, hide_index=True, use_container_width=True,
+                        key="module_d_sci_editor", disabled=["material"]))
+                    _md_num = {"recovered_output_kg", "secondary_input_kg", "substitution_ratio",
+                               "primary_ef", "recovery_ef"}
+                    for _, _r in _md_edit.iterrows():
+                        if float(_r["recovered_output_kg"] or 0.0) > 0.0:
+                            module_d_rows.append({k: (float(_r[k] or 0.0) if k in _md_num else str(_r[k]))
+                                                  for k in _md0.columns})
             eol_transport_km = st.number_input("EOL transport (km)", value=50.0, min_value=0.0, step=10.0, key="eol_transport_km")
             eol_reuse_ef = st.number_input("Reuse EF (kgCO₂e/kg)", value=0.0, min_value=0.0, step=0.01, format="%.3f", key="eol_reuse_ef")
             eol_recycle_ef = st.number_input("Recycle EF (kgCO₂e/kg)", value=0.0, min_value=0.0, step=0.01, format="%.3f", key="eol_recycle_ef")
@@ -2927,7 +2948,7 @@ current_params = {
     'b2b5_event_rows': b2b5_event_rows, 'b2b5_module_declarations': b2b5_module_declarations,
     'include_c1c4': include_c1c4, 'c1_diesel_l': c1_diesel_l, 'c1_elec_kwh': c1_elec_kwh,
     'c1c4_rows': c1c4_rows, 'c1_diesel_source': c1_diesel_source_sci,
-    'c1_electricity_source': c1_electricity_source_sci,
+    'c1_electricity_source': c1_electricity_source_sci, 'module_d_rows': module_d_rows,
     'eol_transport_km': eol_transport_km, 'eol_reuse_ef': eol_reuse_ef, 'eol_recycle_ef': eol_recycle_ef,
     'eol_disposal_ef': eol_disposal_ef, 'eol_recovery_eta': eol_recovery_eta, 'eol_cost_m': eol_cost_m,
     'c2_routes': c2_routes,
@@ -3560,6 +3581,25 @@ if 'sci_lca' in TABS:
                     st.dataframe(pd.DataFrame(_mb), use_container_width=True, hide_index=True)
 
             render_lca_audit_streamlit(st, scientific_lca)
+
+            # ── Canonical scientific exports (cards == CSV == Excel by construction) ──
+            st.markdown("#### 📤 Canonical exports (scientific engine — authoritative)")
+            _parity = export_parity_ok(scientific_lca)
+            st.caption(f"Export parity (cards == CSV == Excel Summary): "
+                       f"{'🟢 pass' if _parity else '🔴 fail'}. These downloads are the "
+                       "publication record; the legacy Results tab is illustrative only.")
+            st.code(scientific_report_text(scientific_lca))
+            _e1, _e2 = st.columns(2)
+            with _e1:
+                st.download_button("📥 Scientific CSV", scientific_csv(scientific_lca),
+                                   file_name=f"scientific_lca_{datetime.now().strftime('%Y%m%d')}.csv",
+                                   mime="text/csv", key="sci_csv_dl")
+            with _e2:
+                st.download_button("📥 Supplementary S1 (Excel, 15 sheets)",
+                                   scientific_excel_bytes(scientific_lca),
+                                   file_name=f"supplementary_S1_{datetime.now().strftime('%Y%m%d')}.xlsx",
+                                   mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                                   key="sci_xlsx_dl")
         else:
             st.info("This referenced engine is intentionally strict. Provide the sourced inputs in the "
                     "sidebar expander **🔬 Scientific LCA provenance (referenced core)** to unlock it: "

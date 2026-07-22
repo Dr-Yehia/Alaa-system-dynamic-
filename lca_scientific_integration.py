@@ -1299,6 +1299,35 @@ def chronological_mass_balance(initial_masses, events):
     return remaining, rows, True, ""
 
 
+def build_module_d_cfg_from_rows(rows):
+    """Build the Module-D-from-C3 config from editor rows (numeric factors → Evidence)."""
+    cfg = {}
+    for r in rows or []:
+        mat = str(r.get("material", "")).strip().lower()
+        recovered = float(r.get("recovered_output_kg", 0.0) or 0.0)
+        if not mat or recovered <= 0.0:
+            continue
+        prim = float(r.get("primary_ef", 0.0) or 0.0)
+        rec = float(r.get("recovery_ef", 0.0) or 0.0)
+        psrc = str(r.get("primary_source", "")).strip()
+        rsrc = str(r.get("recovery_source", "")).strip()
+        if prim <= 0.0 or not psrc or not rsrc:
+            raise ScientificInputError(
+                f"Module D {mat}: primary EF (+source) and recovery EF source are required.")
+        cfg[mat] = {
+            "recovered_output_kg": recovered,
+            "secondary_input_kg": float(r.get("secondary_input_kg", 0.0) or 0.0),
+            "substitution_ratio": float(r.get("substitution_ratio", 0.0) or 0.0),
+            "flow_source": str(r.get("flow_source", "")).strip() or psrc,
+            "substitution_source": str(r.get("substitution_source", "")).strip() or psrc,
+            "primary_factor": make_project_evidence(
+                f"D-PRIM-{mat}", prim, "kgCO2e/kg", "D1", psrc, "Module D primary factor", "A1-A3"),
+            "recovery_factor": make_project_evidence(
+                f"D-REC-{mat}", rec, "kgCO2e/kg", "D1", rsrc, "Module D recovery factor", "recovery"),
+        }
+    return cfg
+
+
 def build_c1c4_scientific_inputs(params, remaining_masses, grid_eol):
     """Build calculate_c1_c4 inputs from the C-stage editor, using the REMAINING mass
     after B2-B5 (the user cannot type a free C-stage mass).
@@ -1309,10 +1338,10 @@ def build_c1c4_scientific_inputs(params, remaining_masses, grid_eol):
     override), reuse needs a documented (even 0) processing EF. C1 uses the EOL-year grid.
     """
     if not bool(params.get("include_c1c4", False)):
-        return None, "unconnected", "C1-C4 module off.", {}
+        return None, "unconnected", "C1-C4 module off.", {}, {}
     rows = params.get("c1c4_rows") or []
     if not rows:
-        return None, "unconnected", "C1-C4 on but no rows entered.", {}
+        return None, "unconnected", "C1-C4 on but no rows entered.", {}, {}
 
     status, notes = "connected", []
     # C1 deconstruction fuel/electricity (EOL-year grid).
@@ -1402,11 +1431,37 @@ def build_c1c4_scientific_inputs(params, remaining_masses, grid_eol):
             "disposal_factor": disposal_f})
         recovered[mat] = mass * (reuse + recycle)
 
+    # Independent C1/C2/C3/C4 statuses. C1 (fuel/elec) and C2 (transport) that are zero
+    # must be DECLARED (documented_zero / N-A), not silently zero.
+    decls = params.get("c1c4_submodule_declarations") or {}
+    def _sub_status(entered, decl_key):
+        if entered:
+            return "connected"
+        d = _valid_module_declaration(decls.get(decl_key))
+        return d or "unconnected"
+    c1_entered = (c1_diesel is not None) or (c1_elec is not None)
+    c2_entered = bool(c2_legs)
+    c3_entered = any(float(t.get("reuse_share", 0)) + float(t.get("recycle_share", 0)) > 0
+                     for t in treatment_rows)
+    c4_entered = any(float(t.get("disposal_share", 0)) > 0 for t in treatment_rows)
+    # C3/C4 shares always carry a source (share_source enforced above), so a 0 reuse/
+    # recycle or 0 disposal is a documented zero, not a silent one.
+    sub_status = {
+        "C1": _sub_status(c1_entered, "C1"),
+        "C2": _sub_status(c2_entered, "C2"),
+        "C3": "connected" if c3_entered else "documented_zero",
+        "C4": "connected" if c4_entered else "documented_zero",
+    }
+    # C3/C4 are inherent to the treatment rows; C1/C2 must be connected or declared.
+    if status == "connected":
+        if sub_status["C1"] == "unconnected" or sub_status["C2"] == "unconnected":
+            status = "incomplete_sources"
+            notes.append("C1 or C2 is zero without a documented_zero / N-A declaration.")
     c_inputs = dict(
         c1_diesel_litres=c1_diesel, c1_diesel_scope="wtw", c1_electricity_kwh=c1_elec,
         c1_grid=grid_eol if c1_elec is not None else None,
         c2_transport_legs=c2_legs, treatment_rows=treatment_rows)
-    return c_inputs, status, " ".join(notes), recovered
+    return c_inputs, status, " ".join(notes), recovered, sub_status
 
 
 def run_scientific_lca_from_app_params(params):
@@ -1675,13 +1730,15 @@ def run_scientific_lca_from_app_params(params):
     # EOL-year grid (C1 electricity uses the grid CI at end of life, not year 1). Built
     # only when C1-C4 is active so an annual series need only cover the years it actually uses.
     grid_eol = None
+    c1c4_sub_status = {"C1": "unconnected", "C2": "unconnected", "C3": "unconnected", "C4": "unconnected"}
+    _c3_recovered = {}
     if bool(params.get("include_c1c4", False)) or c_prebuilt:
         grid_eol = _grid_for_calendar_year(start_year + rsp, rsp)
     if c_prebuilt:
         c1_c4 = calculate_c1_c4(**c_prebuilt)
         c1c4_status = "connected"
     else:
-        c_inputs, c1c4_status, c1c4_note, _c3_recovered = build_c1c4_scientific_inputs(
+        c_inputs, c1c4_status, c1c4_note, _c3_recovered, c1c4_sub_status = build_c1c4_scientific_inputs(
             params, remaining_masses, grid_eol)
         if c_inputs is None:
             c1_c4 = {"stage": "C1-C4", "total_tco2e": 0.0, "source_audit": []}
@@ -1695,15 +1752,25 @@ def run_scientific_lca_from_app_params(params):
     c1c4_connected = (c1c4_status == "connected")
     c1_c4["status"] = c1c4_status
     c1_c4["note"] = c1c4_note
+    c1_c4["submodule_status"] = c1c4_sub_status
 
-    # Module D: derive from C3 recovered flows when requested (RecoveredOutput_D must not
-    # exceed the C3 recovered mass). Otherwise use explicit rows / none.
-    d_rows = params.get("module_d1_scientific_rows") or []
-    if params.get("module_d_from_c3") and c1c4_connected:
-        d_rows = build_module_d_rows_from_c3(c1_c4, params.get("module_d_from_c3"))
+    # Module D: derive from C3 recovered flows only (RecoveredOutput_D ≤ C3 recovered mass);
+    # never from independent free rows in publication. Built from the Module-D editor rows.
+    module_d_cfg = params.get("module_d_from_c3")
+    if module_d_cfg is None and params.get("module_d_rows"):
+        module_d_cfg = build_module_d_cfg_from_rows(params.get("module_d_rows"))
+    d_rows = []
+    module_d_note = ""
+    if module_d_cfg and c1c4_connected:
+        try:
+            d_rows = build_module_d_rows_from_c3(c1_c4, module_d_cfg)
+        except ScientificInputError as _de:
+            d_rows = []; module_d_note = str(_de)
+    elif module_d_cfg and not c1c4_connected:
+        module_d_note = "Module D needs a connected C1-C4 (C3 recovered flows) to derive from."
     module_d1 = calculate_module_d1(d_rows) if d_rows else {
         "stage": "D1", "signed_tco2e": 0.0, "source_audit": [],
-        "reporting_note": "Module D not calculated."
+        "reporting_note": module_d_note or "Module D not calculated."
     }
 
     # ── Per-stage status vocabulary ──────────────────────────────────────────
@@ -1834,9 +1901,15 @@ def run_scientific_lca_from_app_params(params):
         standards_reporting_complete
         and publication_readiness["project_specific_data_complete"]
         and publication_readiness["uncertainty_complete"])
+    # 2b) lca_application_end_to_end_complete: the scientific engine governs the reported
+    #     outputs and the exports are parity-checked. This is set by the caller/exporter
+    #     when it confirms cards == CSV == Excel from the scientific core; default False.
+    lca_application_end_to_end_complete = bool(
+        full_wlca_calculation_complete and params.get("_export_parity_ok", False))
     closure_gate = {
         "full_wlca_calculation_complete": full_wlca_calculation_complete,
         "standards_reporting_complete": standards_reporting_complete,
+        "lca_application_end_to_end_complete": lca_application_end_to_end_complete,
         "q1_evidence_ready": q1_evidence_ready,
     }
     # Backward-compatible alias: the old boolean now means "calculation complete", and
@@ -1859,8 +1932,11 @@ def run_scientific_lca_from_app_params(params):
     # Alias: the combined value is a PARTIAL, connected-scope total until every stage is wired.
     final_lca["connected_scope_tCO2e"] = final_lca["gross_A_C_tCO2e"]
     # Scope label is generated from the status map, never hand-written, so it can never
-    # drift from what was actually summed.
-    final_lca["scope_label"] = "Scientific partial LCA: " + " + ".join(scope_included)
+    # drift from what was actually summed. Once every stage is done it is a FULL WLCA.
+    _all_done = all(stage_status[s] in _DONE for s in stage_status)
+    final_lca["scope_label"] = (
+        "Scientific FULL cradle-to-grave LCA (A1-C4): " if _all_done
+        else "Scientific partial LCA: ") + " + ".join(scope_included)
     final_lca["a4_note"] = a4_note
     final_lca["mass_balance"] = mass_balance
     final_lca["modules"] = {

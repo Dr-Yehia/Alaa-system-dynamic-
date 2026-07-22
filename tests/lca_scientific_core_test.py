@@ -462,8 +462,9 @@ check("A4 negative distance fails",
 
 # closure gate: three levels, all False in the current (B2-B5/C1-C4 unwired) state.
 _gate = _r_lf["closure_gate"]
-check("closure gate has three levels",
-      {"full_wlca_calculation_complete", "standards_reporting_complete", "q1_evidence_ready"} == set(_gate))
+check("closure gate has the four closure levels",
+      {"full_wlca_calculation_complete", "standards_reporting_complete",
+       "lca_application_end_to_end_complete", "q1_evidence_ready"} == set(_gate))
 check("full_wlca_calculation_complete False while B2-B5/C1-C4 unwired",
       _gate["full_wlca_calculation_complete"] is False)
 check("q1_evidence_ready False (constant grid + uncertainty pending)",
