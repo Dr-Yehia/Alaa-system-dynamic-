@@ -9,18 +9,24 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    env:
+      PYTHONPATH: ${{ github.workspace }}/compat:${{ github.workspace }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+      - name: Materialize historical root aliases for regression only
+        run: |
+          set -e
+          for f in compat/*.py; do
+            ln -s "$f" "$(basename "$f")"
+          done
       - name: Install headless test dependencies
-        # The suites exec the Streamlit app against an in-process stub, so real
-        # Streamlit is not required; only the compute/data deps are.
         run: python -m pip install --upgrade pip pandas numpy plotly openpyxl
       - name: Run full test suite
         run: |
-          set -e
+          status=0
           for t in \
             tests/ui_keys_test.py \
             tests/smoke_headless.py \
@@ -50,11 +56,17 @@ jobs:
             tests/benefits_scientific_integration_test.py \
             tests/benefits_publication_gate_test.py ; do
             echo "=== $t ==="
-            python "$t"
+            if ! python "$t"; then
+              echo "::error title=Historical regression failure::$t"
+              status=1
+            fi
           done
+          exit $status
 
   real-streamlit-smoke:
     runs-on: ubuntu-latest
+    env:
+      PYTHONPATH: ${{ github.workspace }}/compat:${{ github.workspace }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
