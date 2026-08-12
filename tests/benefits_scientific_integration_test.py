@@ -441,6 +441,92 @@ check(
     not any(k in str(good.physical) + str(good.monetized_cba) for k in ("npv_lcc", "gross_a1_c4")),
 )
 
+
+# ---------------------------------------------------------------------------
+# Export parity — the spreadsheet must say what the screen says
+# ---------------------------------------------------------------------------
+
+import io  # noqa: E402
+import benefits_scientific_reporting as reporting  # noqa: E402
+
+check(
+    "reporting imports no LCA/LCC engine and no Streamlit",
+    all(
+        token not in open(os.path.join(ROOT, "benefits_scientific_reporting.py"), encoding="utf-8").read()
+        for token in ("lca_scientific", "lcc_scientific", "legacy_lca", "legacy_lcc", "import streamlit")
+    ),
+)
+check("reporting still loads no LCA module", "lca_scientific_core" not in sys.modules)
+
+for name, subject in (("populated", good), ("empty", empty), ("jobs", jobs)):
+    parity_ok, problems = reporting.export_parity_ok(subject)
+    for problem in problems[:5]:
+        print("     parity problem:", problem)
+    check(f"export parity holds for the {name} result", parity_ok)
+
+table = reporting.scientific_benefits_table(good)
+check("export table has one row per KPI", len(table) == len(good.rows))
+check(
+    "export table carries the full provenance column contract",
+    list(table.columns) == reporting.EXPORT_COLUMNS,
+)
+check(
+    "no export row carries a value without an equation or an official-report note",
+    not [
+        r for _, r in table.iterrows()
+        if r["value"] is not None and not r["equation_id"] and r["status"] not in
+        {"OFFICIAL-REPORTED", "SOURCE-OPEN", "NOT-APPLICABLE", "BLOCKED", "SCENARIO-ONLY"}
+    ],
+)
+check(
+    "the export contains no combined total row",
+    not any("total benefit" in str(v).lower() for v in table["kpi_name"]),
+)
+
+csv_text = reporting.scientific_benefits_csv(good)
+check("CSV names every KPI id", all(r["kpi_id"] in csv_text for r in good.rows))
+check("CSV carries the equation ids", "BEN-PKM-01" in csv_text)
+check("CSV carries a resolvable URL", "https://" in csv_text)
+
+excel_bytes = reporting.scientific_benefits_excel_bytes(good)
+check("Excel export is non-empty", len(excel_bytes) > 5000)
+try:
+    import openpyxl  # noqa: E402
+
+    workbook = openpyxl.load_workbook(io.BytesIO(excel_bytes))
+    check(
+        "Excel carries the eight declared sheets in order",
+        workbook.sheetnames == reporting.EXCEL_SHEETS,
+    )
+    check(
+        "the reference registry sheet covers every record",
+        workbook["Reference_Registry"].max_row == len(reporting.REFERENCES) + 1,
+    )
+    check(
+        "the equation audit sheet covers every equation",
+        workbook["Equation_Audit"].max_row == len(reporting.EQUATIONS) + 1,
+    )
+except ImportError:  # pragma: no cover - openpyxl is a declared dependency
+    check("openpyxl available for the Excel parity check", False)
+
+appendix = reporting.scientific_benefits_source_appendix(good)
+check("appendix names every KPI", all(r["kpi_id"] in appendix for r in good.rows))
+check("appendix resolves every reference", all(ref in appendix for ref in reporting.REFERENCES))
+check("appendix states the blocked topics", all(t in appendix for t in reporting.BLOCKED_TOPICS))
+check("appendix states there is no combined total", "no combined 'Total Benefits'" in appendix)
+check("appendix carries the double-count rules", "never reduce LCC NPV" in appendix)
+check(
+    "appendix distinguishes the method source from the numeric source",
+    "method source" in appendix and "numeric source" in appendix,
+)
+
+open_table = reporting.scientific_benefits_source_open_table(empty)
+check("source-open sheet lists the open items", len(open_table) >= 3)
+check(
+    "every blocked row in the sheet says what would close it",
+    all(bool(r["closes_with"]) for _, r in open_table.iterrows() if r["kind"] == "BLOCKED"),
+)
+
 print()
 print("RESULT:", "PASS" if ok else "FAIL")
 sys.exit(0 if ok else 1)

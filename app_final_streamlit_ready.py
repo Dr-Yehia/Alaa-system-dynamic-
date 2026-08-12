@@ -58,6 +58,13 @@ from benefits_scientific_integration import (
     ScientificBenefitsResult,
     run_scientific_benefits_from_params,
 )
+from benefits_scientific_reporting import (
+    export_parity_ok as benefits_export_parity_ok,
+    scientific_benefits_csv,
+    scientific_benefits_excel_bytes,
+    scientific_benefits_source_appendix,
+    scientific_benefits_table,
+)
 # The application NO LONGER defines the assessment engine. It calls the orchestrator,
 # which runs LCA, LCC and Benefits as independent domains and assembles the combined
 # dictionary the legacy dashboard expects.
@@ -3120,6 +3127,42 @@ with TABS['sci_benefits']:
     with st.expander("🧾 Double-count rules enforced by this domain", expanded=False):
         for _rule in scientific_benefits.audit["double_count_rules"]:
             st.markdown(f"- {_rule}")
+
+    # ── Exports ───────────────────────────────────────────────────────────
+    # The exports carry more provenance columns than the screen does, because a
+    # reviewer working from a spreadsheet cannot click through to the registry.
+    st.markdown("---")
+    st.markdown("#### 📤 Traceable exports")
+    _ben_parity_ok, _ben_parity_problems = benefits_export_parity_ok(scientific_benefits)
+    if _ben_parity_ok:
+        st.caption("Export parity verified: every exported row matches the computed "
+                   "result, and every publication-eligible value resolves to a "
+                   "registered equation and a registered numeric source.")
+    else:
+        st.error("Export parity FAILED — exports disagree with the computed result:")
+        for _problem in _ben_parity_problems[:10]:
+            st.markdown(f"- {_problem}")
+
+    _ben_cols = st.columns(3)
+    with _ben_cols[0]:
+        st.download_button(
+            "⬇️ Benefits CSV (full provenance)",
+            data=scientific_benefits_csv(scientific_benefits),
+            file_name="scientific_benefits.csv", mime="text/csv",
+            key="sci_ben_csv_dl")
+    with _ben_cols[1]:
+        st.download_button(
+            "⬇️ Benefits Excel (8 sheets)",
+            data=scientific_benefits_excel_bytes(scientific_benefits),
+            file_name="scientific_benefits.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            key="sci_ben_xlsx_dl")
+    with _ben_cols[2]:
+        st.download_button(
+            "⬇️ Source appendix (text)",
+            data=scientific_benefits_source_appendix(scientific_benefits),
+            file_name="scientific_benefits_source_appendix.txt", mime="text/plain",
+            key="sci_ben_appendix_dl")
 
 
 # ═══════════════════════════════════════════════════════════════
