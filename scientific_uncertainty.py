@@ -117,20 +117,66 @@ def _draw(rng: np.random.Generator, spec: UncertaintySpec, n: int) -> np.ndarray
     raise ValueError(f"unsupported distribution {spec.distribution!r}")
 
 
+def _path_child(container: Any, token: str, full_path: str) -> Any:
+    """Resolve one dotted-path token through a mapping or a list/tuple index."""
+    if isinstance(container, dict):
+        if token not in container:
+            raise KeyError(f"{full_path}: key {token!r} does not exist")
+        return container[token]
+    if isinstance(container, (list, tuple)):
+        try:
+            index = int(token)
+        except ValueError:
+            raise KeyError(
+                f"{full_path}: {token!r} must be an integer list index"
+            ) from None
+        if index < 0 or index >= len(container):
+            raise KeyError(f"{full_path}: list index {index} is out of range")
+        return container[index]
+    raise KeyError(
+        f"{full_path}: cannot traverse token {token!r} through "
+        f"{type(container).__name__}"
+    )
+
+
 def _set_path(mapping: dict, path: str, value: float) -> None:
-    """Set a dotted mapping path; list indexing is intentionally unsupported."""
+    """Set a dotted path through mappings and indexed ledger lists.
+
+    Examples::
+
+        lcc_scientific_inputs.model.discount_rate
+        lcc_scientific_inputs.cost_rows.0.unit_cost_base
+        benefits_scientific_inputs.transport.modal_shift_fraction.value
+
+    List indices are explicit decimal path tokens.  Existing keys/indices only are
+    accepted: uncertainty propagation never creates a new scientific input silently.
+    """
     parts = [p for p in path.split(".") if p]
     if not parts:
         raise KeyError("empty parameter path")
-    cur = mapping
-    for part in parts[:-1]:
-        nxt = cur.get(part)
-        if not isinstance(nxt, dict):
-            raise KeyError(f"{path}: {part!r} is not an existing mapping")
-        cur = nxt
-    if parts[-1] not in cur:
-        raise KeyError(f"{path}: final key {parts[-1]!r} does not exist")
-    cur[parts[-1]] = float(value)
+
+    cur: Any = mapping
+    for token in parts[:-1]:
+        cur = _path_child(cur, token, path)
+
+    last = parts[-1]
+    if isinstance(cur, dict):
+        if last not in cur:
+            raise KeyError(f"{path}: final key {last!r} does not exist")
+        cur[last] = float(value)
+        return
+    if isinstance(cur, list):
+        try:
+            index = int(last)
+        except ValueError:
+            raise KeyError(f"{path}: final token {last!r} must be an integer list index") from None
+        if index < 0 or index >= len(cur):
+            raise KeyError(f"{path}: final list index {index} is out of range")
+        # Direct scalar list elements are supported, although the common LCC use is a
+        # dictionary field inside a ledger row (cost_rows.0.unit_cost_base).
+        cur[index] = float(value)
+        return
+    raise KeyError(f"{path}: final container {type(cur).__name__} is not assignable")
 
 
 def evaluate_scientific_metrics(params: Mapping[str, Any]) -> dict[str, float]:
