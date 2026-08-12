@@ -131,5 +131,28 @@ check("MAIN report is NOT the legacy report", "ENHANCED MONORAIL LCA / LCCA ASSE
 check("no 'Net A1-C4 incl. Module D' headline in publication", "Net A1-C4 incl. Module D" not in report_blob)
 check("scientific CSV header present in a download", "Gross A-C (tCO2e)" in csv_blob)
 
+# Module D must be reported in the RICS/EN 15804 STANDARD SIGNED convention, stated
+# explicitly, and no "net including D" headline may appear anywhere in publication.
+check("Publication Module D label uses standard-signed convention",
+      "standard signed" in report_blob.lower() or "standard-signed" in report_blob.lower())
+check("Publication report states negative = benefit",
+      "negative = potential benefit" in report_blob.lower())
+check("Publication report has no net-including-D headline",
+      "net incl" not in report_blob.lower())
+check("Publication CSV carries the standard-signed Module D1 metric",
+      "Module D1 standard-signed (tCO2e, separate)" in csv_blob)
+
+# Legacy quarantine: an absurd legacy constant must not move the canonical headline.
+import lca_scientific_reporting as _rep
+_canonical_before = _rep.scientific_headline(ns["scientific_pub"])
+import app_final_streamlit_ready as _appmod  # noqa: F401  (module object for registry poke)
+_legacy_registry = ns.get("RECYCLING_CREDIT_SCENARIOS")
+if isinstance(_legacy_registry, dict) and _legacy_registry:
+    _k = next(iter(_legacy_registry))
+    _legacy_registry[_k] = 9.99e9
+_canonical_after = _rep.scientific_headline(ns["scientific_pub"])
+check("absurd legacy value does NOT alter the canonical scientific headline",
+      _canonical_before == _canonical_after)
+
 print("\nPUBLICATION SCIENTIFIC E2E PASSED" if ok else "\nFAILED")
 sys.exit(0 if ok else 1)

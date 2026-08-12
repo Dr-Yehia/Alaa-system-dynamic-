@@ -1534,7 +1534,17 @@ def chronological_mass_balance(initial_masses, events):
 
 
 def build_module_d_cfg_from_rows(rows):
-    """Build the Module-D-from-C3 config from editor rows (numeric factors → Evidence)."""
+    """Build the Module-D-from-C3 config from editor rows (numeric factors → Evidence).
+
+    The input KEY NAMES are kept for backward compatibility, but they carry the exact
+    RICS Appendix K / EN 15804 meanings and are labelled that way in the Evidence and
+    in the S1 workbook:
+
+      primary_ef          = EVMSub out — the primary/substituted material brought to
+                            functional equivalence;
+      recovery_ef         = EMR after EoW out — recovery processing after end-of-waste;
+      substitution_ratio  = the quality ratio QR out / QSub.
+    """
     cfg = {}
     for r in rows or []:
         mat = str(r.get("material", "")).strip().lower()
@@ -1555,9 +1565,13 @@ def build_module_d_cfg_from_rows(rows):
             "flow_source": str(r.get("flow_source", "")).strip() or psrc,
             "substitution_source": str(r.get("substitution_source", "")).strip() or psrc,
             "primary_factor": make_project_evidence(
-                f"D-PRIM-{mat}", prim, "kgCO2e/kg", "D1", psrc, "Module D primary factor", "A1-A3"),
+                f"D-PRIM-{mat}", prim, "kgCO2e/kg", "D1", psrc,
+                "Module D1 EVMSub out — primary/substituted material to functional equivalence",
+                "A1-A3 of the substituted primary material"),
             "recovery_factor": make_project_evidence(
-                f"D-REC-{mat}", rec, "kgCO2e/kg", "D1", rsrc, "Module D recovery factor", "recovery"),
+                f"D-REC-{mat}", rec, "kgCO2e/kg", "D1", rsrc,
+                "Module D1 EMR after EoW out — recovery processing after end-of-waste",
+                "recovery processing from end-of-waste to the substitution point"),
         }
     return cfg
 

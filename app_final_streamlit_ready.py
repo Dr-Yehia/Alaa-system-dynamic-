@@ -7,10 +7,14 @@ from datetime import datetime
 import io
 
 # ── Referenced scientific LCA core (separate, fully-sourced module) ──
-# Parallel, authoritative LCA engine: every factor/equation carries its source and
-# the core refuses to compute a publication result while any required source is open.
-# It runs ALONGSIDE the existing engine (which powers the dashboard) and never
-# changes the legacy result keys.
+# CANONICAL PUBLICATION LCA:
+# `lca_scientific_core.py` + `lca_scientific_integration.py` are the ONLY scientific
+# source for Publication-mode LCA cards/reports/CSV/Excel.
+#
+# LEGACY-DEVELOPER-ONLY:
+# older constants/functions below remain only for developer comparison/backward compatibility.
+# Their values MUST NOT enter Publication-mode scientific LCA or be presented as verified
+# project evidence. Unknown/placeholder legacy values are SCENARIO-ONLY or SOURCE-OPEN.
 try:
     from lca_scientific_core import ScientificInputError, render_lca_audit_streamlit, OPEN_SOURCE_REQUIREMENTS
     from lca_scientific_integration import add_lca_source_inputs, run_scientific_lca_from_app_params
@@ -43,6 +47,11 @@ st.set_page_config(
 # the tool identifies the work by DOI to avoid carrying unverified metadata.
 # ═══════════════════════════════════════════════════════════════
 
+# LEGACY-DEVELOPER-ONLY / NOT-CANONICAL-SCIENTIFIC-LCA.
+# Numerical values below are benchmark/scenario/backward-compatibility values.
+# They MUST NOT feed Publication-mode LCA. Where a primary source is not fully
+# verified, status remains SCENARIO-ONLY or SOURCE-OPEN — never fabricate provenance.
+# Comparative benchmark figures retained for developer comparison only.
 LIZHU_2022_BENCHMARK = {
     'reference': {
         'cite_as': 'Li & Zhu (2022), DOI 10.1155/2022/3872069 — full citation in manuscript',
@@ -80,6 +89,11 @@ LIZHU_2022_BENCHMARK = {
 # ═══════════════════════════════════════════════════════════════
 # REFERENCE VALUES
 # ═══════════════════════════════════════════════════════════════
+# LEGACY-DEVELOPER-ONLY / NOT-CANONICAL-SCIENTIFIC-LCA.
+# Numerical values below are benchmark/scenario/backward-compatibility values.
+# They MUST NOT feed Publication-mode LCA. Where a primary source is not fully
+# verified, status remains SCENARIO-ONLY or SOURCE-OPEN — never fabricate provenance.
+# Reference-project quantities used by the legacy dashboard scaling only.
 REF_CONCRETE = 700000
 REF_STEEL = 100000
 REF_ALUMINUM = 10000
@@ -109,6 +123,11 @@ REF_LENGTH = 96
 # Module D (end-of-life recycling credit) is NOT netted into A1-A3 here;
 #   it is reported separately downstream per EN 15804.
 # ═══════════════════════════════════════════════════════════════
+# LEGACY-DEVELOPER-ONLY / NOT-CANONICAL-SCIENTIFIC-LCA.
+# Numerical values below are benchmark/scenario/backward-compatibility values.
+# They MUST NOT feed Publication-mode LCA. Where a primary source is not fully
+# verified, status remains SCENARIO-ONLY or SOURCE-OPEN — never fabricate provenance.
+# Superseded by lca_scientific_core.MATERIAL_EF, which carries full provenance.
 MATERIAL_FACTORS = {
     "concrete_32_40": {
         "ee_mj_per_kg": 0.91,
@@ -217,6 +236,12 @@ MATERIAL_FACTOR_AUDIT = pd.DataFrame([
     for key, val in MATERIAL_FACTORS.items()
 ])
 
+# LEGACY-DEVELOPER-ONLY / NOT-CANONICAL-SCIENTIFIC-LCA.
+# Numerical values below are benchmark/scenario/backward-compatibility values.
+# They MUST NOT feed Publication-mode LCA. Where a primary source is not fully
+# verified, status remains SCENARIO-ONLY or SOURCE-OPEN — never fabricate provenance.
+# SCENARIO-ONLY recycling-credit fractions. These are NOT Module D and must never be
+# surfaced as scientific Module D in Publication mode.
 RECYCLING_CREDIT_SCENARIOS = {
     "none": {
         "steel": {"energy_credit_fraction": 0.0, "carbon_credit_fraction": 0.0},
@@ -235,6 +260,11 @@ RECYCLING_CREDIT_SCENARIOS = {
     }
 }
 
+# LEGACY-DEVELOPER-ONLY / NOT-CANONICAL-SCIENTIFIC-LCA.
+# Numerical values below are benchmark/scenario/backward-compatibility values.
+# They MUST NOT feed Publication-mode LCA. Where a primary source is not fully
+# verified, status remains SCENARIO-ONLY or SOURCE-OPEN — never fabricate provenance.
+# SCENARIO-ONLY uncertainty ranges for the legacy illustrative Monte Carlo.
 UNCERTAINTY_FACTORS = {
     "concrete_factor": {"cv": 0.10, "source": "Scenario assumption; replace with EPD/database uncertainty before final statistical claims"},
     "steel_factor": {"cv": 0.08, "source": "Scenario assumption; replace with EPD/database uncertainty before final statistical claims"},
@@ -249,6 +279,11 @@ UNCERTAINTY_FACTORS = {
 # 0.062) without a documented source, unit, boundary, vehicle class and a
 # stated WTW/TTW scope — otherwise the result is not publication-grade.
 # ═══════════════════════════════════════════════════════════════
+# LEGACY-DEVELOPER-ONLY / NOT-CANONICAL-SCIENTIFIC-LCA.
+# Numerical values below are benchmark/scenario/backward-compatibility values.
+# They MUST NOT feed Publication-mode LCA. Where a primary source is not fully
+# verified, status remains SCENARIO-ONLY or SOURCE-OPEN — never fabricate provenance.
+# Superseded by lca_scientific_core.TRANSPORT_EF (sourced DESNZ 2025 rows).
 TRANSPORT_FACTOR_REGISTRY = {
     "truck": {
         "ef_kgco2e_per_tkm": 0.10, "unit": "kgCO2e/tonne-km",
@@ -1039,6 +1074,13 @@ def validate_eol_treatment_shares(params, materials=MATERIALS_LIST):
     return {'valid': valid, 'errors': errors, 'share_table': table}
 
 
+# LEGACY-DEVELOPER-ONLY / NOT-CANONICAL-SCIENTIFIC-LCA.
+# Numerical values below are benchmark/scenario/backward-compatibility values.
+# They MUST NOT feed Publication-mode LCA. Where a primary source is not fully
+# verified, status remains SCENARIO-ONLY or SOURCE-OPEN — never fabricate provenance.
+# The corrected scientific C1-C4 implementation lives ONLY in lca_scientific_core.py /
+# lca_scientific_integration.py. Do NOT 'fix' this function — doing so would create a
+# second, competing scientific implementation.
 def calculate_c1_c4_end_of_life(remaining_masses, params, CI_T, diesel_ef, truck_ef, materials=MATERIALS_LIST):
     """C1 deconstruction + C2 transport + C3 processing + C4 disposal (tCO2e)."""
     if not params.get('include_c1c4', False):
@@ -1082,6 +1124,13 @@ def calculate_c1_c4_end_of_life(remaining_masses, params, CI_T, diesel_ef, truck
             'c1_c4_total_tons': c1 + c2 + c3 + c4, 'eol_by_material': rows}
 
 
+# LEGACY-DEVELOPER-ONLY / NOT-CANONICAL-SCIENTIFIC-LCA.
+# Numerical values below are benchmark/scenario/backward-compatibility values.
+# They MUST NOT feed Publication-mode LCA. Where a primary source is not fully
+# verified, status remains SCENARIO-ONLY or SOURCE-OPEN — never fabricate provenance.
+# The corrected RICS Appendix K / EN 15804 Module D1 lives ONLY in lca_scientific_core.py.
+# Do NOT 'fix' this legacy credit function — the standard-signed equation has exactly one
+# implementation, and it is not here.
 def calculate_module_d_from_eol(remaining_masses, params, materials=MATERIALS_LIST):
     """Module D credit from recovered EOL material: Σ M_recovered·η·(EF_virgin − EF_secondary)/1000.
     If a recovered material has no secondary EF supplied (<=0), its credit is skipped and the
@@ -2704,22 +2753,36 @@ with st.sidebar:
                         "material_source": [""], "mass_role": ["retained_in_asset"],
                         "removed_material": ["steel"], "removed_material_kg": [0.0],
                         "removed_material_source": [""],
+                        # Removed mass must be ALLOCATED to a route; it does not vanish.
+                        "removed_reuse_kg": [0.0], "removed_recycle_kg": [0.0],
+                        "removed_disposal_kg": [0.0], "removed_other_kg": [0.0],
+                        "removed_flow_source": [""],
                         "diesel_l": [0.0], "diesel_source": [""], "elec_kwh": [0.0], "elec_source": [""],
+                        # Inbound new-material transport and outbound removed-material
+                        # transport are DISTINCT legs carrying different masses.
+                        "transport_purpose": ["new_material_inbound"],
                         "transport_km": [0.0], "transport_mode": ["truck"], "transport_source": [""],
+                        "removed_transport_km": [0.0], "removed_transport_mode": ["truck"],
+                        "removed_transport_source": [""],
                         "waste_kg": [0.0], "waste_factor_code": [""], "waste_source": [""]})
                     _b2b5_edit = pd.DataFrame(st.data_editor(
                         _b2b5_df0, hide_index=True, use_container_width=True,
                         key="b2b5_event_editor", num_rows="dynamic"))
                     _b2b5_num = {"year", "new_material_kg", "removed_material_kg", "diesel_l",
-                                 "elec_kwh", "transport_km", "waste_kg"}
+                                 "elec_kwh", "transport_km", "waste_kg",
+                                 "removed_reuse_kg", "removed_recycle_kg", "removed_disposal_kg",
+                                 "removed_other_kg", "removed_transport_km"}
                     for _, _r in _b2b5_edit.iterrows():
                         if str(_r["event_id"]).strip():
                             b2b5_event_rows.append(
                                 {k: (float(_r[k] or 0.0) if k in _b2b5_num else str(_r[k]))
                                  for k in _b2b5_df0.columns})
-                    st.caption("mass_role: retained_in_asset (default, enters C-stage mass) / "
-                               "consumable / temporary / removed_same_event. removed material needs "
-                               "its own source. The mass balance is applied event-by-event in year order.")
+                    st.caption(
+                        "mass_role: retained_in_asset / consumable / temporary. "
+                        "Removed mass is reconciled separately: removed_material_kg must equal "
+                        "reuse + recycle + disposal + other within software tolerance. "
+                        "Inbound new-material transport and outbound removed-material transport are distinct."
+                    )
                     # Declare B2/B3/B4/B5 modules you did NOT enter as documented_zero / N-A so the
                     # stage can close (B4-only never closes the whole stage on its own).
                     _b2b5decl0 = pd.DataFrame({
@@ -2790,18 +2853,44 @@ with st.sidebar:
                         "material": MATERIALS_UI, "reuse_share": [0.0]*6, "recycle_share": [0.0]*6,
                         "disposal_share": [1.0]*6, "share_source": [""]*6,
                         "c2_distance_km": [0.0]*6, "c2_mode": ["truck"]*6, "c2_source": [""]*6,
+                        # RICS C2 return / empty-running closure (road routes).
+                        "c2_return_factor_unit": ["tonne_km"] * 6,
+                        "c2_return_fraction": [0.0] * 6,
+                        "c2_empty_return_factor": [0.0] * 6,
+                        "c2_number_of_return_trips": [0.0] * 6,
+                        "c2_vehicle_capacity_t": [0.0] * 6,
+                        "c2_load_factor": [1.0] * 6,
+                        "c2_return_source_file": [""] * 6,
+                        "c2_return_source_location": [""] * 6,
+                        "c2_return_justification": [""] * 6,
                         "ef_reuse": [0.0]*6, "ef_recycle": [0.0]*6, "ef_landfill": [0.0]*6, "source": [""]*6})
                     _c1c4_edit = pd.DataFrame(st.data_editor(
                         _c1c4_df0, hide_index=True, use_container_width=True,
                         key="c1c4_sci_editor", disabled=["material"]))
                     _c1c4_num = {"reuse_share", "recycle_share", "disposal_share", "c2_distance_km",
-                                 "ef_reuse", "ef_recycle", "ef_landfill"}
+                                 "ef_reuse", "ef_recycle", "ef_landfill",
+                                 "c2_return_fraction", "c2_empty_return_factor",
+                                 "c2_number_of_return_trips", "c2_vehicle_capacity_t",
+                                 "c2_load_factor"}
                     for _, _r in _c1c4_edit.iterrows():
                         c1c4_rows.append({k: (float(_r[k] or 0.0) if k in _c1c4_num else str(_r[k]))
                                           for k in _c1c4_df0.columns})
+                    st.caption(
+                        "RICS C2 route closure: road transport must address return/empty running. "
+                        "No UK 43% default is automatically inserted for this Egypt project. "
+                        "A documented zero/N-A requires source + justification."
+                    )
                 with st.expander("🔬 Module D editor (from C3 recovered flows only)", expanded=False):
+                    st.caption(
+                        "RICS Appendix K / EN 15804 Module D1. "
+                        "substitution_ratio = quality ratio QRout/QSub; "
+                        "primary_ef = EVMSub out (primary/substituted material to functional equivalence); "
+                        "recovery_ef = EMR after EoW out (recovery processing after end-of-waste). "
+                        "Standard signed result: negative = potential benefit; positive = potential load. "
+                        "Module D remains separate from Gross A-C."
+                    )
                     st.caption("Module D is derived ONLY from C3 recovered flows (RecoveredOutput_D ≤ "
-                               "C3 recovered mass) and is reported SEPARATELY — never inside Gross A-C.")
+                               "C3 recovered mass) — there is no independent Module-D path in Publication mode.")
                     _md0 = pd.DataFrame({
                         "material": MATERIALS_UI, "recovered_output_kg": [0.0]*6,
                         "secondary_input_kg": [0.0]*6, "substitution_ratio": [0.0]*6,
@@ -3063,9 +3152,10 @@ with TABS['results']:
                 <div class="metric-label">Gross A1-C4 (tCO₂e)</div>
                 <div class="metric-delta">A5 {_h['A5 (tCO2e)']:,.0f}t · C1-C4 {_h['C1-C4 (tCO2e)']:,.0f}t</div></div>""", unsafe_allow_html=True)
         with m3:
-            st.markdown(f"""<div class="metric-card"><div class="metric-value">{_h['Module D (tCO2e, separate)']:,.0f}</div>
-                <div class="metric-label">Module D (tCO₂e) — SEPARATE</div>
-                <div class="metric-delta">never inside Gross A-C</div></div>""", unsafe_allow_html=True)
+            # Standard signed value, shown AS IS — no hand-written minus sign.
+            st.markdown(f"""<div class="metric-card"><div class="metric-value">{_h['Module D1 standard-signed (tCO2e, separate)']:,.0f}</div>
+                <div class="metric-label">Module D1 standard-signed (tCO₂e) — SEPARATE</div>
+                <div class="metric-delta">negative = benefit · never inside Gross A-C</div></div>""", unsafe_allow_html=True)
         with m4:
             st.markdown(f"""<div class="metric-card"><div class="metric-value">${results['npv_lcc_m']:,.0f}M</div>
                 <div class="metric-label">LCC NPV Cost</div>
@@ -3145,17 +3235,22 @@ with TABS['results']:
         sc_df['tCO2e'] = sc_df['tCO2e'].map(lambda v: f"{v:,.1f}")
         sc_df['% of gross'] = sc_df['% of gross'].map(lambda v: f"{v:.1f}%")
         st.dataframe(sc_df, use_container_width=True, hide_index=True)
-        _net_incl = ("" if publication_mode else
+        # LEGACY-DEVELOPER-ONLY caption. In Publication mode the legacy Module-D credit and
+        # the legacy net figure are both suppressed: Module D1 is reported once, by the
+        # scientific engine, in the RICS/EN 15804 standard signed convention.
+        _legacy_d = ("" if publication_mode else
+                     f"Module D (legacy credit, separate) = −{results['module_d_tons']:,.1f} t · "
                      f"Net incl. Module D (supplementary) = {results['net_with_module_d_tons']:,.1f} t. ")
         st.caption(
             f"Gross modular A1-C4 LCA total = {results['gross_a1_c4_tons']:,.1f} t CO₂e · "
             f"GWP = {results['gwp_pkm_gross']:.5f} kg/pkm (gross, never net) · "
-            f"Module D (separate) = −{results['module_d_tons']:,.1f} t · "
-            + _net_incl +
+            + _legacy_d +
             "Each stage is independently toggleable; statuses are shown above."
         )
         if publication_mode:
-            st.caption("Publication mode: Module D is reported separately — there is no "
+            st.caption("Publication mode: Module D1 is reported separately by the scientific "
+                       "engine in the RICS/EN 15804 standard signed convention (negative = "
+                       "potential benefit; positive = potential load). There is no "
                        "'net incl. Module D' headline. The authoritative numbers are the "
                        "scientific-engine cards and Supplementary S1 above.")
         if not results.get('publication_grade_full_lca', True):
@@ -3196,13 +3291,20 @@ with TABS['results']:
             with e4: st.metric("C4 disposal", f"{cc['c4_tons']:,.1f}")
             with e5: st.metric("C1–C4 total", f"{cc['c1_c4_total_tons']:,.1f}")
             if publication_mode:
-                g1, g2 = st.columns(2)
-                with g1: st.metric("Gross A1–C4", f"{results['gross_a1_c4_tons']:,.1f} t")
-                with g2: st.metric("Module D (separate)", f"−{results['module_d_tons']:,.1f} t")
+                # LEGACY-DEVELOPER-ONLY numbers. The canonical Module D1 figure is the
+                # scientific standard-signed value on the Results cards (negative =
+                # potential benefit); it is NOT restated here with a hand-written minus.
+                g1, = st.columns(1)
+                with g1: st.metric("Gross A1–C4 (legacy engine)",
+                                   f"{results['gross_a1_c4_tons']:,.1f} t")
+                st.caption("Legacy end-of-life view. Module D1 is reported by the scientific "
+                           "engine above in the RICS/EN 15804 standard signed convention "
+                           "(negative = potential benefit); it is never shown here as a "
+                           "hand-signed legacy credit, and never folded into Gross A-C.")
             else:
                 g1, g2, g3 = st.columns(3)
                 with g1: st.metric("Gross A1–C4", f"{results['gross_a1_c4_tons']:,.1f} t")
-                with g2: st.metric("Module D (separate)", f"−{results['module_d_tons']:,.1f} t")
+                with g2: st.metric("Module D (legacy credit)", f"−{results['module_d_tons']:,.1f} t")
                 with g3: st.metric("Net incl. Module D", f"{results['net_with_module_d_tons']:,.1f} t")
             st.markdown("**End-of-life by material** (on remaining masses after B4/B5)")
             st.dataframe(pd.DataFrame(cc['eol_by_material']), use_container_width=True, hide_index=True)

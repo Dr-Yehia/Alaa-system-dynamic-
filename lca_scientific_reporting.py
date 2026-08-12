@@ -18,7 +18,10 @@ def scientific_headline(scientific_lca: Mapping[str, Any]) -> dict:
     return {
         "Gross A-C (tCO2e)": round(float(scientific_lca.get("gross_A_C_tCO2e", 0.0)), 6),
         "GWP (kgCO2e/pkm)": round(float(scientific_lca.get("GWP_kgCO2e_per_pkm", 0.0)), 9),
-        "Module D (tCO2e, separate)": round(float(scientific_lca.get("module_D1_signed_tCO2e_separate", 0.0)), 6),
+        # RICS/EN 15804 standard signed convention — negative = potential benefit,
+        # positive = potential load. The value is reported AS IS: no manual minus sign.
+        "Module D1 standard-signed (tCO2e, separate)": round(
+            float(scientific_lca.get("module_D1_signed_tCO2e_separate", 0.0)), 6),
         "Lifetime passenger-km": round(float(scientific_lca.get("lifetime_pkm", 0.0)), 3),
         "A1-A3 (tCO2e)": round(float(reported.get("A1-A3", 0.0)), 6),
         "A4 (tCO2e)": round(float(reported.get("A4", 0.0)), 6),
@@ -57,7 +60,10 @@ def scientific_report_text(scientific_lca: Mapping[str, Any]) -> str:
         lines.append(f"  {stg:<7} {h[stg + ' (tCO2e)']:,.3f} tCO2e")
     lines += [
         "",
-        f"Module D (reported SEPARATELY, NOT in gross): {h['Module D (tCO2e, separate)']:,.3f} tCO2e",
+        "Module D1 (standard signed; separate from Gross A-C): "
+        f"{h['Module D1 standard-signed (tCO2e, separate)']:,.3f} tCO2e",
+        "Sign convention: negative = potential benefit; positive = potential load.",
+        "Reported SEPARATELY — Module D is never part of Gross A-C.",
         "",
         "Closure gate:",
         f"  full_wlca_calculation_complete      = {gate.get('full_wlca_calculation_complete')}",
@@ -107,8 +113,18 @@ def scientific_excel_sheets(scientific_lca: Mapping[str, Any]) -> "dict[str, pd.
         "Equation_Audit": (scientific_lca.get("equation_audit")
                            if isinstance(scientific_lca.get("equation_audit"), pd.DataFrame)
                            else pd.DataFrame()),
-        "Open_Items": _df([{"item": k, "status": v.get("status"), "needed": v.get("needed")}
-                           for k, v in _open_items().items()]),
+        # An open item is only actionable when the reviewer can see WHY it is open and
+        # WHAT it blocks, not just that something is "needed".
+        "Open_Items": _df([
+            {
+                "item": k,
+                "status": v.get("status"),
+                "needed": v.get("needed"),
+                "reason": v.get("reason"),
+                "blocks": v.get("blocks"),
+            }
+            for k, v in _open_items().items()
+        ]),
         "Uncertainty": _df([{"note": "Scientific Monte Carlo re-runs the core per sample (pending wiring)."}]),
         "Publication_Gates": _df([{"gate": k, "value": v}
                                   for k, v in (scientific_lca.get("closure_gate", {}) or {}).items()]
