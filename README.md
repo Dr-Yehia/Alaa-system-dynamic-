@@ -12,8 +12,10 @@ The publication path is deliberately fail-closed: missing project evidence remai
 
 ```text
 apps/
-  publication.py          # Canonical publication-only Streamlit UI
-  developer.py            # Historical/developer dashboard
+  publication.py          # Canonical publication-only Streamlit entry point
+  _publication_impl.py    # Publication UI implementation
+  developer.py            # Historical/developer entry point
+  _developer_impl.py      # Frozen historical dashboard implementation
 
 monorail_assessment/
   lca/
@@ -40,10 +42,13 @@ monorail_assessment/
   legacy/
     ...                   # Historical engines retained for regression only
 
+compat/                   # Historical import aliases only; never canonical science
 tests/                    # Scientific, architecture and regression suites
 docs/                     # Active scientific evidence and closure documentation
 docs/archive/             # Historical implementation handoffs / explanatory files
 ```
+
+The repository root intentionally contains no duplicate-looking LCA/LCC/Benefits Python modules. Historical aliases are isolated under `compat/`.
 
 ## Run the scientific publication application
 
@@ -52,7 +57,7 @@ python -m pip install -r requirements-publication.txt
 streamlit run apps/publication.py
 ```
 
-The publication application imports no legacy LCA, LCC or Benefits engine and provides no legacy fallback.
+The publication application imports no legacy LCA, LCC or Benefits engine as a publication fallback.
 
 ## Developer / historical dashboard
 
@@ -87,11 +92,11 @@ Important active evidence ledgers:
 
 Historical implementation instructions are stored under `docs/archive/` and are not part of the active publication contract.
 
-## Compatibility aliases
+## Compatibility policy
 
-A small number of root-level Python names are retained as symbolic compatibility aliases for the frozen historical regression suite. The **canonical source files are the modules under `monorail_assessment/` and `apps/`**. New code should import from the package paths.
+The frozen historical tests and developer dashboard still use some old module names internally. Those aliases now live only under `compat/`, not in the repository root. CI adds `compat/` to the import path for historical regression. Importing the canonical `monorail_assessment` package also exposes the isolated compatibility directory internally so package modules remain operational during this frozen transition.
 
-These aliases can be removed only when the historical regression suite is formally retired.
+New scientific code must use the canonical package layout and must never be added to `compat/`.
 
 ## Quality assurance
 
@@ -100,4 +105,4 @@ GitHub Actions protects both:
 1. the historical regression baseline; and
 2. the scientific publication path, including LCC integration/reporting, source-gated uncertainty, export parity and a real Streamlit health probe.
 
-No scientific equation or numeric evidence was changed by the repository-structure refactor.
+No scientific equation or numeric evidence is changed by repository-structure cleanup.
