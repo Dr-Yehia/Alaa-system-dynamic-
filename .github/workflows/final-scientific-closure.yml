@@ -1,0 +1,75 @@
+name: final-scientific-closure
+
+on:
+  push:
+    branches: ["chatgpt/final-scientific-closure"]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  scientific-closure-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install publication runtime
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-publication.txt
+      - name: Run closure suites
+        run: |
+          set -e
+          for t in \
+            tests/lcc_scientific_core_test.py \
+            tests/lcc_scientific_integration_test.py \
+            tests/lcc_scientific_reporting_test.py \
+            tests/benefits_scientific_core_test.py \
+            tests/benefits_reference_integrity_test.py \
+            tests/benefits_scientific_integration_test.py \
+            tests/benefits_publication_gate_test.py \
+            tests/lca_scientific_core_test.py \
+            tests/lca_reference_integrity_test.py \
+            tests/golden_full_lca_test.py \
+            tests/scientific_uncertainty_test.py \
+            tests/publication_end_to_end_test.py \
+            tests/publication_app_purity_test.py ; do
+            echo "=== $t ==="
+            python "$t"
+          done
+      - name: Compile new publication modules
+        run: |
+          python -m py_compile \
+            lcc_scientific_integration.py \
+            lcc_scientific_reporting.py \
+            scientific_publication_orchestrator.py \
+            scientific_publication_reporting.py \
+            scientific_uncertainty.py \
+            app_scientific_publication.py
+
+  publication-streamlit-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install publication runtime
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-publication.txt
+      - name: Launch publication-only Streamlit and probe health
+        run: |
+          set -e
+          streamlit run app_scientific_publication.py --server.headless true --server.port 8600 &
+          APP_PID=$!
+          for i in $(seq 1 30); do
+            if curl -sf http://localhost:8600/_stcore/health >/dev/null; then
+              echo "Publication Streamlit health OK"
+              break
+            fi
+            sleep 2
+          done
+          curl -sf http://localhost:8600/_stcore/health
+          kill $APP_PID || true
