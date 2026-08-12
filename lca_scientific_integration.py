@@ -1506,7 +1506,9 @@ def run_scientific_lca_from_app_params(params):
     a4["status"] = a4_status
     a4["note"] = a4_note
     a4["activity_audit"] = a4_activity_audit
-    a4["equation_id"] = "E3_A4_C2"
+    # A4 carries the RICS route equation (outward + return/empty running) AND the
+    # per-leg computational identity; the leg identity alone is not RICS A4.
+    a4["equation_ids"] = ["E3A_RICS_A4", "E3_TRANSPORT_LEG"]
 
     grid_source = str(params.get("grid_source", "")).strip()
     grid_location = str(params.get("grid_location", "")).strip()
