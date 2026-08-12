@@ -1137,10 +1137,10 @@ RICS_WASTE_RATES: dict[str, Evidence] = {
         source_kind="default_rate",
         reference_class="REF-PROXY-UK-DEFAULT",
     ),
-    # REF-VERIFIED-PROXY: 1.4369670638496768 kgCO2e/kg.
-    # REFERENCE: ICE DB Educational V4.1 - Oct 2025.xlsx, ICE Summary row 618.
-    # PROJECT-SOURCE-REQUIRED: area-to-mass conversion needs sourced thickness and density.
-    # REF-PROXY: 1% - RICS WLCA Sept 2023, Table 18 p.83; glass waste default.
+    # REF-PROXY-UK-DEFAULT — RICS "Whole life carbon assessment for the built
+    # environment", 2nd ed. September 2023, Version 3 August 2024, Table 18, page 83.
+    # Glass waste rate default = 1% of delivered quantity.
+    # (This entry is a WASTE RATE, not the glass A1-A3 factor — see MATERIAL_EF["glass"].)
     "glass": Evidence(
         "RICS23-WR-GLASS", 0.01, "fraction of delivered quantity", "A5.3",
         "Whole_life_carbon_assessment_PS_Sept23.pdf", "Table 18, page 83",

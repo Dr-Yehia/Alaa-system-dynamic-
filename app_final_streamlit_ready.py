@@ -3313,6 +3313,9 @@ with TABS['results']:
                          use_container_width=True, hide_index=True)
             if not results['module_d_quality_ok']:
                 st.warning("⚠️ Module D is incomplete (a recovered material has no secondary EF). "
+                           "The legacy end-of-life view is understated and is NOT publication-grade."
+                           if publication_mode else
+                           "⚠️ Module D is incomplete (a recovered material has no secondary EF). "
                            "Net incl. Module D is understated and is NOT publication-grade.")
 
     with st.expander("🏷️ Data Quality / Publication Readiness", expanded=False):
@@ -3459,6 +3462,11 @@ with TABS['results']:
     # Full Report Text
     with st.expander("📄 Full Assessment Report", expanded=False):
         # P2: dashboard-only renewable line is developer-only (hidden in publication mode).
+        # Publication mode never emits a 'net incl. Module D' headline, even on the
+        # legacy fallback path: Module D is reported separately, full stop.
+        _legacy_net_line = ("" if publication_mode else
+                            f"\n   • Net incl. Module D (supplementary): "
+                            f"{results['net_with_module_d_tons']:.1f} tons")
         _renewable_line = ("" if publication_mode else
                            f"\n   • Renewable Share (dashboard-only, NOT applied to core LCA): {params['renewable_share']:.1f}%")
         _bk = results['benefit_kpis']
@@ -3499,8 +3507,7 @@ Synergy-to-Trade-off ratio: {results['synergy_ratio']:.2f}
    • C1-C4 End-of-Life CO₂: {results['i_c1c4_tons']:.1f} tons ({'included' if results['c1c4']['included'] else 'not included'})
    • Gross modular A1-C4 LCA total (A1-A3 + A4 + A5 + B2-B5 + active B6 + C1-C4): {results['gross_a1_c4_tons']:.1f} tons
    • GWP per pkm (gross): {results['gwp_pkm_gross']:.6f} kg CO₂e/pkm
-   • Module D recycling credit (separate, NOT in gross): -{results['module_d_tons']:.1f} tons
-   • Net incl. Module D (supplementary): {results['net_with_module_d_tons']:.1f} tons
+   • Module D recycling credit (separate, NOT in gross): -{results['module_d_tons']:.1f} tons{_legacy_net_line}
    • Grid Carbon Intensity (applied to core B6): {results['effective_carbon_intensity']:.3f} kg CO₂/kWh
    • Total Embodied Energy: {results['total_ee']:.0f} MJ{_renewable_line}
 
@@ -3559,15 +3566,20 @@ Carbon factors: ICE Database Educational V4.1 (Oct 2025). Module D (recycling) r
                 f"Gross modular A1-C4 LCA total (B6 {results['active_b6_mode']})",
                 'GWP per pkm (gross)', 'Embodied CO₂ A1-A3 (gross)', 'A4 Transport CO₂',
                 'A5 Construction CO₂', 'B2-B5 Use Stage CO₂', 'B6 operation (active)',
-                'C1-C4 End-of-Life CO₂', 'Module D (separate)', 'Net incl. Module D (supplementary)',
+                'C1-C4 End-of-Life CO₂', 'Module D (separate)',
                 'Embodied Energy', 'LCC NPV Cost']
             xl_value = [
                 results['gross_a1_c4_tons'], results['gwp_pkm_gross'], results['lca_results']['embodied_co2_tons'],
                 results['lca_results']['a4_transport_co2_tons'], results['a5']['a5_total_tons'],
                 results['i_b2b5_tons'], results['active_b6_tons'], results['i_c1c4_tons'],
-                -results['module_d_tons'], results['net_with_module_d_tons'], results['total_ee'], results['npv_lcc_m']]
+                -results['module_d_tons'], results['total_ee'], results['npv_lcc_m']]
             xl_unit = ['tons CO₂e', 'kg CO₂e/pkm', 'tons CO₂e', 'tons CO₂e', 'tons CO₂e', 'tons CO₂e',
-                       'tons CO₂e', 'tons CO₂e', 'tons CO₂e', 'tons CO₂e', 'MJ', '$M']
+                       'tons CO₂e', 'tons CO₂e', 'tons CO₂e', 'MJ', '$M']
+            # The legacy net-incl-D row is developer-only; Publication never exports it.
+            if not publication_mode:
+                xl_metric.insert(9, 'Net incl. Module D (supplementary)')
+                xl_value.insert(9, results['net_with_module_d_tons'])
+                xl_unit.insert(9, 'tons CO₂e')
             if not publication_mode:
                 xl_metric.append('Dashboard Display Score'); xl_value.append(results['dashboard_display_score']); xl_unit.append('/100 display-only')
             with pd.ExcelWriter(excel_buf, engine='openpyxl') as writer:
@@ -4050,12 +4062,18 @@ with TABS['uncertainty']:
 
         h3, h4 = st.columns(2)
         with h3:
-            fig = go.Figure(go.Histogram(x=okrows['net_with_module_d_tons'] / 1000.0, nbinsx=50,
-                                         marker=dict(color='rgba(247,151,30,0.6)')))
-            fig.update_layout(title='Net incl. Module D (k tCO₂e, supplementary)', height=340,
-                              paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(10,25,47,0.8)',
-                              font_color='#ccd6f6', margin=dict(t=40, b=30))
-            st.plotly_chart(fig, use_container_width=True)
+            # LEGACY-DEVELOPER-ONLY. Publication mode never plots a net-including-D
+            # distribution: Module D is reported separately, never combined into a headline.
+            if not publication_mode:
+                fig = go.Figure(go.Histogram(x=okrows['net_with_module_d_tons'] / 1000.0, nbinsx=50,
+                                             marker=dict(color='rgba(247,151,30,0.6)')))
+                fig.update_layout(title='Net incl. Module D (k tCO₂e, supplementary)', height=340,
+                                  paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(10,25,47,0.8)',
+                                  font_color='#ccd6f6', margin=dict(t=40, b=30))
+                st.plotly_chart(fig, use_container_width=True)
+            else:
+                st.caption("Module D is reported separately (standard signed); no "
+                           "net-including-D distribution is shown in Publication mode.")
         with h4:
             fig = go.Figure(go.Histogram(x=okrows['npv_lcc_m'], nbinsx=50,
                                          marker=dict(color='rgba(150,201,61,0.6)')))
