@@ -102,5 +102,42 @@ r4 = su.run_scientific_uncertainty(
 check("invalid path produces failed samples", r4.publication_gate["all_samples_valid"] is False)
 check("failed samples block publication", r4.publication_gate["publication_ready"] is False)
 
+# LCC uncertainty commonly lives inside ledger rows.  Dotted paths must therefore
+# traverse explicit list indices rather than forcing callers to flatten or duplicate
+# the scientific LCC data model.
+ledger_base = {
+    "lcc_scientific_inputs": {
+        "cost_rows": [
+            {"cost_id": "C1", "unit_cost_base": 100.0},
+            {"cost_id": "C2", "unit_cost_base": 200.0},
+        ]
+    }
+}
+ledger_seen = []
+su.evaluate_scientific_metrics = lambda p: (
+    ledger_seen.append(float(p["lcc_scientific_inputs"]["cost_rows"][0]["unit_cost_base"]))
+    or {"metric": float(p["lcc_scientific_inputs"]["cost_rows"][0]["unit_cost_base"])}
+)
+ledger_spec = su.UncertaintySpec(
+    parameter_path="lcc_scientific_inputs.cost_rows.0.unit_cost_base",
+    distribution="uniform",
+    parameters={"low": 90.0, "high": 110.0},
+    unit="EGP/item",
+    source_file="cost_uncertainty.pdf",
+    source_location="Table 3",
+    geography="Cairo, Egypt",
+    evidence_status="PROJECT-SPECIFIC",
+)
+r5 = su.run_scientific_uncertainty(
+    ledger_base, [ledger_spec], n=20, seed=3,
+    protocol_source_file="protocol.pdf",
+    protocol_source_location="Section 4.2",
+    protocol_evidence_status="PROJECT-SPECIFIC",
+)
+check("indexed LCC ledger path evaluates every sample", r5.publication_gate["all_samples_valid"] is True)
+check("indexed LCC ledger path changes first row", len(ledger_seen) == 20 and all(90.0 <= x <= 110.0 for x in ledger_seen))
+check("indexed LCC ledger path leaves base object unchanged", ledger_base["lcc_scientific_inputs"]["cost_rows"][0]["unit_cost_base"] == 100.0)
+check("indexed LCC ledger path is recorded in audit", ledger_spec.parameter_path in set(r5.audit["parameter_path"]))
+
 print("\nSCIENTIFIC UNCERTAINTY TESTS PASSED" if ok else "\nSCIENTIFIC UNCERTAINTY TESTS FAILED")
 sys.exit(0 if ok else 1)
