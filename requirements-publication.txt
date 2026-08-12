@@ -1,0 +1,9 @@
+# Publication-path top-level runtime freeze.
+# These are exact direct dependency versions for the scientific publication app.
+# Transitive dependencies are resolved by pip; the final tagged release should also
+# archive `pip freeze` from the successful CI environment for bit-level environment audit.
+streamlit==1.36.0
+numpy==1.26.4
+pandas==2.2.2
+plotly==5.22.0
+openpyxl==3.1.2
