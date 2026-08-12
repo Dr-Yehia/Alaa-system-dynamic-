@@ -2,7 +2,9 @@ name: final-scientific-closure
 
 on:
   push:
-    branches: ["chatgpt/final-scientific-closure"]
+    branches:
+      - "claude/lcc-q1-scientific-core"
+      - "chatgpt/repository-professional-structure"
   pull_request:
   workflow_dispatch:
 
@@ -39,15 +41,23 @@ jobs:
             echo "=== $t ==="
             python "$t"
           done
-      - name: Compile new publication modules
+      - name: Compile canonical publication modules
         run: |
           python -m py_compile \
-            lcc_scientific_integration.py \
-            lcc_scientific_reporting.py \
-            scientific_publication_orchestrator.py \
-            scientific_publication_reporting.py \
-            scientific_uncertainty.py \
-            app_scientific_publication.py
+            monorail_assessment/lca/core.py \
+            monorail_assessment/lca/integration.py \
+            monorail_assessment/lca/reporting.py \
+            monorail_assessment/lcc/core.py \
+            monorail_assessment/lcc/integration.py \
+            monorail_assessment/lcc/reporting.py \
+            monorail_assessment/benefits/references.py \
+            monorail_assessment/benefits/core.py \
+            monorail_assessment/benefits/integration.py \
+            monorail_assessment/benefits/reporting.py \
+            monorail_assessment/publication/orchestrator.py \
+            monorail_assessment/publication/reporting.py \
+            monorail_assessment/publication/uncertainty.py \
+            apps/publication.py
 
   publication-streamlit-smoke:
     runs-on: ubuntu-latest
@@ -63,7 +73,7 @@ jobs:
       - name: Launch publication-only Streamlit and probe health
         run: |
           set -e
-          streamlit run app_scientific_publication.py --server.headless true --server.port 8600 &
+          streamlit run apps/publication.py --server.headless true --server.port 8600 &
           APP_PID=$!
           for i in $(seq 1 30); do
             if curl -sf http://localhost:8600/_stcore/health >/dev/null; then
