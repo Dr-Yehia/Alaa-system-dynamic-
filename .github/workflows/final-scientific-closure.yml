@@ -5,12 +5,15 @@ on:
     branches:
       - "claude/lcc-q1-scientific-core"
       - "chatgpt/repository-professional-structure"
+      - "chatgpt/remove-root-compat-aliases"
   pull_request:
   workflow_dispatch:
 
 jobs:
   scientific-closure-tests:
     runs-on: ubuntu-latest
+    env:
+      PYTHONPATH: ${{ github.workspace }}/compat:${{ github.workspace }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -61,6 +64,8 @@ jobs:
 
   publication-streamlit-smoke:
     runs-on: ubuntu-latest
+    env:
+      PYTHONPATH: ${{ github.workspace }}/compat:${{ github.workspace }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
