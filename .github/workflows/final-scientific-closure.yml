@@ -34,6 +34,7 @@ jobs:
             tests/golden_full_lca_test.py \
             tests/scientific_uncertainty_test.py \
             tests/publication_end_to_end_test.py \
+            tests/scientific_publication_reporting_test.py \
             tests/publication_app_purity_test.py ; do
             echo "=== $t ==="
             python "$t"
