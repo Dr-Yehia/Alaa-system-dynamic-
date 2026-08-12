@@ -16,9 +16,15 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+      - name: Materialize historical root aliases for regression only
+        run: |
+          set -e
+          for f in compat/*.py; do
+            ln -s "$f" "$(basename "$f")"
+          done
       - name: Install headless test dependencies
-        # Historical suites still import frozen root-era module names. They resolve
-        # through compat/ while canonical source stays under monorail_assessment/.
+        # Historical suites still import frozen root-era module names. The aliases
+        # above exist only inside this ephemeral CI workspace; they are not tracked.
         run: python -m pip install --upgrade pip pandas numpy plotly openpyxl
       - name: Run full test suite
         run: |
