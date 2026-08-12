@@ -1123,7 +1123,7 @@ def _section_noise(noise_inputs: dict, rows: list[dict]) -> dict:
         checks.append(check)
         prepared.append(
             {
-                "receptor_id": row.get("receptor_id", ""),
+                "receptor_id": str(row.get("receptor_id", "")),
                 "metric": row.get("metric", ""),
                 "assessment_period": row.get("assessment_period", ""),
                 "baseline_db": _value(baseline),
@@ -1131,6 +1131,10 @@ def _section_noise(noise_inputs: dict, rows: list[dict]) -> dict:
                 "_check": check,
             }
         )
+    # Each receptor's audit row must cite that receptor's own evidence. Reusing
+    # one check for all of them would let a well-sourced receptor vouch for a
+    # poorly-sourced one.
+    check_by_receptor = {r["receptor_id"]: r["_check"] for r in prepared}
 
     usable = [r for r in prepared if r["_check"].usable]
     status = STATUS_SOURCE_OPEN
@@ -1178,7 +1182,7 @@ def _section_noise(noise_inputs: dict, rows: list[dict]) -> dict:
                 unit="dB (positive = quieter than baseline)",
                 result_group="physical",
                 status=status,
-                check=checks[0] if checks else None,
+                check=check_by_receptor.get(receptor["receptor_id"]),
                 note=note,
             )
         )
