@@ -707,10 +707,21 @@ def _section_land_use(land_use: dict, rows: list[dict]) -> dict:
     out["analysis_area_id"] = land_use.get("analysis_area_id", "")
     out["analysis_area_source"] = land_use.get("analysis_area_source", "")
 
+    # The land-use maps are project spatial data, not a registry document, so the
+    # evidence trace for these KPIs is the declared GIS source and analysis area
+    # rather than a REF-* id. Recording it here is what keeps the audit chain
+    # unbroken: without it these rows would be publication-eligible with nothing
+    # behind them in the export.
     check = _EvidenceCheck()
     if status != STATUS_SOURCE_OPEN:
-        check.geographies.append(str(land_use.get("analysis_area_id", "") or "project analysis area"))
-        check.locations.append(str(land_use.get("analysis_area_source", "") or ""))
+        area_id = str(land_use.get("analysis_area_id", "") or "project analysis area")
+        area_source = str(land_use.get("analysis_area_source", "") or "")
+        check.geographies.append(area_id)
+        if area_source:
+            check.titles.append(f"Project land-use maps: {area_source}")
+            check.locations.append(f"analysis area {area_id}; GIS source {area_source}")
+            check.files.append(area_source)
+            check.statuses.append("PROJECT-SPECIFIC")
 
     for kpi_id, name, eq_id, val in (
         ("BEN-KPI-LUD-BASE", "Land-use diversity — baseline", "BEN-LUD-01", lud_base),
@@ -845,9 +856,12 @@ def _section_urban_growth(urban: dict, rows: list[dict]) -> dict:
             per_capita = core.built_up_area_per_capita(
                 _value(bu_present), _value(pop_present)
             )
+            # Area per capita needs the two observations, not the growth rate.
+            # Coupling it to PGR would downgrade a perfectly sourced ratio just
+            # because no elapsed analysis period was supplied.
             pc_status = (
                 STATUS_COMPUTED
-                if bu_status == STATUS_COMPUTED and pgr_status != STATUS_SOURCE_OPEN
+                if bu_check.status() == STATUS_COMPUTED and pop_check.status() == STATUS_COMPUTED
                 else STATUS_SCENARIO_ONLY
             )
             pc_note = ""

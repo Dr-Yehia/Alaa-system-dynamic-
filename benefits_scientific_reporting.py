@@ -397,14 +397,29 @@ def export_parity_ok(result) -> tuple[bool, list[str]]:
             problems.append(f"{exported['kpi_id']}: exported status disagrees with the result")
 
     # No export may contain a scientific number without a resolvable equation and
-    # evidence chain.
+    # an evidence chain. The chain is normally a registered REF-* id, but some
+    # project evidence has no registry entry by nature — a GIS layer or a survey
+    # is project data, not a method document — so a declared source file and
+    # exact location satisfies it equally. What is never acceptable is an
+    # eligible value whose only provenance is the method reference behind its
+    # equation, because that would be a method source certifying a number.
     for row in result.rows:
         if row["value"] is None or not row["publication_eligible"]:
             continue
         if row["equation_id"] and row["equation_id"] not in EQUATIONS:
             problems.append(f"{row['kpi_id']}: cites unregistered equation {row['equation_id']!r}")
-        if not row["numeric_source_ref_ids"]:
-            problems.append(f"{row['kpi_id']}: publication-eligible with no numeric source")
+
+        has_numeric_ref = bool(str(row["numeric_source_ref_ids"]).strip())
+        declared_location = str(row["source_location"]).strip()
+        has_declared_source = bool(
+            str(row["source_file"]).strip()
+            or (declared_location and declared_location != str(row["method_source_location"]).strip())
+        )
+        if not (has_numeric_ref or has_declared_source):
+            problems.append(
+                f"{row['kpi_id']}: publication-eligible with no numeric source and no "
+                "declared project source"
+            )
         for ref_id in filter(None, str(row["numeric_source_ref_ids"]).split("; ")):
             if ref_id not in REFERENCES:
                 problems.append(f"{row['kpi_id']}: cites unregistered reference {ref_id!r}")

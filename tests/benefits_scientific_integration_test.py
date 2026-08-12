@@ -458,7 +458,64 @@ check(
 )
 check("reporting still loads no LCA module", "lca_scientific_core" not in sys.modules)
 
-for name, subject in (("populated", good), ("empty", empty), ("jobs", jobs)):
+# Land use and urban growth exercise a different provenance shape: the maps are
+# project spatial data with no registry entry, so their audit chain is a declared
+# GIS source rather than a REF-* id. Without this case the export could carry a
+# publication-eligible index with nothing behind it.
+spatial = run_scientific_benefits_from_params(
+    params={
+        "benefits_scientific_inputs": {
+            "land_use": {
+                "analysis_area_id": "Node-A 800m",
+                "analysis_area_source": "Cairo GIS layer, 2025-03",
+                "baseline_area_by_class": {"res": 40.0, "com": 30.0, "grn": 30.0},
+                "project_area_by_class": {"res": 35.0, "com": 35.0, "grn": 30.0},
+            },
+            "urban_growth": {
+                "past_year": 2015,
+                "present_year": 2025,
+                "built_up_past": project_ev(1.0e7, "m2", source_ref_id="REF-UNHABITAT-SDG1131-2025"),
+                "built_up_present": project_ev(1.4e7, "m2", source_ref_id="REF-UNHABITAT-SDG1131-2025"),
+                "population_past": project_ev(5.0e5, "persons", source_ref_id="REF-UNHABITAT-SDG1131-2025"),
+                "population_present": project_ev(6.0e5, "persons", source_ref_id="REF-UNHABITAT-SDG1131-2025"),
+            },
+        }
+    },
+    shared_activity=None,
+    project_context=None,
+)
+lud_row = row_by_id(spatial, "BEN-KPI-LUD-BASE")
+check("land-use diversity computes from project maps", lud_row["status"] == STATUS_COMPUTED)
+check(
+    "an eligible land-use row records its GIS provenance",
+    lud_row["publication_eligible"] and "GIS source" in lud_row["source_location"],
+)
+check(
+    "built-up per capita does not depend on the growth rate being available",
+    row_by_id(spatial, "BEN-KPI-BUILTUP-PC")["status"] == STATUS_COMPUTED,
+)
+
+# Without a declared GIS source the same maps compute but cannot be published.
+undated = run_scientific_benefits_from_params(
+    params={
+        "benefits_scientific_inputs": {
+            "land_use": {
+                "baseline_area_by_class": {"res": 40.0, "com": 60.0},
+                "project_area_by_class": {"res": 50.0, "com": 50.0},
+            }
+        }
+    },
+    shared_activity=None,
+    project_context=None,
+)
+undated_row = row_by_id(undated, "BEN-KPI-LUD-BASE")
+check("undeclared land-use maps are SCENARIO-ONLY", undated_row["status"] == STATUS_SCENARIO_ONLY)
+check("undeclared land-use maps are not publication eligible",
+      undated_row["publication_eligible"] is False)
+check("the missing GIS source is named", "GIS source" in undated_row["note"])
+
+for name, subject in (("populated", good), ("empty", empty), ("jobs", jobs),
+                      ("spatial", spatial), ("undated maps", undated)):
     parity_ok, problems = reporting.export_parity_ok(subject)
     for problem in problems[:5]:
         print("     parity problem:", problem)
