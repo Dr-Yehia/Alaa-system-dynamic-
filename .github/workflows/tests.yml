@@ -46,7 +46,8 @@ jobs:
             tests/benefits_scientific_core_test.py \
             tests/benefits_reference_integrity_test.py \
             tests/benefits_scientific_integration_test.py \
-            tests/benefits_publication_gate_test.py ; do
+            tests/benefits_publication_gate_test.py \
+            tests/publication_app_smoke_test.py ; do
             echo "=== $t ==="
             if ! python "$t"; then
               echo "::error title=Historical regression failure::$t"
