@@ -59,8 +59,46 @@ for node in ast.walk(tree):
 
 for mod in ("assessment_orchestrator", "uncertainty_orchestrator", "legacy_lca_engine",
             "legacy_lcc_engine", "benefits_core", "shared_activity", "project_context",
-            "system_dynamics_core"):
+            "system_dynamics_core", "benefits_scientific_integration",
+            "benefits_reference_registry"):
     check(f"app imports {mod}", mod in imports)
+
+# ── The app collects Benefits EVIDENCE but defines no Benefits SCIENCE ──────
+# The UI may build a form and render a table. The moment it computes a diversity
+# index or an avoided-emission figure itself, the source-traceability contract is
+# broken: an equation in the app carries no registry record and no audit row.
+for name in ("annual_passenger_km", "shifted_passenger_km", "allocate_shifted_pkm",
+             "emissions_from_gas_factor", "emissions_from_co2e_factor", "avoided_emissions",
+             "passenger_hours_saved", "monetize_time_saving",
+             "generated_traffic_benefit_rule_of_half", "vot_from_logit_coefficients",
+             "land_use_shares", "normalized_land_use_diversity", "land_use_diversity_delta",
+             "built_up_change_pct", "land_consumption_rate", "population_growth_rate",
+             "lcr_pgr_ratio", "built_up_area_per_capita", "technical_coefficients",
+             "leontief_inverse", "io_output_response", "output_multiplier",
+             "employment_multiplier", "jobs_proxy", "physical_noise_delta"):
+    check(f"app does not define the Benefits equation {name}()", name not in funcs)
+
+check("app defines no Benefits equation registry", "BEN_EQUATIONS" not in consts)
+# Signature fragments of the Benefits equations. Any of these appearing in the app
+# would mean the science was reimplemented in the presentation layer.
+for fragment in ("math.log(n_classes)", "* 60.0", "0.5 * generated",
+                 "np.linalg.inv(np.eye"):
+    check(f"app source contains no Benefits arithmetic fragment {fragment!r}",
+          fragment not in src)
+check("app carries no EQ= source comment (those belong to the scientific cores)",
+      "# EQ=BEN-" not in src)
+
+# ── Publication mode cannot present legacy Benefits as scientific output ────
+check("the Results Benefits panel branches on publication mode",
+      "if publication_mode:\n            render_scientific_benefits_panel" in src)
+check("the legacy Benefit KPI table is labelled Developer/legacy",
+      "Developer / legacy Benefit KPIs" in src)
+check("legacy Benefit KPI inputs are collected in Developer mode only",
+      "Legacy Benefit KPI inputs (developer only)" in src)
+check("the scientific Benefits tab exists",
+      "'sci_benefits'" in src and "Scientific Benefits (referenced)" in src)
+check("the app runs the domains once via the orchestrator bundle",
+      "run_assessment_bundle(params)" in src)
 
 # ── Monte Carlo evaluates through the separated engines ─────────────────────
 check("Monte Carlo evaluates samples via the uncertainty orchestrator",
@@ -80,10 +118,15 @@ legacy_lcc = open(os.path.join(ROOT, "legacy_lcc_engine.py"), encoding="utf-8").
 check("legacy_lcc_engine still declares the publication prohibition",
       "MUST NOT supply Publication-mode LCC" in legacy_lcc)
 
-# ── The app shrank substantially ────────────────────────────────────────────
+# ── The app stays materially smaller than the pre-separation monolith ───────
+# The ceiling exists to stop domain science drifting back into the app. It is a
+# blunt proxy, so it moves when the app legitimately gains PRESENTATION code —
+# the Benefits evidence-collection forms are a large block of pure UI. The
+# substantive guarantee is the equation-absence block above, which fails on the
+# actual science rather than on a byte count.
 size = os.path.getsize(APP)
-check(f"app is materially smaller than the 295,551-byte baseline ({size:,} bytes)",
-      size < 240_000)
+check(f"app is materially smaller than the 295,551-byte pre-separation baseline ({size:,} bytes)",
+      size < 270_000)
 
 print("\nAPP LAYER PURITY VERIFIED" if ok else "\nAPP LAYER PURITY VIOLATED")
 sys.exit(0 if ok else 1)

@@ -43,7 +43,10 @@ def imports_of(path):
 LCA_MODULES = ["lca_scientific_core.py", "lca_scientific_integration.py",
                "lca_scientific_reporting.py", "legacy_lca_engine.py"]
 LCC_MODULES = ["lcc_scientific_core.py", "legacy_lcc_engine.py"]
-BENEFIT_MODULES = ["benefits_core.py"]
+BENEFIT_MODULES = ["benefits_core.py", "benefits_reference_registry.py",
+                   "benefits_scientific_core.py", "benefits_scientific_integration.py",
+                   "benefits_scientific_reporting.py"]
+BENEFIT_MODULES = [m for m in BENEFIT_MODULES if os.path.exists(os.path.join(ROOT, m))]
 NEUTRAL_MODULES = ["project_context.py", "shared_activity.py", "system_dynamics_core.py"]
 
 LCA_PREFIXES = ("lca_", "legacy_lca")
@@ -224,6 +227,23 @@ check("orchestrator runs the three domains separately",
 for tok in ("kgco2e", "* 1000", "/ 1000", "(1 + r)", "1.05 **"):
     check(f"orchestrator contains no arithmetic token {tok!r}", tok not in orch_code)
 
+# The bundle must run the domains ONCE and hand Benefits the activity record the
+# other domains already produced — not trigger a second full evaluation.
+check("orchestrator exposes the single-run bundle", "def run_assessment_bundle" in orch)
+check("the bundle reuses the AssessmentResult's shared activity",
+      "shared_activity=result.shared" in orch)
+check("the bundle calls run_assessment exactly once",
+      orch.split("def run_assessment_bundle")[1].count("run_assessment(params)") == 1)
+check("the bundle assembles the dashboard from the same result",
+      "assemble_legacy_dashboard_results(result)" in orch)
+check("orchestrator contains no Benefits equation id", "EQ=BEN-" not in orch)
+
+# ── 5b. The scientific Benefits domain is reachable and self-contained ───────
+ben_int = open(os.path.join(ROOT, "benefits_scientific_integration.py"), encoding="utf-8").read()
+check("scientific Benefits integration calls the Benefits core", "core." in ben_int)
+check("scientific Benefits integration defines no equation of its own",
+      "# EQ=BEN-" not in ben_int)
+
 # ── 6. Per-domain results carry no foreign fields ────────────────────────────
 from assessment_orchestrator import run_assessment  # noqa: E402
 
@@ -243,6 +263,54 @@ check("AssessmentResult.shared is a neutral activity record",
 check("shared activity exposes no carbon or price attribute",
       not any(t in a.lower() for a in dir(res.shared)
               for t in ("co2", "carbon", "tariff", "cost", "npv")))
+
+# ── 7. Scientific Benefits are behaviourally independent too ─────────────────
+# Changing a Benefits evidence input must not move carbon or cost, and changing a
+# discount rate must not move a Benefits result.
+from assessment_orchestrator import run_assessment_bundle  # noqa: E402
+
+
+def _sci_evidence(value):
+    return {
+        "value": value, "unit": "passengers/day", "source_ref_id": "REF-EGY-GB-2022",
+        "source_file": "test.pdf", "source_location": "test fixture",
+        "geography": "Cairo, Egypt", "evidence_status": "PROJECT-SPECIFIC",
+    }
+
+
+_p_base = dict(base_params)
+_p_base["benefits_scientific_inputs"] = {
+    "transport": {
+        "passengers_per_day": _sci_evidence(300_000.0),
+        "avg_distance_km": dict(_sci_evidence(10.0), unit="km"),
+        "operating_days_per_year": dict(_sci_evidence(350.0), unit="days/year"),
+    }
+}
+_r0, _d0, _b0 = run_assessment_bundle(dict(_p_base))
+
+_p_ben = dict(_p_base)
+_p_ben["benefits_scientific_inputs"] = {
+    "transport": {
+        "passengers_per_day": _sci_evidence(600_000.0),
+        "avg_distance_km": dict(_sci_evidence(10.0), unit="km"),
+        "operating_days_per_year": dict(_sci_evidence(350.0), unit="days/year"),
+    }
+}
+_r1, _d1, _b1 = run_assessment_bundle(_p_ben)
+
+check("changing scientific Benefits evidence DOES change Benefits",
+      _b0.physical["annual_passenger_km"] != _b1.physical["annual_passenger_km"])
+check("changing scientific Benefits evidence does NOT change carbon",
+      same(_d0, _d1, CARBON_KEYS))
+check("changing scientific Benefits evidence does NOT change cost",
+      same(_d0, _d1, MONEY_KEYS))
+
+_p_rate = dict(_p_base)
+_p_rate["discount_rate"] = float(base_params.get("discount_rate", 5.0)) + 3.0
+_r2, _d2, _b2 = run_assessment_bundle(_p_rate)
+check("changing the discount rate does NOT change scientific Benefits",
+      _b2.physical["annual_passenger_km"] == _b0.physical["annual_passenger_km"])
+check("changing the discount rate DOES change cost", differs(_d0, _d2, MONEY_KEYS))
 
 print("\nDOMAIN SEPARATION VERIFIED" if ok else "\nDOMAIN SEPARATION VIOLATED")
 sys.exit(0 if ok else 1)

@@ -46,12 +46,25 @@ from legacy_lca_engine import (calculate_dynamic_b6, calculate_legacy_lca,
                                validate_a5_treatment_shares, _parse_year_list)
 from legacy_lcc_engine import (b6_energy_pv_cost, calculate_lcc_npv,
                                calculate_lcc_npv_activity_based, calculate_legacy_lcc)
+# LEGACY-DEVELOPER-ONLY. Kept for Developer-mode parity and the historical dashboard.
+# It is NOT the Publication Benefits engine — that is benefits_scientific_* below.
 from benefits_core import calculate_benefit_kpis, calculate_legacy_jobs
+# ── Scientific Benefits (referenced, evidence-gated) ──────────────────────────
+# The Publication Benefits engine. It computes nothing without evidence and marks
+# every KPI with the provenance state that decides whether it may be published.
+from benefits_reference_registry import EQUATIONS as BENEFITS_EQUATIONS, REFERENCES as BENEFITS_REFERENCES
+from benefits_scientific_integration import (
+    PUBLICATION_ELIGIBLE_STATES as BENEFITS_PUBLICATION_STATES,
+    ScientificBenefitsResult,
+    run_scientific_benefits_from_params,
+)
 # The application NO LONGER defines the assessment engine. It calls the orchestrator,
 # which runs LCA, LCC and Benefits as independent domains and assembles the combined
 # dictionary the legacy dashboard expects.
 from assessment_orchestrator import (run_assessment, split_params,
-                                     calculate_legacy_dashboard_results)
+                                     calculate_legacy_dashboard_results,
+                                     assemble_legacy_dashboard_results,
+                                     run_assessment_bundle)
 from uncertainty_orchestrator import evaluate_sample
 
 # ═══════════════════════════════════════════════════════════════
@@ -63,6 +76,383 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded"
 )
+
+# ═══════════════════════════════════════════════════════════════
+# SCIENTIFIC BENEFITS — UI EVIDENCE COLLECTION HELPERS
+# ───────────────────────────────────────────────────────────────
+# These build the evidence envelopes the referenced Benefits core requires. They
+# live in the UI layer on purpose: collecting a page number from a form is
+# presentation work, not science, and putting it in the core would give the core
+# a reason to know about Streamlit.
+#
+# A field here is deliberately more work to fill than a plain number box. That is
+# the point — the extra fields ARE the difference between a value and evidence.
+# ═══════════════════════════════════════════════════════════════
+
+#: Evidence statuses a user may assign, ordered from weakest to strongest.
+BENEFIT_EVIDENCE_STATUSES = [
+    "SOURCE-OPEN",        # nothing supplied yet
+    "METHOD-REFERENCE",   # a document that supports the FORMULA only
+    "SCENARIO-ONLY",      # an explicit assumption, labelled as such
+    "HISTORICAL",         # real data from an earlier period/basis
+    "REF-PROXY",          # an external benchmark, transferred
+    "PROJECT-SPECIFIC",   # measured or modelled for THIS project
+    "OFFICIAL-PROJECT-DATA",  # stated by an official project document
+]
+
+_BENEFIT_REF_CHOICES = ["(none)"] + sorted(BENEFITS_REFERENCES)
+
+
+def benefit_evidence_input(label, *, key, unit, default_ref="(none)",
+                           monetary=False, help_text=""):
+    """Collect one numeric quantity together with the provenance that justifies it.
+
+    Returns an evidence mapping, or ``None`` when no value was entered. Returning
+    None rather than 0.0 matters: the Benefits gate distinguishes "not supplied"
+    from "measured as zero", and a default of 0.0 would erase that distinction.
+    """
+    st.markdown(f"**{label}**" + (f"  \n_{help_text}_" if help_text else ""))
+    cols = st.columns([1.1, 1.0, 1.0])
+    with cols[0]:
+        raw = st.text_input(f"Value ({unit})", value="", key=f"{key}_val",
+                            help="Leave empty to keep this input SOURCE-OPEN.")
+    with cols[1]:
+        ref_id = st.selectbox("Source reference", _BENEFIT_REF_CHOICES,
+                              index=_BENEFIT_REF_CHOICES.index(default_ref)
+                              if default_ref in _BENEFIT_REF_CHOICES else 0,
+                              key=f"{key}_ref")
+    with cols[2]:
+        status = st.selectbox("Evidence status", BENEFIT_EVIDENCE_STATUSES,
+                              index=0, key=f"{key}_status",
+                              help="METHOD-REFERENCE supports the equation. Only "
+                                   "PROJECT-SPECIFIC and OFFICIAL-PROJECT-DATA can "
+                                   "carry a project headline.")
+    cols2 = st.columns([1.2, 1.4, 1.0])
+    with cols2[0]:
+        source_file = st.text_input("Source file / report", value="", key=f"{key}_file")
+    with cols2[1]:
+        location = st.text_input("Exact page / table / section", value="", key=f"{key}_loc",
+                                 help="e.g. 'Annex 4, printed pp.71-72'. A bare page "
+                                      "number makes a reviewer hunt.")
+    with cols2[2]:
+        geography = st.text_input("Geography", value="", key=f"{key}_geo")
+
+    currency = price_year = None
+    if monetary:
+        cols3 = st.columns(2)
+        with cols3[0]:
+            currency = st.text_input("Currency", value="", key=f"{key}_ccy")
+        with cols3[1]:
+            py_raw = st.text_input("Price base year", value="", key=f"{key}_py")
+        try:
+            price_year = int(str(py_raw).strip()) if str(py_raw).strip() else None
+        except (TypeError, ValueError):
+            price_year = None
+
+    text = str(raw or "").strip()
+    if not text:
+        return None
+    try:
+        value = float(text)
+    except (TypeError, ValueError):
+        st.warning(f"{label}: '{text}' is not a number; this input stays SOURCE-OPEN.")
+        return None
+
+    return {
+        "value": value,
+        "unit": unit,
+        "source_ref_id": "" if ref_id == "(none)" else ref_id,
+        "source_file": source_file,
+        "source_location": location,
+        "geography": geography,
+        "evidence_status": status,
+        "currency": currency or None,
+        "price_base_year": price_year,
+    }
+
+
+def _benefit_area_table(label, *, key, help_text=""):
+    """Collect land-use class areas as 'class = area' lines.
+
+    A free-text block rather than a widget grid, because the class schema itself
+    is project evidence: the baseline and the project must use the SAME classes,
+    and a fixed set of boxes would quietly impose a schema the maps do not have.
+    """
+    st.markdown(f"**{label}**" + (f"  \n_{help_text}_" if help_text else ""))
+    raw = st.text_input("one 'class = area' per line, separated by ';'",
+                        value="", key=key)
+    areas = {}
+    for line in str(raw or "").replace("\n", ";").split(";"):
+        if "=" not in line:
+            continue
+        name, _, amount = line.partition("=")
+        name = name.strip()
+        try:
+            areas[name] = float(amount.strip())
+        except (TypeError, ValueError):
+            continue
+    return areas
+
+
+def collect_benefits_scientific_inputs():
+    """Build the whole `benefits_scientific_inputs` evidence tree from the sidebar."""
+    st.markdown("#### 🚈 Transport activity, modal shift and emissions")
+    transport = {
+        "passengers_per_day": benefit_evidence_input(
+            "Passengers per day", key="sben_pax_day",
+            unit="passengers/day", default_ref="REF-EGY-GB-2022"),
+        "avg_distance_km": benefit_evidence_input(
+            "Average passenger trip distance", key="sben_dist",
+            unit="km/passenger", default_ref="REF-EGY-GB-2022"),
+        "operating_days_per_year": benefit_evidence_input(
+            "Operating days per year", key="sben_days",
+            unit="days/year", default_ref="REF-EGY-GB-2022",
+            help_text="Supply the project's own service calendar. The 365 days used "
+                      "inside the green bond report is that report's assumption."),
+        "modal_shift_fraction": benefit_evidence_input(
+            "Modal-shift fraction", key="sben_modal",
+            unit="fraction 0-1", default_ref="REF-EGY-GB-2022",
+            help_text="A Cairo measurement. The report's 20-50% band and its 30% "
+                      "featured case are scenarios, not project evidence."),
+        "car_share_of_shift": benefit_evidence_input(
+            "Car share of displaced travel", key="sben_car_share",
+            unit="fraction 0-1"),
+        "bus_share_of_shift": benefit_evidence_input(
+            "Bus share of displaced travel", key="sben_bus_share",
+            unit="fraction 0-1", help_text="Car share + bus share must equal 1."),
+        "car_emission_factor": benefit_evidence_input(
+            "Car emission factor", key="sben_car_ef",
+            unit="kgCO2e/pkm", help_text="Already-CO2e basis. Do not enter a "
+                                         "gas-specific factor here."),
+        "bus_emission_factor": benefit_evidence_input(
+            "Bus emission factor", key="sben_bus_ef", unit="kgCO2e/pkm"),
+        "project_emission_factor": benefit_evidence_input(
+            "Monorail emission factor", key="sben_proj_ef", unit="kgCO2e/pkm"),
+        "annual_trips": benefit_evidence_input(
+            "Annual trips (existing passengers)", key="sben_trips",
+            unit="trips/year", default_ref="REF-WB-ENRRP-ICR"),
+        "baseline_time_min": benefit_evidence_input(
+            "Baseline journey time", key="sben_t0", unit="min"),
+        "project_time_min": benefit_evidence_input(
+            "Project journey time", key="sben_t1", unit="min"),
+        "generated_trips": benefit_evidence_input(
+            "Generated (newly induced) trips", key="sben_gen",
+            unit="trips/year", default_ref="REF-WB-ENRRP-ICR",
+            help_text="Only these receive the Rule of Half. Existing passengers "
+                      "keep the full time benefit."),
+        "value_of_time": benefit_evidence_input(
+            "Value of travel time", key="sben_vot",
+            unit="currency/hour", default_ref="REF-EGY-VOT-2022", monetary=True,
+            help_text="Currency and price base year are required before any "
+                      "monetary benefit is produced."),
+    }
+
+    st.markdown("#### 🗺️ Land use around the transit nodes")
+    land_use = {
+        "analysis_area_id": st.text_input("Analysis area identifier", value="", key="sben_area_id"),
+        "analysis_area_source": st.text_input(
+            "GIS source and date", value="", key="sben_area_src",
+            help="Required before the land-use indices can be publication eligible."),
+        "influence_radius_m": benefit_evidence_input(
+            "TOD influence radius", key="sben_radius", unit="m",
+            help_text="The Indian national TOD policy's 500-800 m band is a policy "
+                      "benchmark, not the Cairo radius."),
+        "baseline_area_by_class": _benefit_area_table(
+            "Baseline land-use areas", key="sben_lu_base",
+            help_text="e.g. residential = 42.5; commercial = 18.0"),
+        "project_area_by_class": _benefit_area_table(
+            "Project land-use areas", key="sben_lu_proj",
+            help_text="Must use exactly the same class names as the baseline."),
+    }
+    land_use["class_schema"] = sorted(land_use["baseline_area_by_class"])
+
+    st.markdown("#### 🏙️ Urban growth (SDG 11.3.1)")
+    gcols = st.columns(2)
+    with gcols[0]:
+        past_year_raw = st.text_input("Past observation year", value="", key="sben_yr_past")
+    with gcols[1]:
+        present_year_raw = st.text_input("Present observation year", value="", key="sben_yr_now")
+
+    def _year(raw):
+        try:
+            return int(str(raw).strip()) if str(raw or "").strip() else None
+        except (TypeError, ValueError):
+            return None
+
+    urban_growth = {
+        "past_year": _year(past_year_raw),
+        "present_year": _year(present_year_raw),
+        "built_up_past": benefit_evidence_input(
+            "Built-up area (past)", key="sben_bu_past", unit="m2",
+            default_ref="REF-UNHABITAT-SDG1131-2025"),
+        "built_up_present": benefit_evidence_input(
+            "Built-up area (present)", key="sben_bu_now", unit="m2",
+            default_ref="REF-UNHABITAT-SDG1131-2025"),
+        "population_past": benefit_evidence_input(
+            "Population (past)", key="sben_pop_past", unit="persons"),
+        "population_present": benefit_evidence_input(
+            "Population (present)", key="sben_pop_now", unit="persons"),
+    }
+
+    st.markdown("#### 👷 Employment")
+    employment = {
+        "official_construction_jobs": benefit_evidence_input(
+            "Officially reported construction jobs", key="sben_jobs_con",
+            unit="jobs", default_ref="REF-EGY-GB-2022",
+            help_text="A reported figure. No equation is applied to it."),
+        "official_operational_jobs": benefit_evidence_input(
+            "Officially reported operational jobs", key="sben_jobs_ops",
+            unit="jobs", default_ref="REF-EGY-GB-2022"),
+        "proxy_investment_constant_2015_usd_m": benefit_evidence_input(
+            "Investment on a constant-2015-USD basis", key="sben_proxy_inv",
+            unit="million constant 2015 USD", default_ref="REF-MOSZORO-2024",
+            help_text="The proxy study standardises money to constant 2015 USD; the "
+                      "investment must match that basis."),
+        "jobs_per_musd_proxy": benefit_evidence_input(
+            "Benchmark jobs per US$1m", key="sben_proxy_jc",
+            unit="jobs per US$1m", default_ref="REF-MOSZORO-2024",
+            help_text="A cross-country benchmark. The result is never 'Cairo jobs "
+                      "created' and is never added to the official figures."),
+    }
+
+    return {
+        "transport": transport,
+        "land_use": land_use,
+        "urban_growth": urban_growth,
+        "employment": employment,
+        "input_output": {},
+        "noise": {"rows": []},
+        "formalization": {"evidence_status": "SOURCE-OPEN"},
+    }
+
+
+# ═══════════════════════════════════════════════════════════════
+# SCIENTIFIC BENEFITS — RENDERING
+# ───────────────────────────────────────────────────────────────
+# Presentation only. Every number shown here was computed by the Benefits core
+# and classified by the Benefits integration layer; nothing is recalculated.
+# ═══════════════════════════════════════════════════════════════
+
+#: Result-group labels, kept separate on screen for the same reason they are kept
+#: separate in the result object: they are not commensurable.
+_BENEFIT_GROUP_LABELS = [
+    ("physical", "🌍 Physical benefits"),
+    ("monetized_cba", "💰 Monetised CBA benefits"),
+    ("economic_impact", "🏗️ Economic impact (activity, not welfare)"),
+    ("employment", "👷 Employment"),
+]
+
+_BENEFIT_STATUS_ICON = {
+    "COMPUTED": "🟢",
+    "OFFICIAL-REPORTED": "🟢",
+    "SCENARIO-ONLY": "🟡",
+    "PROXY": "🟡",
+    "SOURCE-OPEN": "🟠",
+    "NOT-APPLICABLE": "⚪",
+    "BLOCKED": "🔴",
+}
+
+
+def _benefit_value_text(row):
+    """Format a KPI value without inventing precision it does not have."""
+    value = row["value"]
+    if value is None:
+        return "—"
+    if isinstance(value, dict):
+        return ", ".join(f"{k}: {v:,.1f}" for k, v in value.items())
+    if isinstance(value, (list, tuple)):
+        return ", ".join(f"{float(v):,.4g}" for v in value)
+    if isinstance(value, (int, float)):
+        return f"{value:,.4g}"
+    return str(value)
+
+
+def benefit_rows_dataframe(rows):
+    """Reviewer-facing table: value, unit, state, and the chain back to the source."""
+    return pd.DataFrame([
+        {
+            "": _BENEFIT_STATUS_ICON.get(r["status"], "•"),
+            "KPI": r["kpi_name"],
+            "Value": _benefit_value_text(r),
+            "Unit": r["unit"],
+            "Equation": r["equation_id"] or "—",
+            "Evidence state": r["status"],
+            "Method source": r["method_ref_ids"] or "—",
+            "Numeric source": r["numeric_source_ref_ids"] or "—",
+            "Publication eligible": "yes" if r["publication_eligible"] else "no",
+        }
+        for r in rows
+    ])
+
+
+def render_scientific_benefits_panel(container, benefits_result, *, compact=False):
+    """Render the referenced Benefits result, grouped and never totalled.
+
+    When the gate is not satisfied this still renders: it shows WHAT is missing
+    rather than hiding the panel, because an empty screen tells a reviewer less
+    than a list of the evidence that would close each item.
+    """
+    gate = benefits_result.publication_gate
+    rows = benefits_result.rows
+
+    if gate["publication_ready"]:
+        container.success(
+            "🟢 **Referenced Benefits engine.** Every value below was computed from an "
+            "equation with a registered source and from inputs whose provenance passed "
+            "the Benefits evidence gate."
+        )
+    else:
+        container.warning(
+            "🟠 **Benefits are not publication-ready.** The referenced engine computed "
+            "what the supplied evidence supports and reports the rest as source-open or "
+            "blocked. Legacy Benefit KPIs are NOT shown here as a substitute — they carry "
+            "no source, page or geography and are not an equivalent result."
+        )
+
+    ready_flags = [
+        ("Physical", gate["physical_ready"]),
+        ("Monetised time", gate["monetized_time_ready"]),
+        ("Economic impact", gate["economic_impact_ready"]),
+        ("Employment", gate["employment_ready"]),
+        ("Noise (physical)", gate["noise_physical_ready"]),
+    ]
+    container.markdown(
+        " · ".join(f"{'🟢' if flag else '🟠'} {label}" for label, flag in ready_flags)
+    )
+
+    for group_key, group_label in _BENEFIT_GROUP_LABELS:
+        group_rows = [r for r in rows if r["result_group"] == group_key]
+        if not group_rows:
+            continue
+        container.markdown(f"##### {group_label}")
+        container.dataframe(benefit_rows_dataframe(group_rows),
+                            use_container_width=True, hide_index=True)
+
+    # No combined headline. Physical tonnes, monetised hours, gross output and job
+    # counts are four different kinds of quantity; a single "Total Benefit" would
+    # have no defensible unit and would invite netting against LCC or LCA.
+    container.caption(
+        "Reported as four separate groups. There is no combined 'Total Benefit': "
+        "avoided tCO₂e, monetised hours, gross economic output and job counts are "
+        "not commensurable. Benefits never reduce LCC NPV and never reduce LCA "
+        "Gross A–C."
+    )
+
+    if gate["source_open_items"]:
+        with container.expander(f"🟠 Source-open items ({len(gate['source_open_items'])})",
+                                expanded=False):
+            for item in gate["source_open_items"]:
+                st.markdown(f"- {item}")
+    if gate["blocked_items"]:
+        with container.expander(f"🔴 Blocked until evidence closes ({len(gate['blocked_items'])})",
+                                expanded=False):
+            for item in gate["blocked_items"]:
+                st.markdown(f"- {item}")
+    if gate["warnings"] and not compact:
+        with container.expander(f"🟡 Not publication-eligible ({len(gate['warnings'])})",
+                                expanded=False):
+            for item in gate["warnings"]:
+                st.markdown(f"- {item}")
 
 # ═══════════════════════════════════════════════════════════════
 # LI & ZHU (2022) MONORAIL LCA BENCHMARK - EXTERNAL COMPARISON ONLY
@@ -1742,20 +2132,40 @@ with st.sidebar:
         else:
             jobs_created = 0.0
 
-        # ── R15: Benefit (co-benefit) KPIs — reported SEPARATELY, never netted into LCA ──
-        st.markdown("### 🌱 Benefit KPIs (separate co-benefits)")
-        st.caption("Societal co-benefits, computed from documented equations and reported "
-                   "alongside the LCA. They are NEVER subtracted from gross or net carbon.")
-        benefit_baseline_ci_pkm = st.number_input("Displaced-mode CI (kgCO₂e/pkm)", value=0.0, min_value=0.0, step=0.01, format="%.3f", key="ben_base_ci",
-                                                  help="CO₂ avoided = max(EF_baseline − EF_monorail, 0) · PKM.")
-        benefit_annual_trips = st.number_input("Annual trips", value=0.0, min_value=0.0, step=1000.0, key="ben_trips")
-        benefit_time_saved_min = st.number_input("Time saved per trip (min)", value=0.0, min_value=0.0, step=1.0, key="ben_dt")
-        benefit_value_of_time = st.number_input("Value of time ($/h)", value=0.0, min_value=0.0, step=1.0, key="ben_vot")
-        benefit_jobs_per_musd = st.number_input("Construction jobs per $M capex", value=0.0, min_value=0.0, step=0.1, key="ben_jobs_musd")
-        benefit_operational_jobs = st.number_input("Operational jobs", value=0.0, min_value=0.0, step=10.0, key="ben_op_jobs")
-        benefit_land_ha = st.number_input("Project land footprint (ha)", value=0.0, min_value=0.0, step=1.0, key="ben_land")
-        benefit_noise_baseline_db = st.number_input("Baseline noise (dB)", value=0.0, min_value=0.0, step=1.0, key="ben_noise_base")
-        benefit_noise_monorail_db = st.number_input("Monorail noise (dB)", value=0.0, min_value=0.0, step=1.0, key="ben_noise_mono")
+        # ── R15: LEGACY Benefit KPI inputs — DEVELOPER MODE ONLY ──────────────
+        # These fields collect a value and nothing else: no unit contract, no source
+        # reference, no page, no geography, no price year. That is enough for the
+        # historical dashboard and is NOT enough to publish, so Publication mode
+        # never shows them and never reads their results. The Publication Benefits
+        # inputs are the evidence-carrying block further down.
+        if not publication_mode:
+            st.markdown("### 🗄️ Legacy Benefit KPI inputs (developer only)")
+            st.caption("Numeric-only legacy fields. They feed the Developer dashboard and the "
+                       "parity suites. They are NOT documented evidence and are never used by "
+                       "Publication mode.")
+            benefit_baseline_ci_pkm = st.number_input("Displaced-mode CI (kgCO₂e/pkm)", value=0.0, min_value=0.0, step=0.01, format="%.3f", key="ben_base_ci",
+                                                      help="Legacy dashboard KPI. Publication uses the referenced Benefits core instead.")
+            benefit_annual_trips = st.number_input("Annual trips", value=0.0, min_value=0.0, step=1000.0, key="ben_trips")
+            benefit_time_saved_min = st.number_input("Time saved per trip (min)", value=0.0, min_value=0.0, step=1.0, key="ben_dt")
+            benefit_value_of_time = st.number_input("Value of time ($/h)", value=0.0, min_value=0.0, step=1.0, key="ben_vot")
+            benefit_jobs_per_musd = st.number_input("Construction jobs per $M capex", value=0.0, min_value=0.0, step=0.1, key="ben_jobs_musd")
+            benefit_operational_jobs = st.number_input("Operational jobs", value=0.0, min_value=0.0, step=10.0, key="ben_op_jobs")
+            benefit_land_ha = st.number_input("Project land footprint (ha)", value=0.0, min_value=0.0, step=1.0, key="ben_land")
+            benefit_noise_baseline_db = st.number_input("Baseline noise (dB)", value=0.0, min_value=0.0, step=1.0, key="ben_noise_base")
+            benefit_noise_monorail_db = st.number_input("Monorail noise (dB)", value=0.0, min_value=0.0, step=1.0, key="ben_noise_mono")
+        else:
+            # Backward-compatible plumbing only. The legacy keys still exist in
+            # current_params so the parameter classification and the Developer path
+            # keep working, but they carry nothing in Publication mode.
+            benefit_baseline_ci_pkm = 0.0
+            benefit_annual_trips = 0.0
+            benefit_time_saved_min = 0.0
+            benefit_value_of_time = 0.0
+            benefit_jobs_per_musd = 0.0
+            benefit_operational_jobs = 0.0
+            benefit_land_ha = 0.0
+            benefit_noise_baseline_db = 0.0
+            benefit_noise_monorail_db = 0.0
 
         steel_recycle, aluminum_recycle, recycling_scenario, renewable_share = 70, 85, 'none', 20
         if show_legacy:
@@ -1776,6 +2186,17 @@ with st.sidebar:
                 st.caption("Fill these from project evidence to unlock the referenced Scientific LCA tab. "
                            "Empty fields keep that tab in 'source-open' mode (no fabricated numbers).")
                 lca_provenance = add_lca_source_inputs(st, assessment_lifetime_default=int(ASSESSMENT_LIFETIME_YEARS))
+
+        # ── Referenced scientific-Benefits provenance ─────────────────────────
+        # Each field collects a value AND the evidence behind it. Anything left
+        # empty stays SOURCE-OPEN, which is reported explicitly rather than
+        # silently defaulting to zero.
+        with st.expander("🌱 Scientific Benefits provenance (referenced core)", expanded=False):
+            st.caption("Every Publication Benefits number is produced from these evidence "
+                       "envelopes. A method reference supports the equation; only "
+                       "PROJECT-SPECIFIC or OFFICIAL-PROJECT-DATA can carry a project "
+                       "headline. Empty fields stay source-open — nothing is assumed.")
+            benefits_scientific_inputs = collect_benefits_scientific_inputs()
 
         st.markdown("---")
         st.caption("↑ Use the **Run Assessment** button at the top of this panel to apply all inputs.")
@@ -1844,6 +2265,9 @@ current_params = {
     **{f'eol_secondary_ef_{_m}': eol_table[_m]['secondary_ef'] for _m in eol_table},
     # Referenced scientific-LCA provenance (used only by the strict sourced core; never by the legacy engine).
     **lca_provenance,
+    # Referenced scientific-Benefits evidence. ONE nested key, classified
+    # Benefits-only in the orchestrator, so nothing inside it can reach LCA or LCC.
+    'benefits_scientific_inputs': benefits_scientific_inputs,
 }
 
 @st.cache_data
@@ -1851,14 +2275,35 @@ def run_full_assessment_cached(params_tuple):
     params = dict(params_tuple)
     return run_full_assessment(params)
 
+
+@st.cache_data
+def run_assessment_bundle_cached(params_tuple):
+    """One separated domain run producing everything the main UI path needs.
+
+    Computing the legacy dashboard and the scientific Benefits independently would
+    run the LCA engine twice for a single screen. Worse, the two views could drift:
+    the Benefits domain would price its activity from a SharedActivity built in a
+    different pass than the one the LCC domain saw. The orchestrator's bundle runs
+    the domains once and hands Benefits the very same neutral activity record.
+
+    Returns ``(merged legacy dashboard dict, ScientificBenefitsResult)``.
+    """
+    params = dict(params_tuple)
+    _result, legacy_dashboard, scientific_benefits = run_assessment_bundle(params)
+    dashboard = calculate_dashboard_display_scores(params, legacy_dashboard)
+    return {**legacy_dashboard, **dashboard}, scientific_benefits
+
 # Run assessment on button click or auto-run for the first time
 if run_btn or 'results' not in st.session_state:
     params_tuple = tuple(sorted(current_params.items()))
-    st.session_state['results'] = run_full_assessment_cached(params_tuple)
+    _bundle_results, _bundle_benefits = run_assessment_bundle_cached(params_tuple)
+    st.session_state['results'] = _bundle_results
+    st.session_state['scientific_benefits'] = _bundle_benefits
     st.session_state['params'] = current_params
     # No direct st.session_state assignments for widget keys to prevent StreamlitAPIException
 results = st.session_state['results']
 params = st.session_state['params']
+scientific_benefits = st.session_state['scientific_benefits']
 
 # ── Central scientific result (authoritative in Publication mode) ──
 # Computed ONCE and reused by the Results cards/exports and the Scientific tab. When the
@@ -1900,6 +2345,7 @@ with st.expander("🧩 LCA Stage Coverage", expanded=False):
 # ═══════════════════════════════════════════════════════════════
 _TAB_LABELS = {
     'results': "📊 Results & Analysis", 'sci_lca': "🔬 Scientific LCA (referenced)",
+    'sci_benefits': "🌱 Scientific Benefits (referenced)",
     'oat': "📊 Sensitivity (OAT)",
     'uncertainty': "🎲 Uncertainty (Phase 4)", 'si': "🏁 Sustainability Index",
     'sd': "🔧 System Dynamics (B6)", 'benchmark': "🔬 External Benchmarking",
@@ -1908,9 +2354,12 @@ _TAB_LABELS = {
     'surface3d': "🗄️ 3D Surface (illustrative)", 'urban': "🗄️ Urban 3D (illustrative)",
     'interaction': "🗄️ Interaction Net (illustrative)",
 }
-# R18 final tab order: Results → Scientific LCA (referenced) → Sensitivity →
-# System Dynamics (B6) → Uncertainty → Sustainability Index → External Benchmarking → Methodology.
-_SCI_ORDER = ['results', 'sci_lca', 'oat', 'sd', 'uncertainty', 'si', 'benchmark', 'about']
+# R18 final tab order: Results → Scientific LCA (referenced) → Scientific Benefits
+# (referenced) → Sensitivity → System Dynamics (B6) → Uncertainty → Sustainability
+# Index → External Benchmarking → Methodology.
+# Scientific Benefits sits directly after Scientific LCA: the two are the referenced
+# halves of the assessment, and a reviewer auditing sources reads them together.
+_SCI_ORDER = ['results', 'sci_lca', 'sci_benefits', 'oat', 'sd', 'uncertainty', 'si', 'benchmark', 'about']
 if not SCI_LCA_AVAILABLE:
     _SCI_ORDER = [k for k in _SCI_ORDER if k != 'sci_lca']
 _LEGACY_ORDER = ['pareto', 'twelve', 'surface3d', 'urban', 'interaction']
@@ -2138,20 +2587,30 @@ with TABS['results']:
             + ("" if flag else "(FRP without EPD, invalid treatment shares, or incomplete Module D)."))
 
     # ── R15: Benefit KPIs (co-benefits) — reported SEPARATELY from the LCA ──
+    # PUBLICATION SAFETY: Publication mode shows the referenced Benefits engine or it
+    # shows the audit of what is missing. It NEVER falls back to the legacy KPIs,
+    # because those collect a value with no unit contract, source, page or geography
+    # and would appear beside sourced results as if they were equivalent.
     with st.expander("🌱 Benefit KPIs (societal co-benefits — separate from LCA carbon)", expanded=False):
-        bk = results['benefit_kpis']
-        st.caption(bk['note'])
-        bk_df = pd.DataFrame([
-            {'KPI': 'CO₂ avoided (annual)', 'Value': f"{bk['annual_co2_avoided_tons']:,.1f}", 'Unit': 't CO₂e/yr'},
-            {'KPI': 'CO₂ avoided (lifetime)', 'Value': f"{bk['lifetime_co2_avoided_tons']:,.1f}", 'Unit': 't CO₂e'},
-            {'KPI': 'Time saved (annual)', 'Value': f"{bk['annual_hours_saved']:,.0f}", 'Unit': 'h/yr'},
-            {'KPI': 'Value of time saved (annual)', 'Value': f"{bk['annual_vots_musd']:,.2f}", 'Unit': '$M/yr'},
-            {'KPI': 'Jobs supported (total)', 'Value': f"{bk['total_jobs']:,.0f}", 'Unit': 'jobs'},
-            {'KPI': 'Economic impact', 'Value': f"{bk['economic_impact_musd']:,.0f}", 'Unit': '$M'},
-            {'KPI': 'Land use', 'Value': f"{bk['land_ha_per_million_pkm']:,.3f}", 'Unit': 'ha / Mpkm·yr'},
-            {'KPI': 'Noise reduction', 'Value': f"{bk['noise_reduction_db']:,.1f} ({bk['noise_reduction_ratio']*100:,.0f}%)", 'Unit': 'dB'},
-        ])
-        st.dataframe(bk_df, use_container_width=True, hide_index=True)
+        if publication_mode:
+            render_scientific_benefits_panel(st, scientific_benefits, compact=True)
+        else:
+            bk = results['benefit_kpis']
+            st.warning("🗄️ **Developer / legacy Benefit KPIs.** Numeric-only fields with no "
+                       "source, page or geography behind them. They are NOT the Publication "
+                       "Benefits result and must not be quoted as one.")
+            st.caption(bk['note'])
+            bk_df = pd.DataFrame([
+                {'KPI': 'CO₂ avoided (annual)', 'Value': f"{bk['annual_co2_avoided_tons']:,.1f}", 'Unit': 't CO₂e/yr'},
+                {'KPI': 'CO₂ avoided (lifetime)', 'Value': f"{bk['lifetime_co2_avoided_tons']:,.1f}", 'Unit': 't CO₂e'},
+                {'KPI': 'Time saved (annual)', 'Value': f"{bk['annual_hours_saved']:,.0f}", 'Unit': 'h/yr'},
+                {'KPI': 'Value of time saved (annual)', 'Value': f"{bk['annual_vots_musd']:,.2f}", 'Unit': '$M/yr'},
+                {'KPI': 'Jobs supported (total)', 'Value': f"{bk['total_jobs']:,.0f}", 'Unit': 'jobs'},
+                {'KPI': 'Economic impact', 'Value': f"{bk['economic_impact_musd']:,.0f}", 'Unit': '$M'},
+                {'KPI': 'Land use', 'Value': f"{bk['land_ha_per_million_pkm']:,.3f}", 'Unit': 'ha / Mpkm·yr'},
+                {'KPI': 'Noise reduction', 'Value': f"{bk['noise_reduction_db']:,.1f} ({bk['noise_reduction_ratio']*100:,.0f}%)", 'Unit': 'dB'},
+            ])
+            st.dataframe(bk_df, use_container_width=True, hide_index=True)
         st.info("These co-benefits are **not** part of the A1–C4 gross/net carbon and are never subtracted from it.")
 
     st.markdown("---")
@@ -2592,6 +3051,75 @@ if 'sci_lca' in TABS:
             st.caption("A1-A3, A4, A5 and B6 are wired to the referenced core now. B2-B5 and C1-C4 "
                        "scientific legs are the next integration increments; until then they report "
                        "0 as UNCONNECTED (not negligible), and full-WLCA grade stays False.")
+
+
+# ═══════════════════════════════════════════════════════════════
+# TAB: SCIENTIFIC BENEFITS (REFERENCED)
+# ───────────────────────────────────────────────────────────────
+# The reviewer's audit view. From any number on this tab it is possible to reach
+# the equation id, the equation record, the source document, and the exact page —
+# without leaving the application.
+# ═══════════════════════════════════════════════════════════════
+with TABS['sci_benefits']:
+    st.markdown("### 🌱 Scientific Benefits (referenced core)")
+    st.caption(
+        "Societal co-benefits computed from equations that each carry a registered "
+        "source, using inputs that each carry their own numeric evidence. A method "
+        "reference authorises the formula; it never certifies a project number."
+    )
+
+    render_scientific_benefits_panel(st, scientific_benefits)
+
+    st.markdown("---")
+    st.markdown("#### 🔎 Full KPI audit")
+    _all_rows = scientific_benefits.rows
+    st.dataframe(benefit_rows_dataframe(_all_rows), use_container_width=True, hide_index=True)
+
+    with st.expander("📐 Equation registry — every equation and its exact source", expanded=False):
+        st.dataframe(
+            pd.DataFrame([
+                {
+                    "Equation": eq.equation_id,
+                    "Name": eq.name,
+                    "Formula": eq.formula_text,
+                    "Unit contract": eq.output_unit_contract,
+                    "Method sources": "; ".join(eq.method_ref_ids),
+                    "Exact location": " | ".join(eq.exact_source_locations),
+                    "Numeric evidence required": "; ".join(eq.required_numeric_evidence),
+                    "Limitations": eq.limitations,
+                }
+                for eq in BENEFITS_EQUATIONS.values()
+            ]),
+            use_container_width=True, hide_index=True,
+        )
+
+    with st.expander("📚 Reference registry — open the original document", expanded=False):
+        st.dataframe(
+            pd.DataFrame([
+                {
+                    "Ref": ref.ref_id,
+                    "Title": ref.title,
+                    "Authors / issuer": ref.authors_or_issuer,
+                    "Year": ref.year,
+                    "Exact location": ref.exact_location,
+                    "DOI": ref.doi,
+                    "Official URL": ref.official_url,
+                    "Geography": ref.geography,
+                    "Evidence role": ref.evidence_role,
+                    "Limitations": ref.limitations,
+                }
+                for ref in BENEFITS_REFERENCES.values()
+            ]),
+            use_container_width=True, hide_index=True,
+        )
+        st.caption(
+            "Evidence status here describes source AUTHORITY, geography and "
+            "traceability. It is not a journal-ranking claim."
+        )
+
+    with st.expander("🧾 Double-count rules enforced by this domain", expanded=False):
+        for _rule in scientific_benefits.audit["double_count_rules"]:
+            st.markdown(f"- {_rule}")
 
 
 # ═══════════════════════════════════════════════════════════════
