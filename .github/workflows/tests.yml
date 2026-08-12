@@ -42,7 +42,9 @@ jobs:
             tests/lca_independence_test.py \
             tests/lcc_independence_test.py \
             tests/benefits_independence_test.py \
-            tests/full_separation_parity_test.py ; do
+            tests/full_separation_parity_test.py \
+            tests/params_classification_test.py \
+            tests/app_layer_purity_test.py ; do
             echo "=== $t ==="
             python "$t"
           done

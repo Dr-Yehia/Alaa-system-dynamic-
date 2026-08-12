@@ -184,26 +184,65 @@ if leaf:
 else:
     check("MATERIAL_FACTORS reachable for the emission-factor invariance test", False)
 
-# ── 4. The mixed engine no longer contains foreign equations ─────────────────
+# ── 4. The application is UI/orchestration only ──────────────────────────────
 app = open(os.path.join(ROOT, "app_final_streamlit_ready.py"), encoding="utf-8").read()
-tree = ast.parse(app)
-fn = next((n for n in tree.body
-           if isinstance(n, ast.FunctionDef) and n.name == "calculate_legacy_dashboard_results"),
-          None)
+app_tree = ast.parse(app)
+app_funcs = {n.name for n in app_tree.body if isinstance(n, ast.FunctionDef)}
+
 check("the mixed calculate_core_lca_lcc name is gone",
       "def calculate_core_lca_lcc" not in app)
-check("legacy dashboard engine still exists under its honest name", fn is not None)
-if fn is not None:
-    body = ast.get_source_segment(app, fn) or ""
-    check("legacy engine contains no present-value / NPV equation",
-          "1 + r" not in body and "discount_rate_pct=" not in body.replace(
-              "params.get(\"discount_rate\", 5.0)", ""))
-    check("legacy engine delegates cost to the LCC domain",
-          "calculate_legacy_lcc(" in body)
-    check("legacy engine delegates jobs to the Benefits domain",
-          "calculate_legacy_jobs(" in body)
-    check("legacy engine crosses the boundary with neutral activity only",
-          "build_shared_activity(" in body)
+check("the app does not DEFINE the assessment engine",
+      "def calculate_legacy_dashboard_results" not in app)
+check("the app imports the orchestrator", "assessment_orchestrator" in app)
+
+# No domain calculation may be DEFINED in the application any more.
+FORBIDDEN_IN_APP = [
+    "calculate_lca_summary", "calculate_a4_transport_co2", "calculate_a5_construction",
+    "calculate_b2_b5_use_stage", "calculate_c1_c4_end_of_life",
+    "calculate_module_d_from_eol", "compute_effective_ef", "b6_ci_trajectory",
+    "calculate_lcc_npv", "calculate_lcc_npv_activity_based", "b6_energy_pv_cost",
+    "calculate_benefit_kpis", "calculate_dynamic_b6", "simulate_asset_condition",
+]
+for name in FORBIDDEN_IN_APP:
+    check(f"app does not define {name}()", name not in app_funcs)
+
+for const in ("MATERIAL_FACTORS", "EMISSION_FACTORS", "DENSITIES",
+              "TRANSPORT_EMISSION_FACTORS", "RECYCLING_CREDIT_SCENARIOS"):
+    check(f"app does not define the {const} registry",
+          not any(isinstance(n, ast.Assign)
+                  and any(isinstance(t, ast.Name) and t.id == const for t in n.targets)
+                  for n in app_tree.body))
+
+# ── 5. The orchestrator owns assembly and holds no equation ──────────────────
+orch = open(os.path.join(ROOT, "assessment_orchestrator.py"), encoding="utf-8").read()
+orch_code = orch.split('"""', 2)[-1]
+check("orchestrator defines calculate_legacy_dashboard_results",
+      "def calculate_legacy_dashboard_results" in orch)
+check("orchestrator runs the three domains separately",
+      "calculate_legacy_lca(" in orch and "calculate_legacy_lcc(" in orch
+      and "calculate_benefit_kpis(" in orch)
+for tok in ("kgco2e", "* 1000", "/ 1000", "(1 + r)", "1.05 **"):
+    check(f"orchestrator contains no arithmetic token {tok!r}", tok not in orch_code)
+
+# ── 6. Per-domain results carry no foreign fields ────────────────────────────
+from assessment_orchestrator import run_assessment  # noqa: E402
+
+res = run_assessment(dict(base_params))
+check("AssessmentResult.lca contains no NPV/cost field",
+      not any(t in k.lower() for k in res.lca for t in ("npv", "lcc_results", "total_cost")))
+check("AssessmentResult.lca contains no jobs field",
+      not any("jobs" in k.lower() for k in res.lca))
+check("AssessmentResult.lcc contains no CO2/GWP field",
+      not any(t in k.lower() for k in res.lcc for t in ("co2", "gwp", "carbon")))
+check("AssessmentResult.lcc contains no jobs field",
+      not any("jobs" in k.lower() for k in res.lcc))
+check("AssessmentResult.benefits contains no NPV field",
+      not any("npv" in k.lower() for k in res.benefits))
+check("AssessmentResult.shared is a neutral activity record",
+      hasattr(res.shared, "annual_operational_kwh") and hasattr(res.shared, "served_annual_pkm"))
+check("shared activity exposes no carbon or price attribute",
+      not any(t in a.lower() for a in dir(res.shared)
+              for t in ("co2", "carbon", "tariff", "cost", "npv")))
 
 print("\nDOMAIN SEPARATION VERIFIED" if ok else "\nDOMAIN SEPARATION VIOLATED")
 sys.exit(0 if ok else 1)

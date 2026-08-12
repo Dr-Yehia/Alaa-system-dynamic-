@@ -42,16 +42,25 @@ ns = build_ns(publication_mode=False)
 engine = ns["calculate_legacy_dashboard_results"]
 params = dict(ns["params"])
 
-direct = engine(dict(params))
-assembled = run_assessment(dict(params), legacy_engine=engine)
+# The combined view is now ASSEMBLED by the orchestrator from three independent domain
+# runs. This proves the assembly reproduces exactly what each domain computed, rather
+# than the previous weaker test which merely re-ran one combined engine twice.
+combined = engine(dict(params))
+assembled = run_assessment(dict(params))
 
-check("orchestrator reproduces the LCC NPV exactly",
-      abs(assembled.lcc["npv_lcc_m"] - direct["lcc_results"]["npv_lcc_m"]) < 1e-12)
-check("orchestrator reproduces the carbon headline exactly",
-      abs(assembled.lca["gross_a1_c4_tons"] - direct["gross_a1_c4_tons"]) < 1e-12)
-check("orchestrator reproduces the benefit KPIs exactly",
-      assembled.benefits == direct["benefit_kpis"])
+check("assembled LCC NPV equals the LCC domain result",
+      abs(combined["npv_lcc_m"] - assembled.lcc["lcc_results"]["npv_lcc_m"]) < 1e-12)
+check("assembled carbon headline equals the LCA domain result",
+      abs(combined["gross_a1_c4_tons"] - assembled.lca["gross_a1_c4_tons"]) < 1e-12)
+check("assembled benefit KPIs equal the Benefits domain result",
+      combined["benefit_kpis"] == assembled.benefits["kpis"])
+check("assembled jobs equal the Benefits domain result",
+      combined["total_jobs"] == assembled.benefits["total_jobs"])
 check("orchestrator resolves a project context", assembled.context.country == "Egypt")
+check("the LCA domain result alone carries no cost",
+      "npv_lcc_m" not in assembled.lca and "lcc_results" not in assembled.lca)
+check("the LCC domain result alone carries no carbon",
+      not any(t in k.lower() for k in assembled.lcc for t in ("co2", "gwp")))
 
 # 3) The input slices genuinely withhold foreign fields.
 slices = split_params(params)
@@ -62,7 +71,16 @@ check("LCA slice cannot see construction cost",
 check("LCA slice cannot see jobs", "jobs_created" not in slices["lca_inputs"])
 check("LCC slice can see the discount rate", "discount_rate" in slices["lcc_inputs"])
 check("LCC slice cannot see jobs", "jobs_created" not in slices["lcc_inputs"])
-check("Benefits slice can see jobs", "jobs_created" in slices["benefits_inputs"])
+# The defect the review found: an emission factor must not reach the economic slice.
+check("LCC slice CANNOT see carbon_intensity (emission factor)",
+      "carbon_intensity" not in slices["lcc_inputs"])
+check("LCC slice cannot see material quantities",
+      "concrete" not in slices["lcc_inputs"] and "steel" not in slices["lcc_inputs"])
+check("Benefits slice can see the real benefit_* fields",
+      "benefit_time_saved_min" in slices["benefits_inputs"]
+      or "benefit_annual_trips" in slices["benefits_inputs"])
+check("Benefits slice can see construction_cost (declared multi-domain)",
+      "construction_cost" in slices["benefits_inputs"])
 check("Benefits slice cannot see the discount rate",
       "discount_rate" not in slices["benefits_inputs"])
 check("shared slice holds neither cost nor benefit fields",
