@@ -46,12 +46,16 @@ check("publication app contains no calculate_legacy call", "calculate_legacy" no
 check("publication exports are gated", "deterministic_publication_ready" in src and "deterministic_export_parity_ok" in src)
 check("full Q1 export is separately gated", "full_q1_ready" in src and "full_q1_excel_bytes" in src)
 
-# Presentation code may format numbers but must not reimplement domain equations.
+# Presentation code may READ canonical result keys such as GWP_kgCO2e_per_pkm.
+# Therefore purity is tested against actual arithmetic signatures, not scientific
+# vocabulary appearing in a display label/key.
 for fragment in (
     "np.linalg",
     "math.log(",
     "** project_year",
-    "kgco2e_per",
+    "* carbon_intensity",
+    "* emission_factor",
+    "/ lifetime_pkm",
     "0.5 * generated",
 ):
     check(f"publication app contains no scientific arithmetic fragment {fragment!r}", fragment not in src.lower())
