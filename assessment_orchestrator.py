@@ -223,6 +223,12 @@ BENEFITS_PARAM_KEYS = {
     "land_use",
     "noise_reduction",
     "time_savings",
+
+    # The scientific Benefits evidence tree. ONE nested key rather than a hundred
+    # flat ones, so the parameter dictionary does not grow a scientific vocabulary
+    # that the other two domains would then have to ignore by name. Benefits-only
+    # on purpose: nothing inside it is meaningful to LCA or LCC.
+    "benefits_scientific_inputs",
 }
 
 # Inputs legitimately needed by MORE THAN ONE domain. These are declared shared on
@@ -353,15 +359,15 @@ def run_assessment(params: dict) -> AssessmentResult:
     )
 
 
-def calculate_legacy_dashboard_results(params: dict) -> dict:
-    """Backward-compatible combined dictionary, ASSEMBLED from the separate domains.
+def assemble_legacy_dashboard_results(result: AssessmentResult) -> dict:
+    """Flatten an already-computed AssessmentResult into the legacy dashboard shape.
 
-    The historical dashboard and the regression suites expect one flat dictionary. That
-    shape is preserved here, but it is now a VIEW built by the orchestrator rather than
-    the product of one mixed engine: every number in it was computed by exactly one
-    domain. Assembling the three is the orchestrator's job and no one else's.
+    Split out from `calculate_legacy_dashboard_results` so that a caller which
+    already holds an AssessmentResult can reuse it instead of triggering a second
+    full domain run. The assembly is pure dictionary work: no engine is called
+    and no arithmetic is performed beyond the unit conversions the legacy
+    dashboard has always carried.
     """
-    result = run_assessment(params)
     combined = dict(result.lca)
     combined.update(result.lcc)
     combined["npv_lcc_m"] = result.lcc["lcc_results"]["npv_lcc_m"]
@@ -371,3 +377,45 @@ def calculate_legacy_dashboard_results(params: dict) -> dict:
     combined["economic_multiplier"] = result.benefits["economic_multiplier"]
     combined["total_jobs"] = result.benefits["total_jobs"]
     return combined
+
+
+def calculate_legacy_dashboard_results(params: dict) -> dict:
+    """Backward-compatible combined dictionary, ASSEMBLED from the separate domains.
+
+    The historical dashboard and the regression suites expect one flat dictionary. That
+    shape is preserved here, but it is now a VIEW built by the orchestrator rather than
+    the product of one mixed engine: every number in it was computed by exactly one
+    domain. Assembling the three is the orchestrator's job and no one else's.
+    """
+    return assemble_legacy_dashboard_results(run_assessment(params))
+
+
+def run_assessment_bundle(params: dict):
+    """One separated domain run, returned in all three shapes the app needs.
+
+    The app needs the typed per-domain result, the flat legacy dashboard view and
+    the scientific Benefits result. Computing them independently would run the LCA
+    engine three times over and — worse — could let the three views drift apart if
+    any of them re-derived a quantity slightly differently.
+
+    So `params` is consumed exactly once, `run_assessment` is called exactly once,
+    and the scientific Benefits domain is handed the SAME neutral `SharedActivity`
+    the economic domain was priced from. That is what keeps the physical activity
+    behind a carbon figure and behind a benefit figure literally the same object.
+
+    Returns `(result, legacy_dashboard, scientific_benefits)`.
+    """
+    result = run_assessment(params)
+
+    # Imported here rather than at module scope: the orchestrator must remain
+    # importable by the domain-dependency test without dragging in every domain.
+    from benefits_scientific_integration import run_scientific_benefits_from_params
+
+    scientific_benefits = run_scientific_benefits_from_params(
+        params=params,
+        shared_activity=result.shared,
+        project_context=result.context,
+    )
+
+    legacy_dashboard = assemble_legacy_dashboard_results(result)
+    return result, legacy_dashboard, scientific_benefits

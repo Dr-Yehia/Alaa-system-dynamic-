@@ -82,6 +82,32 @@ for key, domains in MULTI_DOMAIN_PARAM_KEYS.items():
         check(f"multi-domain {key!r} reaches {d} = {d in domains}",
               present == (d in domains))
 
+# ── The scientific Benefits evidence tree is Benefits-only ──────────────────
+# One nested key instead of a hundred flat ones, and it must reach exactly one
+# domain: nothing inside it means anything to LCA or LCC.
+check("'benefits_scientific_inputs' is classified as a Benefits key",
+      "benefits_scientific_inputs" in BENEFITS_PARAM_KEYS)
+check("'benefits_scientific_inputs' is NOT declared multi-domain",
+      "benefits_scientific_inputs" not in MULTI_DOMAIN_PARAM_KEYS)
+check("'benefits_scientific_inputs' is not project context",
+      "benefits_scientific_inputs" not in CONTEXT_PARAM_KEYS)
+check("'benefits_scientific_inputs' is not an LCA key",
+      "benefits_scientific_inputs" not in LCA_PARAM_KEYS)
+check("'benefits_scientific_inputs' is not an LCC key",
+      "benefits_scientific_inputs" not in LCC_PARAM_KEYS)
+
+probe = dict(params)
+probe["benefits_scientific_inputs"] = {"transport": {"passengers_per_day": None}}
+probe_slices = split_params(probe)
+check("'benefits_scientific_inputs' reaches the Benefits slice",
+      "benefits_scientific_inputs" in probe_slices["benefits_inputs"])
+check("'benefits_scientific_inputs' does not reach the LCA slice",
+      "benefits_scientific_inputs" not in probe_slices["lca_inputs"])
+check("'benefits_scientific_inputs' does not reach the LCC slice",
+      "benefits_scientific_inputs" not in probe_slices["lcc_inputs"])
+check("'benefits_scientific_inputs' is classified, not unknown",
+      "benefits_scientific_inputs" not in unclassified_params(probe))
+
 # ── The classification sets do not silently overlap ─────────────────────────
 overlap = (LCA_PARAM_KEYS & LCC_PARAM_KEYS) - set(MULTI_DOMAIN_PARAM_KEYS)
 check(f"LCA and LCC sets do not overlap outside MULTI_DOMAIN ({sorted(overlap)})",
