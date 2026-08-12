@@ -65,7 +65,7 @@ jobs:
       - name: Launch the real Streamlit app headless and probe health
         run: |
           set -e
-          streamlit run app_final_streamlit_ready.py --server.headless true --server.port 8599 &
+          streamlit run apps/developer.py --server.headless true --server.port 8599 &
           APP_PID=$!
           for i in $(seq 1 30); do
             if curl -sf http://localhost:8599/_stcore/health >/dev/null; then
