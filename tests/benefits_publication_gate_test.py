@@ -451,6 +451,54 @@ check(
     result.publication_gate["publication_ready"] is False,
 )
 
+
+# ---------------------------------------------------------------------------
+# 11. Publication mode cannot reach the legacy Benefits engine
+# ---------------------------------------------------------------------------
+
+# The legacy module keeps two behaviours the referenced engine rejects. They are
+# preserved there on purpose — it exists to reproduce history — which is exactly
+# why Publication must not be able to read it.
+legacy_src = open(os.path.join(ROOT, "benefits_core.py"), encoding="utf-8").read()
+check("the legacy module is labelled LEGACY-DEVELOPER-ONLY", "LEGACY-DEVELOPER-ONLY" in legacy_src)
+check(
+    "the legacy module names the referenced engine as the Publication source",
+    "benefits_scientific_core.py" in legacy_src,
+)
+check("the legacy module still truncates avoided emissions", "max(ef_base - ef_mono, 0.0)" in legacy_src)
+check("the legacy module still derives a percentage of a dB level",
+      "noise_reduction_db / n_base" in legacy_src)
+
+app_src = open(os.path.join(ROOT, "app_final_streamlit_ready.py"), encoding="utf-8").read()
+check(
+    "the Results Benefits panel renders the referenced engine in Publication mode",
+    "if publication_mode:\n            render_scientific_benefits_panel" in app_src,
+)
+check(
+    "the legacy Benefit KPI table sits in the Developer branch",
+    "results['benefit_kpis']" in app_src.split("if publication_mode:\n            render_scientific_benefits_panel")[1].split("else:")[1][:1500],
+)
+
+# The referenced engine keeps neither behaviour.
+core_src = open(os.path.join(ROOT, "benefits_scientific_core.py"), encoding="utf-8").read()
+check("the referenced core never truncates avoided emissions", "max(avoided" not in core_src)
+check(
+    "the referenced core derives no percentage from a dB difference",
+    "noise_delta_db /" not in core_src,
+)
+
+# ---------------------------------------------------------------------------
+# 12. Benefits carry no Monte-Carlo distribution yet
+# ---------------------------------------------------------------------------
+
+# Deterministic evidence is not closed, so sampling a modal shift or a value of
+# time would put a confidence interval around an assumption.
+unc_src = open(os.path.join(ROOT, "uncertainty_orchestrator.py"), encoding="utf-8").read()
+check("the uncertainty orchestrator holds no Benefits distribution",
+      "benefits_scientific" not in unc_src)
+for token in ("modal_shift", "value_of_time", "jobs_per_musd", "lognormal", "triangular"):
+    check(f"the uncertainty orchestrator defines no {token!r} distribution", token not in unc_src)
+
 print()
 print("RESULT:", "PASS" if ok else "FAIL")
 sys.exit(0 if ok else 1)

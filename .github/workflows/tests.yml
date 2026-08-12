@@ -44,7 +44,11 @@ jobs:
             tests/benefits_independence_test.py \
             tests/full_separation_parity_test.py \
             tests/params_classification_test.py \
-            tests/app_layer_purity_test.py ; do
+            tests/app_layer_purity_test.py \
+            tests/benefits_scientific_core_test.py \
+            tests/benefits_reference_integrity_test.py \
+            tests/benefits_scientific_integration_test.py \
+            tests/benefits_publication_gate_test.py ; do
             echo "=== $t ==="
             python "$t"
           done

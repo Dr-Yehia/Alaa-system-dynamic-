@@ -1,5 +1,27 @@
 """Societal co-benefit KPIs — a domain that is deliberately SEPARATE from LCA and LCC.
 
+LEGACY-DEVELOPER-ONLY.
+This module preserves historical dashboard arithmetic and parity.
+It is NOT the Publication scientific Benefits engine.
+Publication Benefits must come only from benefits_scientific_core.py +
+benefits_scientific_integration.py + benefits_scientific_reporting.py.
+
+WHY IT CANNOT BE THE PUBLICATION ENGINE
+---------------------------------------
+The values it consumes are numbers and nothing more. They arrive with no unit
+contract, no source reference, no page or table, no geography and no price base
+year, so there is no way to tell a measured Cairo figure from a placeholder, or
+an Egyptian value of time from a foreign one. That is enough for a Developer
+dashboard and for the parity suites that pin historical behaviour; it is not
+enough to publish, and no amount of care downstream can add provenance that was
+never collected.
+
+Its arithmetic also carries choices the referenced engine deliberately rejects —
+truncating avoided emissions at zero, and expressing a decibel difference as a
+percentage of a decibel level. Those are preserved here unchanged, because this
+module exists to reproduce history, not to be corrected. Publication mode never
+reads it.
+
 ARCHITECTURAL CONTRACT
 ----------------------
 Benefits are reported ALONGSIDE the environmental and economic results, never inside
