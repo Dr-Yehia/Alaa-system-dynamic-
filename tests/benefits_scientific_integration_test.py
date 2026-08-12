@@ -22,17 +22,17 @@ sys.path.insert(0, ROOT)
 # Prove the domain boundary by starting from a clean slate: if the integration
 # layer pulled in an LCA or LCC module, it would show up in sys.modules below.
 for forbidden in (
-    "lca_scientific_core",
-    "lca_scientific_integration",
-    "legacy_lca_engine",
-    "lcc_scientific_core",
-    "legacy_lcc_engine",
-    "assessment_orchestrator",
+    "monorail_assessment.lca.core",
+    "monorail_assessment.lca.integration",
+    "monorail_assessment.legacy.lca_engine",
+    "monorail_assessment.lcc.core",
+    "monorail_assessment.legacy.lcc_engine",
+    "monorail_assessment.legacy.assessment_orchestrator",
     "streamlit",
 ):
     sys.modules.pop(forbidden, None)
 
-from benefits_scientific_integration import (  # noqa: E402
+from monorail_assessment.benefits.integration import (  # noqa: E402
     STATUS_BLOCKED,
     STATUS_COMPUTED,
     STATUS_NOT_APPLICABLE,
@@ -44,8 +44,8 @@ from benefits_scientific_integration import (  # noqa: E402
     evidence_from_dict,
     run_scientific_benefits_from_params,
 )
-from shared_activity import build_shared_activity  # noqa: E402
-from project_context import ProjectContext  # noqa: E402
+from monorail_assessment.common.shared_activity import build_shared_activity  # noqa: E402
+from monorail_assessment.common.project_context import ProjectContext  # noqa: E402
 
 ok = True
 
@@ -69,15 +69,15 @@ def row_by_id(result, kpi_id):
 
 check(
     "integration imports no LCA module",
-    "lca_scientific_core" not in sys.modules and "legacy_lca_engine" not in sys.modules,
+    "monorail_assessment.lca.core" not in sys.modules and "monorail_assessment.legacy.lca_engine" not in sys.modules,
 )
 check(
     "integration imports no LCC module",
-    "lcc_scientific_core" not in sys.modules and "legacy_lcc_engine" not in sys.modules,
+    "monorail_assessment.lcc.core" not in sys.modules and "monorail_assessment.legacy.lcc_engine" not in sys.modules,
 )
 check("integration pulls in no Streamlit", "streamlit" not in sys.modules)
 
-src = open(os.path.join(ROOT, "benefits_scientific_integration.py"), encoding="utf-8").read()
+src = open(os.path.join(ROOT, "monorail_assessment/benefits/integration.py"), encoding="utf-8").read()
 for forbidden in ("lca_scientific", "lcc_scientific", "legacy_lca", "legacy_lcc", "import streamlit"):
     check(f"integration source does not reference {forbidden!r}", forbidden not in src)
 
@@ -333,7 +333,7 @@ check(
 )
 check(
     "consuming SharedActivity still loads no LCA module",
-    "lca_scientific_core" not in sys.modules and "legacy_lca_engine" not in sys.modules,
+    "monorail_assessment.lca.core" not in sys.modules and "monorail_assessment.legacy.lca_engine" not in sys.modules,
 )
 
 # ---------------------------------------------------------------------------
@@ -476,16 +476,16 @@ check(
 # ---------------------------------------------------------------------------
 
 import io  # noqa: E402
-import benefits_scientific_reporting as reporting  # noqa: E402
+import monorail_assessment.benefits.reporting as reporting  # noqa: E402
 
 check(
     "reporting imports no LCA/LCC engine and no Streamlit",
     all(
-        token not in open(os.path.join(ROOT, "benefits_scientific_reporting.py"), encoding="utf-8").read()
+        token not in open(os.path.join(ROOT, "monorail_assessment/benefits/reporting.py"), encoding="utf-8").read()
         for token in ("lca_scientific", "lcc_scientific", "legacy_lca", "legacy_lcc", "import streamlit")
     ),
 )
-check("reporting still loads no LCA module", "lca_scientific_core" not in sys.modules)
+check("reporting still loads no LCA module", "monorail_assessment.lca.core" not in sys.modules)
 
 # Land use and urban growth exercise a different provenance shape: the maps are
 # project spatial data with no registry entry, so they carry a project numeric

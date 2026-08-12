@@ -40,14 +40,14 @@ def imports_of(path):
     return names
 
 
-LCA_MODULES = ["lca_scientific_core.py", "lca_scientific_integration.py",
-               "lca_scientific_reporting.py", "legacy_lca_engine.py"]
-LCC_MODULES = ["lcc_scientific_core.py", "legacy_lcc_engine.py"]
-BENEFIT_MODULES = ["benefits_core.py", "benefits_reference_registry.py",
-                   "benefits_scientific_core.py", "benefits_scientific_integration.py",
-                   "benefits_scientific_reporting.py"]
+LCA_MODULES = ["monorail_assessment/lca/core.py", "monorail_assessment/lca/integration.py",
+               "monorail_assessment/lca/reporting.py", "monorail_assessment/legacy/lca_engine.py"]
+LCC_MODULES = ["monorail_assessment/lcc/core.py", "monorail_assessment/legacy/lcc_engine.py"]
+BENEFIT_MODULES = ["monorail_assessment/legacy/benefits_core.py", "monorail_assessment/benefits/references.py",
+                   "monorail_assessment/benefits/core.py", "monorail_assessment/benefits/integration.py",
+                   "monorail_assessment/benefits/reporting.py"]
 BENEFIT_MODULES = [m for m in BENEFIT_MODULES if os.path.exists(os.path.join(ROOT, m))]
-NEUTRAL_MODULES = ["project_context.py", "shared_activity.py", "system_dynamics_core.py"]
+NEUTRAL_MODULES = ["monorail_assessment/common/project_context.py", "monorail_assessment/common/shared_activity.py", "monorail_assessment/common/system_dynamics.py"]
 
 LCA_PREFIXES = ("lca_", "legacy_lca")
 LCC_PREFIXES = ("lcc_", "legacy_lcc")
@@ -82,14 +82,14 @@ for m in NEUTRAL_MODULES:
 
 # The orchestrator may know the neutral layer, but must not embed a domain either.
 check("assessment_orchestrator.py: does not import the Streamlit app",
-      "app_final_streamlit_ready" not in imports_of("assessment_orchestrator.py"))
+      "app_final_streamlit_ready" not in imports_of("monorail_assessment/legacy/assessment_orchestrator.py"))
 
 # ── 2. STRUCTURAL: the neutral layer holds no domain equations ───────────────
 CARBON_TOKENS = ("kgco2e", "co2", "carbon_intensity", "emission_factor")
 MONEY_TOKENS = ("discount_rate", "present_value", "tariff", "npv", "escalation_rate")
 BENEFIT_TOKENS = ("economic_multiplier", "jobs_created", "value_of_time")
 
-for m in ("shared_activity.py", "project_context.py"):
+for m in ("monorail_assessment/common/shared_activity.py", "monorail_assessment/common/project_context.py"):
     body = open(os.path.join(ROOT, m), encoding="utf-8").read()
     # Ignore the prohibition list in the module's own docstring.
     code = body.split('"""', 2)[-1].lower()
@@ -100,14 +100,14 @@ for m in ("shared_activity.py", "project_context.py"):
 
 # system_dynamics_core must be carbon-free: calculate_dynamic_b6 was moved out of it
 # precisely because it consumed a grid CI and produced CO2.
-sd = open(os.path.join(ROOT, "system_dynamics_core.py"), encoding="utf-8").read()
+sd = open(os.path.join(ROOT, "monorail_assessment/common/system_dynamics.py"), encoding="utf-8").read()
 sd_code = sd.split('"""', 2)[-1]
 check("system_dynamics_core.py: no CO2 result is produced",
       "co2" not in sd_code.lower() and "CI" not in sd_code.split("def ")[-1][:200])
 check("system_dynamics_core.py: calculate_dynamic_b6 no longer lives here",
       "def calculate_dynamic_b6" not in sd)
 check("legacy_lca_engine.py: calculate_dynamic_b6 lives in the LCA domain",
-      "def calculate_dynamic_b6" in open(os.path.join(ROOT, "legacy_lca_engine.py"),
+      "def calculate_dynamic_b6" in open(os.path.join(ROOT, "monorail_assessment/legacy/lca_engine.py"),
                                         encoding="utf-8").read())
 
 # ── 3. BEHAVIOURAL: cross-domain invariance ──────────────────────────────────
@@ -156,7 +156,7 @@ check("changing jobs/multiplier does NOT change cost", same(base, r_jobs, MONEY_
 check("changing jobs/multiplier DOES change benefits", differs(base, r_jobs, BENEFIT_KEYS))
 
 # Changing an emission factor must not move any cash flow.
-import legacy_lca_engine  # noqa: E402,F401
+import monorail_assessment.legacy.lca_engine as legacy_lca_engine  # noqa: E402,F401
 mat = ns.get("MATERIAL_FACTORS")
 
 
@@ -188,7 +188,7 @@ else:
     check("MATERIAL_FACTORS reachable for the emission-factor invariance test", False)
 
 # ── 4. The application is UI/orchestration only ──────────────────────────────
-app = open(os.path.join(ROOT, "app_final_streamlit_ready.py"), encoding="utf-8").read()
+app = open(os.path.join(ROOT, "apps/_developer_impl.py"), encoding="utf-8").read()
 app_tree = ast.parse(app)
 app_funcs = {n.name for n in app_tree.body if isinstance(n, ast.FunctionDef)}
 
@@ -196,7 +196,7 @@ check("the mixed calculate_core_lca_lcc name is gone",
       "def calculate_core_lca_lcc" not in app)
 check("the app does not DEFINE the assessment engine",
       "def calculate_legacy_dashboard_results" not in app)
-check("the app imports the orchestrator", "assessment_orchestrator" in app)
+check("the app imports the orchestrator", "monorail_assessment.legacy.assessment_orchestrator" in app)
 
 # No domain calculation may be DEFINED in the application any more.
 FORBIDDEN_IN_APP = [
@@ -217,7 +217,7 @@ for const in ("MATERIAL_FACTORS", "EMISSION_FACTORS", "DENSITIES",
                   for n in app_tree.body))
 
 # ── 5. The orchestrator owns assembly and holds no equation ──────────────────
-orch = open(os.path.join(ROOT, "assessment_orchestrator.py"), encoding="utf-8").read()
+orch = open(os.path.join(ROOT, "monorail_assessment/legacy/assessment_orchestrator.py"), encoding="utf-8").read()
 orch_code = orch.split('"""', 2)[-1]
 check("orchestrator defines calculate_legacy_dashboard_results",
       "def calculate_legacy_dashboard_results" in orch)
@@ -239,13 +239,13 @@ check("the bundle assembles the dashboard from the same result",
 check("orchestrator contains no Benefits equation id", "EQ=BEN-" not in orch)
 
 # ── 5b. The scientific Benefits domain is reachable and self-contained ───────
-ben_int = open(os.path.join(ROOT, "benefits_scientific_integration.py"), encoding="utf-8").read()
+ben_int = open(os.path.join(ROOT, "monorail_assessment/benefits/integration.py"), encoding="utf-8").read()
 check("scientific Benefits integration calls the Benefits core", "core." in ben_int)
 check("scientific Benefits integration defines no equation of its own",
       "# EQ=BEN-" not in ben_int)
 
 # ── 6. Per-domain results carry no foreign fields ────────────────────────────
-from assessment_orchestrator import run_assessment  # noqa: E402
+from monorail_assessment.legacy.assessment_orchestrator import run_assessment  # noqa: E402
 
 res = run_assessment(dict(base_params))
 check("AssessmentResult.lca contains no NPV/cost field",
@@ -267,7 +267,7 @@ check("shared activity exposes no carbon or price attribute",
 # ── 7. Scientific Benefits are behaviourally independent too ─────────────────
 # Changing a Benefits evidence input must not move carbon or cost, and changing a
 # discount rate must not move a Benefits result.
-from assessment_orchestrator import run_assessment_bundle  # noqa: E402
+from monorail_assessment.legacy.assessment_orchestrator import run_assessment_bundle  # noqa: E402
 
 
 def _sci_evidence(value):

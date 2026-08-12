@@ -35,7 +35,7 @@ from typing import Any
 
 import pandas as pd
 
-from benefits_reference_registry import (
+from monorail_assessment.benefits.references import (
     BLOCKED_TOPICS,
     EQUATIONS,
     REFERENCES,

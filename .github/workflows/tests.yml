@@ -9,19 +9,11 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
-    env:
-      PYTHONPATH: ${{ github.workspace }}/compat:${{ github.workspace }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: Materialize historical root aliases for regression only
-        run: |
-          set -e
-          for f in compat/*.py; do
-            ln -s "$f" "$(basename "$f")"
-          done
       - name: Install headless test dependencies
         run: python -m pip install --upgrade pip pandas numpy plotly openpyxl
       - name: Run full test suite
@@ -65,8 +57,6 @@ jobs:
 
   real-streamlit-smoke:
     runs-on: ubuntu-latest
-    env:
-      PYTHONPATH: ${{ github.workspace }}/compat:${{ github.workspace }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

@@ -15,8 +15,8 @@ import json
 import pandas as pd
 import streamlit as st
 
-from scientific_publication_orchestrator import run_scientific_publication_bundle
-from scientific_publication_reporting import (
+from monorail_assessment.publication.orchestrator import run_scientific_publication_bundle
+from monorail_assessment.publication.reporting import (
     deterministic_export_parity_ok,
     deterministic_headline,
     deterministic_publication_csv,
@@ -24,7 +24,7 @@ from scientific_publication_reporting import (
     full_q1_excel_bytes,
     publication_status_table,
 )
-from scientific_uncertainty import UncertaintySpec, run_scientific_uncertainty
+from monorail_assessment.publication.uncertainty import UncertaintySpec, run_scientific_uncertainty
 
 
 st.set_page_config(

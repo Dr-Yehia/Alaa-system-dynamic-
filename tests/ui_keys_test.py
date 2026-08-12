@@ -14,7 +14,7 @@ if _SEP_ROOT not in _sys.path:
 
 from collections import Counter
 
-src = open("app_final_streamlit_ready.py", encoding="utf-8").read()
+src = open("apps/_developer_impl.py", encoding="utf-8").read()
 ok = True
 def check(name, cond, detail=""):
     global ok

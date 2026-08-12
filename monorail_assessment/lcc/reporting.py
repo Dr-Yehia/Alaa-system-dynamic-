@@ -14,8 +14,8 @@ from typing import Any
 
 import pandas as pd
 
-from lcc_scientific_integration import ScientificLCCResult
-from lcc_scientific_core import LCC_EQUATIONS, LCC_REFERENCE_CATALOG
+from monorail_assessment.lcc.integration import ScientificLCCResult
+from monorail_assessment.lcc.core import LCC_EQUATIONS, LCC_REFERENCE_CATALOG
 
 
 SUMMARY_FIELDS = (

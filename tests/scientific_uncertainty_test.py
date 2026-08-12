@@ -5,7 +5,7 @@ import sys
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
-import scientific_uncertainty as su
+import monorail_assessment.publication.uncertainty as su
 
 ok = True
 

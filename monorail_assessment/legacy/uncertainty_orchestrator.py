@@ -23,7 +23,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from assessment_orchestrator import run_assessment, calculate_legacy_dashboard_results
+from monorail_assessment.legacy.assessment_orchestrator import run_assessment, calculate_legacy_dashboard_results
 
 
 def evaluate_sample(params: dict) -> dict:
@@ -47,12 +47,12 @@ def evaluate_sample_by_domain(params: dict) -> Any:
 
 def evaluate_lca_only(params: dict) -> dict:
     """Environmental result for one sample, with no economic evaluation performed."""
-    from legacy_lca_engine import calculate_legacy_lca
+    from monorail_assessment.legacy.lca_engine import calculate_legacy_lca
     lca_result, _shared = calculate_legacy_lca(params)
     return lca_result
 
 
 def evaluate_lcc_only(params: dict, shared) -> dict:
     """Economic result for one sample, priced from NEUTRAL activity only."""
-    from legacy_lcc_engine import calculate_legacy_lcc
+    from monorail_assessment.legacy.lcc_engine import calculate_legacy_lcc
     return calculate_legacy_lcc(params, shared)

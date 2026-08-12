@@ -41,8 +41,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
-import benefits_scientific_core as core
-from benefits_reference_registry import (
+import monorail_assessment.benefits.core as core
+from monorail_assessment.benefits.references import (
     BLOCKED_TOPICS,
     EQUATIONS,
     METHOD_EVIDENCE_CLASSES,
@@ -50,7 +50,7 @@ from benefits_reference_registry import (
     REFERENCES,
     reference_permits,
 )
-from benefits_scientific_core import (
+from monorail_assessment.benefits.core import (
     EvidenceValue,
     ProjectNumericSource,
     ScientificBenefitInputError,

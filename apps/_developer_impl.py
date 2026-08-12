@@ -16,9 +16,9 @@ import io
 # Their values MUST NOT enter Publication-mode scientific LCA or be presented as verified
 # project evidence. Unknown/placeholder legacy values are SCENARIO-ONLY or SOURCE-OPEN.
 try:
-    from lca_scientific_core import ScientificInputError, render_lca_audit_streamlit, OPEN_SOURCE_REQUIREMENTS
-    from lca_scientific_integration import add_lca_source_inputs, run_scientific_lca_from_app_params
-    from lca_scientific_reporting import (scientific_report_text, scientific_csv, scientific_excel_bytes,
+    from monorail_assessment.lca.core import ScientificInputError, render_lca_audit_streamlit, OPEN_SOURCE_REQUIREMENTS
+    from monorail_assessment.lca.integration import add_lca_source_inputs, run_scientific_lca_from_app_params
+    from monorail_assessment.lca.reporting import (scientific_report_text, scientific_csv, scientific_excel_bytes,
                                           export_parity_ok, scientific_headline)
     SCI_LCA_AVAILABLE = True
 except Exception as _sci_import_err:  # pragma: no cover - defensive
@@ -29,10 +29,10 @@ except Exception as _sci_import_err:  # pragma: no cover - defensive
 # Each domain lives in its own module and none of them imports another. The neutral
 # layers (project context, system dynamics state) are shared; carbon, money and
 # benefits are not. See assessment_orchestrator.py for how the three are combined.
-from project_context import ASSESSMENT_LIFETIME_YEARS, ProjectContext, context_from_params
-from system_dynamics_core import simulate_asset_condition
-from shared_activity import build_shared_activity, SharedActivity
-from legacy_lca_engine import (calculate_dynamic_b6, calculate_legacy_lca,
+from monorail_assessment.common.project_context import ASSESSMENT_LIFETIME_YEARS, ProjectContext, context_from_params
+from monorail_assessment.common.system_dynamics import simulate_asset_condition
+from monorail_assessment.common.shared_activity import build_shared_activity, SharedActivity
+from monorail_assessment.legacy.lca_engine import (calculate_dynamic_b6, calculate_legacy_lca,
                                MATERIAL_FACTORS, MATERIAL_KEY_MAP, MATERIALS_LIST,
                                DENSITIES, FUEL_FACTORS, TRANSPORT_EMISSION_FACTORS,
                                TRANSPORT_FACTOR_REGISTRY, RECYCLING_CREDIT_SCENARIOS,
@@ -44,25 +44,25 @@ from legacy_lca_engine import (calculate_dynamic_b6, calculate_legacy_lca,
                                build_b2_b5_activity_schedule, b6_ci_trajectory,
                                b6_served_annual_pkm, validate_eol_treatment_shares,
                                validate_a5_treatment_shares, _parse_year_list)
-from legacy_lcc_engine import (b6_energy_pv_cost, calculate_lcc_npv,
+from monorail_assessment.legacy.lcc_engine import (b6_energy_pv_cost, calculate_lcc_npv,
                                calculate_lcc_npv_activity_based, calculate_legacy_lcc)
 # LEGACY-DEVELOPER-ONLY. Kept for Developer-mode parity and the historical dashboard.
 # It is NOT the Publication Benefits engine — that is benefits_scientific_* below.
-from benefits_core import calculate_benefit_kpis, calculate_legacy_jobs
+from monorail_assessment.legacy.benefits_core import calculate_benefit_kpis, calculate_legacy_jobs
 # ── Scientific Benefits (referenced, evidence-gated) ──────────────────────────
 # The Publication Benefits engine. It computes nothing without evidence and marks
 # every KPI with the provenance state that decides whether it may be published.
-from benefits_reference_registry import (
+from monorail_assessment.benefits.references import (
     EQUATIONS as BENEFITS_EQUATIONS,
     REFERENCES as BENEFITS_REFERENCES,
     permitted_statuses_for as benefits_permitted_statuses_for,
 )
-from benefits_scientific_integration import (
+from monorail_assessment.benefits.integration import (
     PUBLICATION_ELIGIBLE_STATES as BENEFITS_PUBLICATION_STATES,
     ScientificBenefitsResult,
     run_scientific_benefits_from_params,
 )
-from benefits_scientific_reporting import (
+from monorail_assessment.benefits.reporting import (
     export_parity_ok as benefits_export_parity_ok,
     scientific_benefits_csv,
     scientific_benefits_excel_bytes,
@@ -72,11 +72,11 @@ from benefits_scientific_reporting import (
 # The application NO LONGER defines the assessment engine. It calls the orchestrator,
 # which runs LCA, LCC and Benefits as independent domains and assembles the combined
 # dictionary the legacy dashboard expects.
-from assessment_orchestrator import (run_assessment, split_params,
+from monorail_assessment.legacy.assessment_orchestrator import (run_assessment, split_params,
                                      calculate_legacy_dashboard_results,
                                      assemble_legacy_dashboard_results,
                                      run_assessment_bundle)
-from uncertainty_orchestrator import evaluate_sample
+from monorail_assessment.legacy.uncertainty_orchestrator import evaluate_sample
 
 # ═══════════════════════════════════════════════════════════════
 # PAGE CONFIGURATION

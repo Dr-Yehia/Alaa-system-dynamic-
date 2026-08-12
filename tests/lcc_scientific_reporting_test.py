@@ -8,8 +8,8 @@ import pandas as pd
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
-from lcc_scientific_integration import run_scientific_lcc_from_params
-from lcc_scientific_reporting import (
+from monorail_assessment.lcc.integration import run_scientific_lcc_from_params
+from monorail_assessment.lcc.reporting import (
     export_parity_ok,
     scientific_lcc_csv,
     scientific_lcc_excel_bytes,

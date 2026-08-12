@@ -14,7 +14,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Mapping
 
-from project_context import ProjectContext, context_from_params
+from monorail_assessment.common.project_context import ProjectContext, context_from_params
 
 
 @dataclass(frozen=True)
@@ -39,7 +39,7 @@ class ScientificPublicationBundle:
 
 def _run_lca(params: dict) -> DomainRun:
     try:
-        from lca_scientific_integration import run_scientific_lca_from_app_params
+        from monorail_assessment.lca.integration import run_scientific_lca_from_app_params
 
         result = run_scientific_lca_from_app_params(params)
         gate = dict(result.get("closure_gate") or {})
@@ -65,8 +65,8 @@ def _run_lca(params: dict) -> DomainRun:
 
 def _run_lcc(params: dict, context: ProjectContext) -> DomainRun:
     try:
-        from lcc_scientific_integration import run_scientific_lcc_from_params
-        from lcc_scientific_reporting import export_parity_ok
+        from monorail_assessment.lcc.integration import run_scientific_lcc_from_params
+        from monorail_assessment.lcc.reporting import export_parity_ok
 
         result = run_scientific_lcc_from_params(params, project_context=context)
         gate = dict(result.publication_gate)
@@ -87,8 +87,8 @@ def _run_lcc(params: dict, context: ProjectContext) -> DomainRun:
 
 def _run_benefits(params: dict, context: ProjectContext, shared_activity=None) -> DomainRun:
     try:
-        from benefits_scientific_integration import run_scientific_benefits_from_params
-        from benefits_scientific_reporting import export_parity_ok
+        from monorail_assessment.benefits.integration import run_scientific_benefits_from_params
+        from monorail_assessment.benefits.reporting import export_parity_ok
 
         result = run_scientific_benefits_from_params(
             params=params,

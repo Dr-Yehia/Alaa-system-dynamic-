@@ -3,8 +3,9 @@
 LEGACY-DEVELOPER-ONLY.
 This module preserves historical dashboard arithmetic and parity.
 It is NOT the Publication scientific Benefits engine.
-Publication Benefits must come only from benefits_scientific_core.py +
-benefits_scientific_integration.py + benefits_scientific_reporting.py.
+Publication Benefits must come only from monorail_assessment/benefits/core.py +
+monorail_assessment/benefits/integration.py +
+monorail_assessment/benefits/reporting.py.
 
 WHY IT CANNOT BE THE PUBLICATION ENGINE
 ---------------------------------------
@@ -43,7 +44,7 @@ separation. The equations, defaults and units are unchanged.
 
 from __future__ import annotations
 
-from project_context import ASSESSMENT_LIFETIME_YEARS
+from monorail_assessment.common.project_context import ASSESSMENT_LIFETIME_YEARS
 
 
 def calculate_benefit_kpis(params, annual_pkm, lifetime_years=ASSESSMENT_LIFETIME_YEARS):

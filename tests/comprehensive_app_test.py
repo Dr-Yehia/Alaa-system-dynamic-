@@ -69,8 +69,8 @@ def build_app_namespace(publication_mode, captured):
     st.form=lambda *a,**k:_Ctx(); st.expander=lambda *a,**k:_Ctx(); st.container=lambda *a,**k:_Ctx()
     sys.modules["streamlit"]=st
     ns={"__name__":"__main__"}
-    exec(compile(open("app_final_streamlit_ready.py",encoding="utf-8").read(),
-                 "app_final_streamlit_ready.py","exec"), ns)
+    exec(compile(open("apps/_developer_impl.py",encoding="utf-8").read(),
+                 "apps/_developer_impl.py","exec"), ns)
     return ns
 
 ok=True

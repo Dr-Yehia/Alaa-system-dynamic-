@@ -23,10 +23,10 @@ def check(name, cond):
 
 
 from _headless_app import build_ns  # noqa: E402
-from assessment_orchestrator import (split_params, unclassified_params,  # noqa: E402
+from monorail_assessment.legacy.assessment_orchestrator import (split_params, unclassified_params,  # noqa: E402
                                      LCA_PARAM_KEYS, LCC_PARAM_KEYS, BENEFITS_PARAM_KEYS,
                                      MULTI_DOMAIN_PARAM_KEYS, CONTEXT_PARAM_KEYS)
-import benefits_core  # noqa: E402
+import monorail_assessment.legacy.benefits_core as benefits_core  # noqa: E402
 
 ns = build_ns(publication_mode=False)
 params = dict(ns["params"])
@@ -35,7 +35,7 @@ check("the application builds a non-trivial parameter set", len(params) > 40)
 slices = split_params(params)
 
 # ── Every benefit_* field the Benefits engine reads must be classified Benefits ──
-ben_src = open(os.path.join(ROOT, "benefits_core.py"), encoding="utf-8").read()
+ben_src = open(os.path.join(ROOT, "monorail_assessment/legacy/benefits_core.py"), encoding="utf-8").read()
 import re  # noqa: E402
 read_by_benefits = sorted(set(re.findall(r"params(?:\.get\(|\[)'([a-z0-9_]+)'", ben_src))
                           | set(re.findall(r'params(?:\.get\(|\[)"([a-z0-9_]+)"', ben_src)))

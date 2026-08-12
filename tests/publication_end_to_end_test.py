@@ -9,7 +9,7 @@ import sys
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
-from scientific_publication_orchestrator import run_scientific_publication_bundle
+from monorail_assessment.publication.orchestrator import run_scientific_publication_bundle
 
 ok = True
 

@@ -14,7 +14,7 @@ if _SEP_ROOT not in _sys.path:
 # (lca_scientific_*) resolve even when this file is launched as tests/<name>.py.
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, _ROOT)
-_APP = os.path.join(_ROOT, "app_final_streamlit_ready.py")
+_APP = os.path.join(_ROOT, "apps/_developer_impl.py")
 
 
 def build(captured):
@@ -116,7 +116,7 @@ def build(captured):
     sys.modules["streamlit"]=st
     ns={"__name__":"__main__"}
     exec(compile(open(_APP,encoding="utf-8").read(),
-                 "app_final_streamlit_ready.py","exec"), ns)
+                 "apps/_developer_impl.py","exec"), ns)
     return ns
 
 
@@ -150,9 +150,13 @@ check("Publication CSV carries the standard-signed Module D1 metric",
       "Module D1 standard-signed (tCO2e, separate)" in csv_blob)
 
 # Legacy quarantine: an absurd legacy constant must not move the canonical headline.
-import lca_scientific_reporting as _rep
+import monorail_assessment.lca.reporting as _rep
 _canonical_before = _rep.scientific_headline(ns["scientific_pub"])
-import app_final_streamlit_ready as _appmod  # noqa: F401  (module object for registry poke)
+import importlib.util as _ilu  # noqa: E402
+_spec = _ilu.spec_from_file_location(
+    "_developer_impl", os.path.join(_ROOT, "apps/_developer_impl.py"))
+_appmod = _ilu.module_from_spec(_spec)  # module object for the registry poke below
+_spec.loader.exec_module(_appmod)
 _legacy_registry = ns.get("RECYCLING_CREDIT_SCENARIOS")
 if isinstance(_legacy_registry, dict) and _legacy_registry:
     _k = next(iter(_legacy_registry))

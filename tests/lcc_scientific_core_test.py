@@ -20,7 +20,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from lcc_scientific_core import (
+from monorail_assessment.lcc.core import (
     CostRow,
     ResidualRow,
     LCCModel,
@@ -386,7 +386,7 @@ for k in _q1_records:
           LCC_REFERENCE_CATALOG[k]["quartile_note"]
           == "SJR 2024 Q1 (SCImago; Scopus-based data)")
 _src = open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-                         "lcc_scientific_core.py"), encoding="utf-8").read()
+                         "monorail_assessment/lcc/core.py"), encoding="utf-8").read()
 check("no 'SJR/Scopus' wording remains anywhere in the core", "SJR/Scopus" not in _src)
 check("no JCR quartile is claimed anywhere in the core", "JCR Q1" not in _src)
 check("standards are never labelled Q1",

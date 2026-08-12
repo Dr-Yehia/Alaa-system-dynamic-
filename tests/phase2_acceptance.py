@@ -11,9 +11,9 @@ HARNESS="tests/smoke_headless.py"
 src = open(HARNESS).read().split('# ---- Execute the app module ----')[0]
 exec(src)  # defines st stub and registers sys.modules['streamlit']
 
-app = open("app_final_streamlit_ready.py", encoding="utf-8").read()
+app = open("apps/_developer_impl.py", encoding="utf-8").read()
 ns = {"__name__": "__main__"}
-exec(compile(app, "app_final_streamlit_ready.py", "exec"), ns)
+exec(compile(app, "apps/_developer_impl.py", "exec"), ns)
 
 sim = ns["simulate_asset_condition"]
 dynb6 = ns["calculate_dynamic_b6"]

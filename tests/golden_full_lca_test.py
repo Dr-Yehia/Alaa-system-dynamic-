@@ -10,9 +10,9 @@ Builds ONE fully-sourced A1-C4 scenario, runs the scientific engine, and asserts
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from lca_scientific_core import make_project_evidence
-from lca_scientific_integration import run_scientific_lca_from_app_params
-from lca_scientific_reporting import (scientific_headline, scientific_csv, scientific_report_text,
+from monorail_assessment.lca.core import make_project_evidence
+from monorail_assessment.lca.integration import run_scientific_lca_from_app_params
+from monorail_assessment.lca.reporting import (scientific_headline, scientific_csv, scientific_report_text,
                                       scientific_excel_sheets, export_parity_ok, S1_SHEETS)
 
 ok = True

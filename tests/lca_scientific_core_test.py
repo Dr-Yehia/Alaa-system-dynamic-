@@ -13,14 +13,14 @@ Verifies the invariants the Q1 review required of the new core:
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from lca_scientific_core import (
+from monorail_assessment.lca.core import (
     ProjectQuantity, GridCarbonYear, Evidence, ScientificInputError,
     TRANSPORT_EF, DIESEL_EF, WASTE_EF, MATERIAL_EF, B6_ENERGY_INTENSITY,
     calculate_a1_a3, calculate_transport_legs, calculate_waste_treatment,
     calculate_b6, calculate_module_d1, calculate_effective_ef,
     combine_lca_modules, publication_checks, make_project_evidence,
 )
-from lca_scientific_integration import run_scientific_lca_from_app_params
+from monorail_assessment.lca.integration import run_scientific_lca_from_app_params
 
 ok = True
 def check(name, cond):
@@ -154,7 +154,7 @@ check("full_wlca STILL False (A5/B2-B5/C1-C4 not wired)",
       res_a4["publication_grade_full_wlca"] is False)
 
 # A4 leg identities: zero distance → 0, zero mass → 0.
-from lca_scientific_core import calculate_transport_legs as _ctl
+from monorail_assessment.lca.core import calculate_transport_legs as _ctl
 z_dist = _ctl([{"material": "steel", "mass_kg": 1e6, "distance_km": 0.0, "mode": "truck",
                 "scope": "wtw", "mass_source": "BOQ", "distance_source": "route"}], "A4")
 check("A4 zero distance → zero carbon", abs(z_dist["total_tco2e"]) < 1e-12)
@@ -172,7 +172,7 @@ check("A4 incomplete listed (not counted as measured zero)",
       "A4" in r_ns["incomplete_source_stages"])
 
 # Advanced route/segment model; masses come from A1-A3 masses via route_share.
-from lca_scientific_integration import build_a4_scientific_legs as _b4a
+from monorail_assessment.lca.integration import build_a4_scientific_legs as _b4a
 _masses_stub = {"steel": ProjectQuantity(1e6, "kg", "BOQ", "x")}
 adv_params = {"a4_route_source": "route", "a4_scope": "wtw", "boq_source": "BOQ",
               "transport_distance_km": 50.0, "transport_mode": "truck", "a4_mode": "advanced",
@@ -268,7 +268,7 @@ check("A4 activity audit carries mass_source + distance_source + payload/return"
           for a in _ra))
 
 # ── 10. A5 five-component wiring ───────────────────────────────────────────────
-from lca_scientific_core import calculate_a5 as _ca5, calculate_fuel as _cf
+from monorail_assessment.lca.core import calculate_a5 as _ca5, calculate_fuel as _cf
 
 # diesel direct vs wtw
 _dl = ProjectQuantity(100000.0, "L", "site fuel log", "diesel")
@@ -301,7 +301,7 @@ _sum5 = (a5r["fuel_tco2e"] + a5r["electricity_tco2e"] + a5r["extra_waste_product
 check("A5 total == sum of five components", abs(_sum5 - a5r["total_tco2e"]) < 1e-9)
 
 # installed vs purchased waste formula + no double counting
-from lca_scientific_integration import _a5_waste_mass_kg as _wm
+from monorail_assessment.lca.integration import _a5_waste_mass_kg as _wm
 check("A5 installed waste W = M*WR/(1-WR)",
       abs(_wm(1_000_000.0, 0.05, "installed") - 1_000_000.0 * 0.05 / 0.95) < 1e-6)
 check("A5 purchased waste W = M*WR",
@@ -507,10 +507,10 @@ check("GWP == gross*1000/lifetime_pkm (reported)",
 
 # ── 14. EPD overrides (14,15,16), annual-grid guards (10,11), empty-return unit,
 #        B2-B5 year (17), Module D from C3 (21) ──────────────────────────────────
-from lca_scientific_integration import (build_material_factor_overrides as _bmo,
+from monorail_assessment.lca.integration import (build_material_factor_overrides as _bmo,
                                         build_a4_scientific_legs as _b4b,
                                         build_module_d_rows_from_c3 as _bmd)
-from lca_scientific_core import ScientificInputError as _SIE, make_project_evidence as _mpe
+from monorail_assessment.lca.core import ScientificInputError as _SIE, make_project_evidence as _mpe
 
 # FRP > 0 with an EPD override → passes; without → fails.
 _frp = dict(full); _frp["frp"] = 2.0  # 2 thousand tonnes FRP
@@ -531,7 +531,7 @@ _ovr = _bmo(_frp_ok)
 check("EPD override built as Evidence for FRP", "frp" in _ovr and abs(_ovr["frp"].value - 6.5) < 1e-9)
 
 # recycled content on a market-average ICE factor must fail (E2 guard).
-from lca_scientific_core import calculate_effective_ef as _cee, MATERIAL_EF as _MEF
+from monorail_assessment.lca.core import calculate_effective_ef as _cee, MATERIAL_EF as _MEF
 try:
     _cee(_MEF["steel"], 0.3, _MEF["steel"]); check("recycled-content on market-average fails", False)
 except _SIE:
@@ -687,7 +687,7 @@ check("A4 vehicle-km both trips and capacity → validation_failed",
       _b4b(_veh_both, {"steel": ProjectQuantity(1e6, "kg", "BOQ", "x")})[1] == "validation_failed")
 
 # ── 17. Tranche-5 corrections ─────────────────────────────────────────────────
-from lca_scientific_integration import _boundary_covers_a1a3 as _bcov
+from monorail_assessment.lca.integration import _boundary_covers_a1a3 as _bcov
 check("EPD boundary 'A1 only' rejected", _bcov("A1 only") is False)
 check("EPD boundary 'A1-A2' rejected", _bcov("A1-A2") is False)
 check("EPD boundary 'A1-A3' accepted", _bcov("A1-A3") is True)
@@ -734,7 +734,7 @@ _nl, _nst, _nnote, _naud = _b4b(_veh_note, {"steel": ProjectQuantity(1e6, "kg", 
 check("outward-only note gone when a vehicle-km return leg was added", "outward-only" not in _nnote)
 
 # ── 18. B2-B5 activity-based events ───────────────────────────────────────────
-from lca_scientific_integration import build_b2b5_events_from_rows as _bb5
+from monorail_assessment.lca.integration import build_b2b5_events_from_rows as _bb5
 _b4row = [{"event_id": "E1", "module": "B4", "year": 25, "event_source": "OM plan p4",
            "new_material": "steel", "new_material_kg": 5000.0, "material_source": "BOQ",
            "removed_material": "steel", "removed_material_kg": 5000.0,
@@ -814,7 +814,7 @@ check("B2-B5 consumable new material NOT added to mass balance",
       _cev[0]["added_mass_kg"] == {} and _cev[0]["new_materials_kg"]["steel"].value == 1000.0)
 
 # Chronological mass balance: remove 100t in yr5 before adding in yr25 → negative → fail.
-from lca_scientific_integration import chronological_mass_balance as _cmb
+from monorail_assessment.lca.integration import chronological_mass_balance as _cmb
 _init = {"steel": ProjectQuantity(50000.0, "kg", "BOQ", "x")}
 _evs = [{"event_id": "R", "year": 5, "module": "B4", "removed_mass_kg": {"steel": 100000.0}, "added_mass_kg": {}},
         {"event_id": "A", "year": 25, "module": "B4", "removed_mass_kg": {}, "added_mass_kg": {"steel": 100000.0}}]
@@ -1025,7 +1025,7 @@ check("B2-B5 waste_kg within the reconciled removed flow is accepted",
       _w_ok[1]["B4"] == "connected")
 
 # No Egypt project silently inherits the RICS UK 43% empty-running default.
-import lca_scientific_integration as _lsi_src
+import monorail_assessment.lca.integration as _lsi_src
 _src_text = open(_lsi_src.__file__, encoding="utf-8").read()
 check("no automatic UK 43% empty-running default anywhere in the integration",
       "0.43" not in _src_text)

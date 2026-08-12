@@ -73,7 +73,7 @@ def _legacy_fingerprint():
 
 def _scientific_lca_fingerprint():
     """The frozen golden LCA fixture, re-run through the scientific engine."""
-    from lca_scientific_integration import run_scientific_lca_from_app_params
+    from monorail_assessment.lca.integration import run_scientific_lca_from_app_params
     src = open(os.path.join(HERE, "golden_full_lca_test.py"), encoding="utf-8").read()
     ns = {"__file__": os.path.join(HERE, "golden_full_lca_test.py")}
     exec(src.split("r = run_scientific_lca_from_app_params")[0], ns)
@@ -89,7 +89,7 @@ def _scientific_lca_fingerprint():
 
 def _scientific_lcc_fingerprint():
     """The deterministic LCC golden ledger (identity 100+20+30+10-5 = 155)."""
-    from lcc_scientific_core import CostRow, ResidualRow, LCCModel, calculate_lcc
+    from monorail_assessment.lcc.core import CostRow, ResidualRow, LCCModel, calculate_lcc
 
     def cost(cid, phase, year, amount):
         return CostRow(cid, phase, "test_category", "test_asset", "test_activity", year,

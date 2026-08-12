@@ -34,7 +34,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-from project_context import ProjectContext, context_from_params
+from monorail_assessment.common.project_context import ProjectContext, context_from_params
 
 
 # ── EXPLICIT domain ownership ─────────────────────────────────────────────────
@@ -328,9 +328,9 @@ def run_assessment(params: dict) -> AssessmentResult:
 
     `result.lca` is an LCA-ONLY dictionary: it contains no NPV, no cost and no jobs.
     """
-    from legacy_lca_engine import calculate_legacy_lca
-    from legacy_lcc_engine import calculate_legacy_lcc
-    from benefits_core import calculate_benefit_kpis, calculate_legacy_jobs
+    from monorail_assessment.legacy.lca_engine import calculate_legacy_lca
+    from monorail_assessment.legacy.lcc_engine import calculate_legacy_lcc
+    from monorail_assessment.legacy.benefits_core import calculate_benefit_kpis, calculate_legacy_jobs
 
     params = dict(params or {})
     context = context_from_params(params)
@@ -409,7 +409,7 @@ def run_assessment_bundle(params: dict):
 
     # Imported here rather than at module scope: the orchestrator must remain
     # importable by the domain-dependency test without dragging in every domain.
-    from benefits_scientific_integration import run_scientific_benefits_from_params
+    from monorail_assessment.benefits.integration import run_scientific_benefits_from_params
 
     scientific_benefits = run_scientific_benefits_from_params(
         params=params,

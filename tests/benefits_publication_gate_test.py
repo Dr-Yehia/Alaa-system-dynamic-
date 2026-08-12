@@ -21,8 +21,8 @@ import sys
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
-from benefits_reference_registry import BLOCKED_TOPICS, EQUATIONS  # noqa: E402
-from benefits_scientific_integration import (  # noqa: E402
+from monorail_assessment.benefits.references import BLOCKED_TOPICS, EQUATIONS  # noqa: E402
+from monorail_assessment.benefits.integration import (  # noqa: E402
     PUBLICATION_ELIGIBLE_STATES,
     STATUS_BLOCKED,
     STATUS_COMPUTED,
@@ -478,17 +478,17 @@ check(
 # The legacy module keeps two behaviours the referenced engine rejects. They are
 # preserved there on purpose — it exists to reproduce history — which is exactly
 # why Publication must not be able to read it.
-legacy_src = open(os.path.join(ROOT, "benefits_core.py"), encoding="utf-8").read()
+legacy_src = open(os.path.join(ROOT, "monorail_assessment/legacy/benefits_core.py"), encoding="utf-8").read()
 check("the legacy module is labelled LEGACY-DEVELOPER-ONLY", "LEGACY-DEVELOPER-ONLY" in legacy_src)
 check(
     "the legacy module names the referenced engine as the Publication source",
-    "benefits_scientific_core.py" in legacy_src,
+    "monorail_assessment/benefits/core.py" in legacy_src,
 )
 check("the legacy module still truncates avoided emissions", "max(ef_base - ef_mono, 0.0)" in legacy_src)
 check("the legacy module still derives a percentage of a dB level",
       "noise_reduction_db / n_base" in legacy_src)
 
-app_src = open(os.path.join(ROOT, "app_final_streamlit_ready.py"), encoding="utf-8").read()
+app_src = open(os.path.join(ROOT, "apps/_developer_impl.py"), encoding="utf-8").read()
 check(
     "the Results Benefits panel renders the referenced engine in Publication mode",
     "if publication_mode:\n            render_scientific_benefits_panel" in app_src,
@@ -499,7 +499,7 @@ check(
 )
 
 # The referenced engine keeps neither behaviour.
-core_src = open(os.path.join(ROOT, "benefits_scientific_core.py"), encoding="utf-8").read()
+core_src = open(os.path.join(ROOT, "monorail_assessment/benefits/core.py"), encoding="utf-8").read()
 check("the referenced core never truncates avoided emissions", "max(avoided" not in core_src)
 check(
     "the referenced core derives no percentage from a dB difference",
@@ -512,7 +512,7 @@ check(
 
 # Deterministic evidence is not closed, so sampling a modal shift or a value of
 # time would put a confidence interval around an assumption.
-unc_src = open(os.path.join(ROOT, "uncertainty_orchestrator.py"), encoding="utf-8").read()
+unc_src = open(os.path.join(ROOT, "monorail_assessment/legacy/uncertainty_orchestrator.py"), encoding="utf-8").read()
 check("the uncertainty orchestrator holds no Benefits distribution",
       "benefits_scientific" not in unc_src)
 for token in ("modal_shift", "value_of_time", "jobs_per_musd", "lognormal", "triangular"):
@@ -594,7 +594,7 @@ check(
 # The registry decides. It permits OFFICIAL-PROJECT-DATA only from a document
 # that reports figures about THIS project, and permits PROJECT-SPECIFIC from no
 # registry document at all.
-from benefits_reference_registry import REFERENCES, reference_permits  # noqa: E402
+from monorail_assessment.benefits.references import REFERENCES, reference_permits  # noqa: E402
 
 check("no registry document may back PROJECT-SPECIFIC",
       not any("PROJECT-SPECIFIC" in r.permitted_evidence_statuses for r in REFERENCES.values()))
@@ -699,7 +699,7 @@ for gap_field in ("observation_date", "geography"):
 # 15. One eligible KPI is not a publication-ready domain
 # ---------------------------------------------------------------------------
 
-from benefits_scientific_integration import REQUIRED_PUBLICATION_KPI_IDS  # noqa: E402
+from monorail_assessment.benefits.integration import REQUIRED_PUBLICATION_KPI_IDS  # noqa: E402
 
 one_kpi = run({"transport": dict(ACTIVITY)})
 gate = one_kpi.publication_gate
@@ -740,7 +740,7 @@ check("blocked topics do not prevent readiness of the required physical core",
 # 16. Unit contracts are semantic, not merely non-empty
 # ---------------------------------------------------------------------------
 
-from benefits_scientific_integration import resolve_unit  # noqa: E402
+from monorail_assessment.benefits.integration import resolve_unit  # noqa: E402
 
 check("the expected unit passes with no conversion", resolve_unit("car_emission_factor", "kgCO2e/pkm") == (1.0, ""))
 check("a known alternative converts explicitly",

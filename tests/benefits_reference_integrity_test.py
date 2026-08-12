@@ -20,7 +20,7 @@ import sys
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
-from benefits_reference_registry import (
+from monorail_assessment.benefits.references import (
     ALL_EVIDENCE_CLASSES,
     BLOCKED_TOPICS,
     EQUATIONS,
@@ -43,7 +43,7 @@ def check(name, cond):
     ok = ok and bool(cond)
 
 
-CORE_PATH = os.path.join(ROOT, "benefits_scientific_core.py")
+CORE_PATH = os.path.join(ROOT, "monorail_assessment/benefits/core.py")
 CORE_SRC = open(CORE_PATH, encoding="utf-8").read()
 CORE_LINES = CORE_SRC.splitlines()
 
@@ -154,19 +154,19 @@ check("core contains no vague source comment", not vague)
 
 # A quartile or impact-factor claim is a ranking assertion, not evidence.
 QUARTILE_RE = re.compile(r"\b(quartile|jcr|impact\s*factor|scimago|sjr)\b", re.IGNORECASE)
-for path in ("benefits_scientific_core.py", "benefits_reference_registry.py"):
+for path in ("monorail_assessment/benefits/core.py", "monorail_assessment/benefits/references.py"):
     src = open(os.path.join(ROOT, path), encoding="utf-8").read()
     hits = QUARTILE_RE.findall(src)
     # The registry's own guard list names these markers in order to forbid them;
     # exclude the guard block itself from the scan.
-    if path == "benefits_reference_registry.py":
+    if path == "monorail_assessment/benefits/references.py":
         guarded = src.split("_QUARTILE_CLAIM_MARKERS")[0]
         hits = QUARTILE_RE.findall(guarded)
     check(f"{path} makes no hard-coded journal-ranking claim", not hits)
 
 check(
     "no reference record sets a quartile field",
-    not re.search(r"quartile\s*=", open(os.path.join(ROOT, 'benefits_reference_registry.py'), encoding='utf-8').read(), re.IGNORECASE),
+    not re.search(r"quartile\s*=", open(os.path.join(ROOT, 'monorail_assessment/benefits/references.py'), encoding='utf-8').read(), re.IGNORECASE),
 )
 
 # ---------------------------------------------------------------------------
@@ -202,7 +202,7 @@ check(
 
 # Authority is a registry property, not a user choice. Without this a reviewer
 # could select a method reference in the form and type PROJECT-SPECIFIC beside it.
-from benefits_reference_registry import reference_permits, permitted_statuses_for  # noqa: E402
+from monorail_assessment.benefits.references import reference_permits, permitted_statuses_for  # noqa: E402
 
 for ref_id, ref in REFERENCES.items():
     check(f"{ref_id}: declares which statuses it may back",

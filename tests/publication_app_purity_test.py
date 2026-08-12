@@ -4,7 +4,7 @@ import os
 import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-APP = os.path.join(ROOT, "app_scientific_publication.py")
+APP = os.path.join(ROOT, "apps/_publication_impl.py")
 src = open(APP, encoding="utf-8").read()
 tree = ast.parse(src)
 
@@ -20,23 +20,23 @@ def check(name, cond):
 imports = set()
 for node in ast.walk(tree):
     if isinstance(node, ast.ImportFrom) and node.module:
-        imports.add(node.module.split(".")[0])
+        imports.add(node.module)
     elif isinstance(node, ast.Import):
-        imports.update(alias.name.split(".")[0] for alias in node.names)
+        imports.update(alias.name for alias in node.names)
 
 for forbidden in (
-    "legacy_lca_engine",
-    "legacy_lcc_engine",
-    "benefits_core",
-    "assessment_orchestrator",
-    "uncertainty_orchestrator",
+    "monorail_assessment.legacy.lca_engine",
+    "monorail_assessment.legacy.lcc_engine",
+    "monorail_assessment.legacy.benefits_core",
+    "monorail_assessment.legacy.assessment_orchestrator",
+    "monorail_assessment.legacy.uncertainty_orchestrator",
 ):
     check(f"publication app does not import {forbidden}", forbidden not in imports)
 
 for required in (
-    "scientific_publication_orchestrator",
-    "scientific_publication_reporting",
-    "scientific_uncertainty",
+    "monorail_assessment.publication.orchestrator",
+    "monorail_assessment.publication.reporting",
+    "monorail_assessment.publication.uncertainty",
 ):
     check(f"publication app imports {required}", required in imports)
 

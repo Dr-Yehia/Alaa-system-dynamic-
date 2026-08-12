@@ -28,7 +28,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, field
 from typing import Any, Mapping
 
-from lcc_scientific_core import (
+from monorail_assessment.lcc.core import (
     ALLOWED_PHASES,
     PUBLICATION_ACCEPTABLE_NUMERIC_EVIDENCE,
     CostRow,
@@ -38,7 +38,7 @@ from lcc_scientific_core import (
     calculate_lcc,
     lcc_reference_integrity_check,
 )
-from project_context import ProjectContext, context_from_params
+from monorail_assessment.common.project_context import ProjectContext, context_from_params
 
 
 PHASE_HAS_ROWS = "HAS_ROWS"

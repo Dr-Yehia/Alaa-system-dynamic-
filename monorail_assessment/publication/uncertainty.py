@@ -19,7 +19,7 @@ from typing import Any, Mapping, Sequence
 import numpy as np
 import pandas as pd
 
-from project_context import context_from_params
+from monorail_assessment.common.project_context import context_from_params
 
 
 PUBLICATION_NUMERIC_EVIDENCE = {"PROJECT-SPECIFIC", "OFFICIAL-PROJECT-DATA"}
@@ -186,16 +186,16 @@ def evaluate_scientific_metrics(params: Mapping[str, Any]) -> dict[str, float]:
     context = context_from_params(p)
     metrics: dict[str, float] = {}
 
-    from lca_scientific_integration import run_scientific_lca_from_app_params
+    from monorail_assessment.lca.integration import run_scientific_lca_from_app_params
     lca = run_scientific_lca_from_app_params(p)
     metrics["lca_gross_A_C_tCO2e"] = float(lca["gross_A_C_tCO2e"])
     metrics["lca_GWP_kgCO2e_per_pkm"] = float(lca["GWP_kgCO2e_per_pkm"])
 
-    from lcc_scientific_integration import run_scientific_lcc_from_params
+    from monorail_assessment.lcc.integration import run_scientific_lcc_from_params
     lcc = run_scientific_lcc_from_params(p, project_context=context)
     metrics["lcc_npv"] = float(lcc.result["lcc_npv"])
 
-    from benefits_scientific_integration import run_scientific_benefits_from_params
+    from monorail_assessment.benefits.integration import run_scientific_benefits_from_params
     ben = run_scientific_benefits_from_params(
         params=p, shared_activity=None, project_context=context
     )
@@ -207,7 +207,7 @@ def evaluate_scientific_metrics(params: Mapping[str, Any]) -> dict[str, float]:
 
 
 def _deterministic_gate_ready(params: Mapping[str, Any]) -> bool:
-    from scientific_publication_orchestrator import run_scientific_publication_bundle
+    from monorail_assessment.publication.orchestrator import run_scientific_publication_bundle
     bundle = run_scientific_publication_bundle(params)
     return bool(bundle.publication_gate.get("deterministic_publication_ready"))
 

@@ -76,9 +76,9 @@ st.cache_data = cache_data
 sys.modules["streamlit"] = st
 
 # ---- Execute the app module ----
-src = open("app_final_streamlit_ready.py", encoding="utf-8").read()
+src = open("apps/_developer_impl.py", encoding="utf-8").read()
 ns = {"__name__": "__main__"}
-exec(compile(src, "app_final_streamlit_ready.py", "exec"), ns)
+exec(compile(src, "apps/_developer_impl.py", "exec"), ns)
 
 r = ns["results"]
 lca = r["lca_results"]

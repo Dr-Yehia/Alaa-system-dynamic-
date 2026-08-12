@@ -13,7 +13,7 @@ from typing import Any
 
 import pandas as pd
 
-from scientific_publication_orchestrator import ScientificPublicationBundle
+from monorail_assessment.publication.orchestrator import ScientificPublicationBundle
 
 
 def publication_status_table(bundle: ScientificPublicationBundle) -> pd.DataFrame:
@@ -90,8 +90,8 @@ def deterministic_publication_excel_bytes(bundle: ScientificPublicationBundle) -
     if not bundle.publication_gate.get("deterministic_publication_ready"):
         raise ValueError("Deterministic scientific publication gate is closed")
 
-    from lcc_scientific_reporting import scientific_lcc_excel_sheets
-    from lca_scientific_reporting import scientific_excel_sheets
+    from monorail_assessment.lcc.reporting import scientific_lcc_excel_sheets
+    from monorail_assessment.lca.reporting import scientific_excel_sheets
 
     buf = io.BytesIO()
     with pd.ExcelWriter(buf, engine="openpyxl") as writer:

@@ -22,7 +22,7 @@ def check(name, cond):
     ok = ok and bool(cond)
 
 
-APP = os.path.join(ROOT, "app_final_streamlit_ready.py")
+APP = os.path.join(ROOT, "apps/_developer_impl.py")
 src = open(APP, encoding="utf-8").read()
 tree = ast.parse(src)
 funcs = {n.name for n in tree.body if isinstance(n, ast.FunctionDef)}
@@ -52,15 +52,18 @@ for name in ("MATERIAL_FACTORS", "MATERIAL_KEY_MAP", "MATERIALS_LIST", "DENSITIE
 # ── It imports the separated architecture instead ───────────────────────────
 imports = set()
 for node in ast.walk(tree):
+    # Full dotted paths, not just the first segment: every domain now lives under
+    # the one `monorail_assessment` package, so a first-segment-only check would
+    # collapse LCA, LCC and Benefits into a single indistinguishable name.
     if isinstance(node, ast.ImportFrom) and node.module:
-        imports.add(node.module.split(".")[0])
+        imports.add(node.module)
     elif isinstance(node, ast.Import):
-        imports.update(a.name.split(".")[0] for a in node.names)
+        imports.update(a.name for a in node.names)
 
-for mod in ("assessment_orchestrator", "uncertainty_orchestrator", "legacy_lca_engine",
-            "legacy_lcc_engine", "benefits_core", "shared_activity", "project_context",
-            "system_dynamics_core", "benefits_scientific_integration",
-            "benefits_reference_registry"):
+for mod in ("monorail_assessment.legacy.assessment_orchestrator", "monorail_assessment.legacy.uncertainty_orchestrator", "monorail_assessment.legacy.lca_engine",
+            "monorail_assessment.legacy.lcc_engine", "monorail_assessment.legacy.benefits_core", "monorail_assessment.common.shared_activity", "monorail_assessment.common.project_context",
+            "monorail_assessment.common.system_dynamics", "monorail_assessment.benefits.integration",
+            "monorail_assessment.benefits.references"):
     check(f"app imports {mod}", mod in imports)
 
 # ── The app collects Benefits EVIDENCE but defines no Benefits SCIENCE ──────
@@ -114,7 +117,7 @@ check("publication card states the scientific LCC is pending",
       "integration pending" in src)
 
 # The prohibition legacy_lcc_engine declares must actually hold in the app.
-legacy_lcc = open(os.path.join(ROOT, "legacy_lcc_engine.py"), encoding="utf-8").read()
+legacy_lcc = open(os.path.join(ROOT, "monorail_assessment/legacy/lcc_engine.py"), encoding="utf-8").read()
 check("legacy_lcc_engine still declares the publication prohibition",
       "MUST NOT supply Publication-mode LCC" in legacy_lcc)
 

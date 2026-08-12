@@ -1,16 +1,22 @@
 """Monorail scientific assessment package.
 
-Canonical scientific source lives under this package. Historical top-level module
-names are isolated in ``compat/`` rather than cluttering the repository root.
-Importing the package exposes that compatibility directory only to the Python import
-system; it does not make compatibility aliases canonical source files.
-"""
-from pathlib import Path
-import sys
+Canonical scientific source lives under this package:
 
-_ROOT = Path(__file__).resolve().parents[1]
-_COMPAT = _ROOT / "compat"
-if _COMPAT.is_dir() and str(_COMPAT) not in sys.path:
-    sys.path.insert(0, str(_COMPAT))
+    lca/         environmental domain
+    lcc/         economic domain
+    benefits/    societal co-benefit domain
+    publication/ cross-domain publication orchestration and uncertainty
+    common/      neutral layers shared by all three domains
+    legacy/      historical engines, kept for Developer parity only
+
+The three scientific domains do not import one another. Every module here
+imports by its package path, so the package is self-contained: importing it
+requires nothing on ``sys.path`` beyond the repository root.
+
+``compat/`` holds historical top-level aliases for anyone with older scripts.
+It is genuinely optional — nothing in this package or in ``apps/`` needs it, and
+it is never added to ``sys.path`` implicitly. A package that quietly rewrites
+the import path hides exactly the coupling this layout exists to remove.
+"""
 
 __all__ = ["lca", "lcc", "benefits", "publication", "common", "legacy"]

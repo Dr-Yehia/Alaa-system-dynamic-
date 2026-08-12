@@ -14,18 +14,18 @@ def check(name, cond):
     ok = ok and bool(cond)
 
 
-for forbidden in ("lca_scientific_core", "lca_scientific_integration",
-                  "legacy_lca_engine", "benefits_core", "streamlit"):
+for forbidden in ("monorail_assessment.lca.core", "monorail_assessment.lca.integration",
+                  "monorail_assessment.legacy.lca_engine", "monorail_assessment.legacy.benefits_core", "streamlit"):
     sys.modules.pop(forbidden, None)
 
-from lcc_scientific_core import CostRow, ResidualRow, LCCModel, calculate_lcc  # noqa: E402
-import legacy_lcc_engine  # noqa: E402
-from shared_activity import build_shared_activity  # noqa: E402
+from monorail_assessment.lcc.core import CostRow, ResidualRow, LCCModel, calculate_lcc  # noqa: E402
+import monorail_assessment.legacy.lcc_engine as legacy_lcc_engine  # noqa: E402
+from monorail_assessment.common.shared_activity import build_shared_activity  # noqa: E402
 
 check("scientific LCC imports with no LCA module loaded",
-      "lca_scientific_core" not in sys.modules and "legacy_lca_engine" not in sys.modules)
+      "monorail_assessment.lca.core" not in sys.modules and "monorail_assessment.legacy.lca_engine" not in sys.modules)
 check("scientific LCC imports with no Benefits module loaded",
-      "benefits_core" not in sys.modules)
+      "monorail_assessment.legacy.benefits_core" not in sys.modules)
 check("LCC does not pull in Streamlit", "streamlit" not in sys.modules)
 
 

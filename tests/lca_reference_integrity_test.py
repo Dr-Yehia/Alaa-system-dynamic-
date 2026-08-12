@@ -14,7 +14,7 @@ import sys
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
-from lca_scientific_core import (
+from monorail_assessment.lca.core import (
     ASSESSMENT_FACTOR_YEAR,
     REFERENCE_CATALOG,
     EQUATIONS,

@@ -8,7 +8,7 @@ import math
 
 import pandas as pd
 
-from lca_scientific_core import (
+from monorail_assessment.lca.core import (
     B6_ENERGY_INTENSITY,
     WASTE_EF,
     Evidence,
@@ -2062,7 +2062,7 @@ def run_scientific_lca_from_app_params(params):
 
     choice = str(params.get("energy_intensity_choice", "project_specific"))
     if choice == "project_specific":
-        from lca_scientific_core import make_project_evidence
+        from monorail_assessment.lca.core import make_project_evidence
         energy_intensity = make_project_evidence(
             code="PROJECT-B6-EI",
             value=float(params.get("project_ei", 0.0)),
@@ -2398,7 +2398,7 @@ def run_scientific_lca_from_app_params(params):
     export_parity_internal = False
     if full_wlca_calculation_complete:
         try:
-            from lca_scientific_reporting import export_parity_ok as _epok
+            from monorail_assessment.lca.reporting import export_parity_ok as _epok
             export_parity_internal = bool(_epok(final_lca))
         except Exception:
             export_parity_internal = False

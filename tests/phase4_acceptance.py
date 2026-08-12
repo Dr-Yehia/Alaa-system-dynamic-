@@ -11,8 +11,8 @@ HARNESS = "tests/smoke_headless.py"
 src = open(HARNESS).read().split('# ---- Execute the app module ----')[0]
 exec(src)
 ns = {"__name__": "__main__"}
-exec(compile(open("app_final_streamlit_ready.py", encoding="utf-8").read(),
-             "app_final_streamlit_ready.py", "exec"), ns)
+exec(compile(open("apps/_developer_impl.py", encoding="utf-8").read(),
+             "apps/_developer_impl.py", "exec"), ns)
 run = ns["run_full_assessment"]; mc = ns["run_component_monte_carlo"]
 sfd = ns["sample_from_distribution"]; build_reg = ns["build_uncertainty_registry"]
 base = dict(ns["current_params"])

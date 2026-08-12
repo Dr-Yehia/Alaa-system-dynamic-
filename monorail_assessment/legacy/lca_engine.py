@@ -31,9 +31,9 @@ import math
 
 import numpy as np
 
-from project_context import ASSESSMENT_LIFETIME_YEARS
-from shared_activity import build_shared_activity
-from system_dynamics_core import simulate_asset_condition
+from monorail_assessment.common.project_context import ASSESSMENT_LIFETIME_YEARS
+from monorail_assessment.common.shared_activity import build_shared_activity
+from monorail_assessment.common.system_dynamics import simulate_asset_condition
 
 
 # ═══════════════════════════════════════════════════════════════

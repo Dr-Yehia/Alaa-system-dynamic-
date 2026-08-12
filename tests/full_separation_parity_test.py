@@ -36,7 +36,7 @@ check("baseline tolerance is strict (1e-9)", pin.TOL == 1e-9)
 
 # 2) The orchestrator reports the same numbers as the legacy engine.
 from _headless_app import build_ns  # noqa: E402
-from assessment_orchestrator import run_assessment, split_params  # noqa: E402
+from monorail_assessment.legacy.assessment_orchestrator import run_assessment, split_params  # noqa: E402
 
 ns = build_ns(publication_mode=False)
 engine = ns["calculate_legacy_dashboard_results"]
@@ -88,7 +88,7 @@ check("shared slice holds neither cost nor benefit fields",
       and "jobs_created" not in slices["shared_inputs"])
 
 # 4) The price-base-year adapter accepts the UI spelling.
-from project_context import context_from_params  # noqa: E402
+from monorail_assessment.common.project_context import context_from_params  # noqa: E402
 check("price_year is honoured when price_base_year is absent",
       context_from_params({"price_year": 2021, "analysis_start_year": 2026}
                           ).price_base_year == 2021)

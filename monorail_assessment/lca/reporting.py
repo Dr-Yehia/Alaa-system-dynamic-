@@ -136,7 +136,7 @@ def scientific_excel_sheets(scientific_lca: Mapping[str, Any]) -> "dict[str, pd.
 
 def _open_items():
     try:
-        from lca_scientific_core import OPEN_SOURCE_REQUIREMENTS
+        from monorail_assessment.lca.core import OPEN_SOURCE_REQUIREMENTS
         return OPEN_SOURCE_REQUIREMENTS
     except Exception:
         return {}

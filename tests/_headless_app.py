@@ -16,7 +16,7 @@ import sys
 import types
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-APP = os.path.join(ROOT, "app_final_streamlit_ready.py")
+APP = os.path.join(ROOT, "apps/_developer_impl.py")
 
 
 def build_ns(publication_mode=False):
@@ -78,5 +78,5 @@ def build_ns(publication_mode=False):
 
     sys.modules["streamlit"] = st
     ns = {"__name__": "__main__"}
-    exec(compile(open(APP, encoding="utf-8").read(), "app_final_streamlit_ready.py", "exec"), ns)
+    exec(compile(open(APP, encoding="utf-8").read(), "apps/_developer_impl.py", "exec"), ns)
     return ns

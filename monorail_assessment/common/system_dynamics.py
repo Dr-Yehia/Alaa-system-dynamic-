@@ -34,7 +34,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from project_context import ASSESSMENT_LIFETIME_YEARS
+from monorail_assessment.common.project_context import ASSESSMENT_LIFETIME_YEARS
 
 
 def simulate_asset_condition(C0=1.0, delta=0.005, maintenance_interval=5,

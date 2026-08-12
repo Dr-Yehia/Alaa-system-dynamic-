@@ -8,10 +8,10 @@ import pandas as pd
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
-from project_context import ProjectContext
-from lcc_scientific_integration import ScientificLCCResult
-from scientific_publication_orchestrator import DomainRun, ScientificPublicationBundle
-from scientific_publication_reporting import (
+from monorail_assessment.common.project_context import ProjectContext
+from monorail_assessment.lcc.integration import ScientificLCCResult
+from monorail_assessment.publication.orchestrator import DomainRun, ScientificPublicationBundle
+from monorail_assessment.publication.reporting import (
     deterministic_export_parity_ok,
     deterministic_headline,
     deterministic_publication_csv,

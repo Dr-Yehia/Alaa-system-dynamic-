@@ -19,18 +19,18 @@ def check(name, cond):
     ok = ok and bool(cond)
 
 
-for forbidden in ("lcc_scientific_core", "legacy_lcc_engine", "benefits_core",
+for forbidden in ("monorail_assessment.lcc.core", "monorail_assessment.legacy.lcc_engine", "monorail_assessment.legacy.benefits_core",
                   "streamlit", "app_final_streamlit_ready"):
     sys.modules.pop(forbidden, None)
 
-from lca_scientific_core import calculate_module_d1, make_project_evidence  # noqa: E402
-from lca_scientific_integration import run_scientific_lca_from_app_params  # noqa: E402
-import legacy_lca_engine  # noqa: E402
+from monorail_assessment.lca.core import calculate_module_d1, make_project_evidence  # noqa: E402
+from monorail_assessment.lca.integration import run_scientific_lca_from_app_params  # noqa: E402
+import monorail_assessment.legacy.lca_engine as legacy_lca_engine  # noqa: E402
 
 check("scientific LCA imports with no LCC module loaded",
-      "lcc_scientific_core" not in sys.modules and "legacy_lcc_engine" not in sys.modules)
+      "monorail_assessment.lcc.core" not in sys.modules and "monorail_assessment.legacy.lcc_engine" not in sys.modules)
 check("scientific LCA imports with no Benefits module loaded",
-      "benefits_core" not in sys.modules)
+      "monorail_assessment.legacy.benefits_core" not in sys.modules)
 check("LCA does not pull in Streamlit", "streamlit" not in sys.modules)
 
 # The engine computes a real result without any economic input whatsoever.

@@ -32,7 +32,7 @@ separation. No formula, default or sign convention was changed.
 
 from __future__ import annotations
 
-from project_context import ASSESSMENT_LIFETIME_YEARS
+from monorail_assessment.common.project_context import ASSESSMENT_LIFETIME_YEARS
 
 
 def b6_energy_pv_cost(annual_kwh, tariff_per_kwh, escalation_pct, discount_pct, years):

@@ -12,8 +12,8 @@ HARNESS = "tests/smoke_headless.py"
 src = open(HARNESS).read().split('# ---- Execute the app module ----')[0]
 exec(src)
 ns = {"__name__": "__main__"}
-exec(compile(open("app_final_streamlit_ready.py", encoding="utf-8").read(),
-             "app_final_streamlit_ready.py", "exec"), ns)
+exec(compile(open("apps/_developer_impl.py", encoding="utf-8").read(),
+             "apps/_developer_impl.py", "exec"), ns)
 run = ns["run_full_assessment"]
 base = dict(ns["current_params"])
 gen = ns["generate_default_scenarios"]; sip = ns["run_phase5_si"]
@@ -102,7 +102,7 @@ check("T5-23 lambda sensitivity present", 'table' in R['lambda_sensitivity'] and
 check("T5-24 exportable frames", all(isinstance(R[k], pd.DataFrame) and len(R[k]) > 0
       for k in ['raw_matrix', 'normalized_matrix', 'weights_table', 'ranked_scenarios', 'audit']))
 # T5-25: About wording present in source file
-appsrc = open("app_final_streamlit_ready.py", encoding="utf-8").read()
+appsrc = open("apps/_developer_impl.py", encoding="utf-8").read()
 check("T5-25 About says decision-support (not validation)", 'decision-support composite' in appsrc.lower())
 # T5-26: social indicators optional (only noise here; removing social pillar still works)
 Rsoc = sip(scs, base, lam=0.5, pillar_weights={'Environmental': 0.4, 'Economic': 0.3, 'Operational': 0.3})

@@ -10,8 +10,8 @@ HARNESS = "tests/smoke_headless.py"
 src = open(HARNESS).read().split('# ---- Execute the app module ----')[0]
 exec(src)  # streamlit stub
 ns = {"__name__": "__main__"}
-exec(compile(open("app_final_streamlit_ready.py", encoding="utf-8").read(),
-             "app_final_streamlit_ready.py", "exec"), ns)
+exec(compile(open("apps/_developer_impl.py", encoding="utf-8").read(),
+             "apps/_developer_impl.py", "exec"), ns)
 run = ns["run_full_assessment"]
 base = dict(ns["current_params"])
 MF = ns["MATERIAL_FACTORS"]; KM = ns["MATERIAL_KEY_MAP"]

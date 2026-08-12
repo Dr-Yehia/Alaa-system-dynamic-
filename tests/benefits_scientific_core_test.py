@@ -24,7 +24,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from benefits_scientific_core import (
+from monorail_assessment.benefits.core import (
     EvidenceValue,
     ScientificBenefitInputError,
     allocate_shifted_pkm,
@@ -301,7 +301,7 @@ rejects("BEN-JOBS-PROXY-01 rejects a negative investment", jobs_proxy, -1.0, 13.
 
 # The prohibited composite: officially reported jobs and proxy jobs are two
 # different evidence products and the core offers no function that adds them.
-import benefits_scientific_core as _core
+import monorail_assessment.benefits.core as _core
 
 check(
     "core exposes no function that totals official jobs with proxy jobs",
@@ -407,7 +407,7 @@ except Exception:
 # ---------------------------------------------------------------------------
 
 core_src = open(
-    os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "benefits_scientific_core.py"),
+    os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "monorail_assessment/benefits/core.py"),
     encoding="utf-8",
 ).read()
 for forbidden in ("import streamlit", "lca_scientific", "lcc_scientific", "legacy_lca", "legacy_lcc"):
