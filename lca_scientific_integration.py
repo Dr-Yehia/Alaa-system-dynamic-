@@ -107,11 +107,73 @@ def add_lca_source_inputs(st, assessment_lifetime_default=50):
         key="lca_boq_source",
     )
     ridership_source = st.text_input(
-        "Passenger-km source",
+        "Constant daily-PKM scenario source/disclosure",
         value="",
         placeholder="Ridership forecast or measured operations dataset",
         key="lca_ridership_source",
+        help=("Used ONLY by the constant_daily_scenario B6 basis below. It is a disclosed "
+              "scenario, not an annual measured service dataset."),
     )
+
+    # ── B6 annual passenger-service data ───────────────────────────────────────
+    # The functional-unit denominator must come from an explicit annual service model.
+    # There is NO hard-coded 365: operating days are a sourced input in both modes.
+    st.markdown("#### B6 annual passenger-service data")
+    b6_service_mode = st.selectbox(
+        "B6 passenger-km basis",
+        ["annual_service_table", "constant_daily_scenario"],
+        index=0,
+        key="lca_b6_service_mode",
+        help=(
+            "Publication/project-specific mode should use annual_service_table. "
+            "constant_daily_scenario is a disclosed scenario and must not be labelled annual project data."
+        ),
+    )
+
+    b6_annual_service_rows = []
+    b6_constant_operating_days = 0.0
+    if b6_service_mode == "annual_service_table":
+        _rsp = int(st.session_state.get("lca_rsp_years", assessment_lifetime_default)
+                   or assessment_lifetime_default)
+        _sy = int(st.session_state.get("start_year", 2026) or 2026)
+        _sdf0 = pd.DataFrame({
+            "operating_year": list(range(1, _rsp + 1)),
+            "calendar_year": [_sy + i for i in range(_rsp)],
+            "service_input_mode": ["direct_annual_pkm"] * _rsp,
+            "direct_annual_pkm": [0.0] * _rsp,
+            "demand_passengers_per_day": [0.0] * _rsp,
+            "capacity_passengers_per_day": [0.0] * _rsp,
+            "trip_length_km": [0.0] * _rsp,
+            "availability_fraction": [1.0] * _rsp,
+            "operating_days": [0.0] * _rsp,
+            "source_file": [""] * _rsp,
+            "source_location": [""] * _rsp,
+            "note": [""] * _rsp,
+        })
+        _sedit = pd.DataFrame(st.data_editor(
+            _sdf0,
+            hide_index=True,
+            use_container_width=True,
+            key="lca_b6_annual_service_editor",
+            num_rows="fixed",
+        ))
+        b6_annual_service_rows = _sedit.to_dict("records")
+        st.caption(
+            "Each operating year must use either sourced direct annual PKM OR the derived service model. "
+            "Derived model: Served_day=min(Demand_day, Capacity_day); "
+            "AnnualPKM=Served_day×TripLength×Availability×OperatingDays. "
+            "OperatingDays is an input — no hard-coded 365 in Publication mode."
+        )
+    else:
+        b6_constant_operating_days = st.number_input(
+            "Operating days/year for constant scenario",
+            value=0.0,
+            min_value=0.0,
+            max_value=366.0,
+            step=1.0,
+            key="lca_b6_constant_operating_days",
+            help="Scenario/project input; 365 is NOT silently assumed.",
+        )
 
     st.markdown("#### B6 electricity carbon factor")
     st.caption(
@@ -153,11 +215,22 @@ def add_lca_source_inputs(st, assessment_lifetime_default=50):
         _rsp = int(st.session_state.get("lca_rsp_years", assessment_lifetime_default) or
                    assessment_lifetime_default)
         _sy = int(st.session_state.get("start_year", 2026) or 2026)
+        # The runtime reads the grid for the CONSTRUCTION year (A5 electricity) and the
+        # END-OF-LIFE year (C1 electricity) as well as every operating year, so seed all
+        # three. B2-B5 event electricity always falls inside the operating years because
+        # an event year is constrained to 1..RSP.
+        _construction_year = int(st.session_state.get("lca_a5_construction_year", 0) or _sy)
+        _required_calendar_years = sorted(set(
+            [_sy + i for i in range(_rsp)]
+            + [_construction_year]
+            + [_sy + _rsp]  # C1/EOL year
+        ))
+        _n = len(_required_calendar_years)
         _gdf0 = pd.DataFrame({
-            "calendar_year": [_sy + i for i in range(_rsp)],
-            "generation": [0.0] * _rsp, "td": [0.0] * _rsp, "upstream": [0.0] * _rsp,
-            "source_file": [""] * _rsp, "source_location": [""] * _rsp,
-            "geography": ["Egypt"] * _rsp})
+            "calendar_year": _required_calendar_years,
+            "generation": [0.0] * _n, "td": [0.0] * _n, "upstream": [0.0] * _n,
+            "source_file": [""] * _n, "source_location": [""] * _n,
+            "geography": ["Egypt"] * _n})
         _gedit = pd.DataFrame(st.data_editor(_gdf0, hide_index=True, use_container_width=True,
                                              key="lca_grid_annual_editor", num_rows="dynamic"))
         # Detect duplicate / invalid years in the UI BEFORE collapsing to a dict (a dict
@@ -328,6 +401,9 @@ def add_lca_source_inputs(st, assessment_lifetime_default=50):
         "glass_density_source": glass_density_source,
         "boq_source": boq_source,
         "ridership_source": ridership_source,
+        "b6_service_mode": b6_service_mode,
+        "b6_annual_service_rows": b6_annual_service_rows,
+        "b6_constant_operating_days": b6_constant_operating_days,
         "grid_generation": grid_generation,
         "grid_td": grid_td,
         "grid_upstream": grid_upstream,
@@ -1473,6 +1549,121 @@ def build_c1c4_scientific_inputs(params, remaining_masses, grid_eol):
     return c_inputs, status, " ".join(notes), recovered, sub_status
 
 
+def build_annual_pkm_by_year(params, rsp, start_year):
+    """Build the B6 functional-unit denominator from an EXPLICIT annual service model.
+
+    Two declared bases, and nothing else:
+
+    ``annual_service_table``  — one sourced row per operating year. Each row either
+        supplies a directly sourced annual passenger-km value, or the derived
+        project service model E6A_ANNUAL_SERVICE:
+            Served_day = min(Demand_day, Capacity_day)
+            AnnualPKM  = Served_day × TripLength × Availability × OperatingDays
+        Every input needs source_file + source_location.
+
+    ``constant_daily_scenario`` — a disclosed repeated-day scenario. It is NEVER an
+        annual measured/project series and must still declare its operating days.
+
+    In both bases the operating-day count is an INPUT. A hard-coded 365 is not used
+    anywhere on this path, because "the railway runs every calendar day" is an
+    operational claim that needs project evidence, not a unit conversion.
+
+    Returns ``(annual_pkm_by_year, service_basis)``.
+    """
+    mode = str(params.get("b6_service_mode", "constant_daily_scenario")).strip()
+
+    if mode == "annual_service_table":
+        rows = params.get("b6_annual_service_rows") or []
+        if len(rows) != rsp:
+            raise ScientificInputError(
+                f"B6 annual service table requires exactly {rsp} operating-year rows; got {len(rows)}."
+            )
+
+        out = {}
+        seen = set()
+        for row in rows:
+            year = _pos_int_year(row.get("operating_year"))
+            if year is None or not (1 <= year <= rsp) or year in seen:
+                raise ScientificInputError("B6 annual service table has invalid/duplicate operating_year.")
+            seen.add(year)
+
+            source_file = str(row.get("source_file", "")).strip()
+            source_location = str(row.get("source_location", "")).strip()
+            if not source_file or not source_location:
+                raise ScientificInputError(f"B6 service year {year} requires source_file + source_location.")
+
+            input_mode = str(row.get("service_input_mode", "direct_annual_pkm")).strip()
+            direct_pkm = float(row.get("direct_annual_pkm", 0.0) or 0.0)
+
+            if input_mode == "direct_annual_pkm":
+                if direct_pkm <= 0.0 or not math.isfinite(direct_pkm):
+                    raise ScientificInputError(f"B6 year {year}: direct_annual_pkm must be > 0.")
+                annual_pkm = direct_pkm
+                location = f"{source_location}; direct sourced annual PKM"
+
+            elif input_mode == "derived_service":
+                demand = float(row.get("demand_passengers_per_day", 0.0) or 0.0)
+                capacity = float(row.get("capacity_passengers_per_day", 0.0) or 0.0)
+                trip_length = float(row.get("trip_length_km", 0.0) or 0.0)
+                availability = float(row.get("availability_fraction", 0.0) or 0.0)
+                operating_days = float(row.get("operating_days", 0.0) or 0.0)
+
+                if demand <= 0.0 or capacity <= 0.0 or trip_length <= 0.0 or operating_days <= 0.0:
+                    raise ScientificInputError(
+                        f"B6 year {year}: demand, capacity, trip_length and operating_days must be > 0."
+                    )
+                if not (0.0 < availability <= 1.0):
+                    raise ScientificInputError(f"B6 year {year}: availability must be in (0,1].")
+
+                # REF-DERIVED E6A_ANNUAL_SERVICE — project service model.
+                # Demand above capacity cannot be carried, hence min(demand, capacity).
+                served_day = min(demand, capacity)
+                annual_pkm = served_day * trip_length * availability * operating_days
+                if annual_pkm <= 0.0:
+                    raise ScientificInputError(f"B6 year {year}: derived annual PKM must be > 0.")
+                location = (
+                    f"{source_location}; E6A derived service model; "
+                    f"served_day={served_day}, trip_length={trip_length}, "
+                    f"availability={availability}, operating_days={operating_days}"
+                )
+            else:
+                raise ScientificInputError(f"B6 year {year}: unknown service_input_mode={input_mode!r}.")
+
+            out[year] = ProjectQuantity(
+                annual_pkm,
+                "passenger-km/year",
+                source_file,
+                location,
+            )
+
+        if set(out) != set(range(1, rsp + 1)):
+            raise ScientificInputError("B6 annual service table does not cover every operating year.")
+        return out, "project_annual_service_table"
+
+    if mode == "constant_daily_scenario":
+        daily_pkm_thousand = float(params.get("daily_pax_km", 0.0) or 0.0)
+        source = str(params.get("ridership_source", "")).strip()
+        operating_days = float(params.get("b6_constant_operating_days", 0.0) or 0.0)
+        if daily_pkm_thousand <= 0.0 or not source or operating_days <= 0.0:
+            raise ScientificInputError(
+                "Constant B6 scenario requires daily_pax_km, disclosure/source, and operating_days."
+            )
+
+        # SCENARIO-ONLY — repeated service scenario; NOT an annual measured/project series.
+        annual_pkm = daily_pkm_thousand * 1000.0 * operating_days
+        return {
+            year: ProjectQuantity(
+                annual_pkm,
+                "passenger-km/year",
+                source,
+                f"constant daily-PKM scenario × operating_days={operating_days}",
+            )
+            for year in range(1, rsp + 1)
+        }, "constant_daily_scenario"
+
+    raise ScientificInputError(f"Unknown B6 service mode: {mode}")
+
+
 def run_scientific_lca_from_app_params(params):
     """Replacement for the scientific LCA part of calculate_core_lca_lcc().
 
@@ -1532,6 +1723,31 @@ def run_scientific_lca_from_app_params(params):
             raise ScientificInputError("Annual grid has a missing/invalid calendar year value.")
         if not grid_annual_series:
             raise ScientificInputError("annual_official_series selected but no grid rows were provided.")
+        # Fail with the EXACT missing calendar years rather than a generic error when the
+        # first lookup happens to hit a gap. Required coverage = every operating year +
+        # the construction year (A5 electricity) + the end-of-life year (C1 electricity).
+        # The EOL year is required ONLY when C1-C4 is actually active, matching the
+        # runtime, which builds the EOL grid record lazily for exactly that case.
+        _cy = int(params.get("a5_construction_year", 0)) or start_year
+        _eol_needed = bool(params.get("include_c1c4", False)) or bool(
+            params.get("c1_c4_scientific_inputs"))
+        _required_years = sorted(set(
+            [start_year + i for i in range(rsp)]
+            + [_cy]
+            + ([start_year + rsp] if _eol_needed else [])))
+        _have = set()
+        for _k in grid_annual_series:
+            try:
+                _have.add(int(_k))
+            except (TypeError, ValueError):
+                continue
+        _missing = [y for y in _required_years if y not in _have]
+        if _missing:
+            raise ScientificInputError(
+                "Annual grid series is missing required calendar years "
+                f"{_missing}. Coverage must include every operating year "
+                f"({start_year}-{start_year + rsp - 1}), the construction year ({_cy}) "
+                f"and the end-of-life year ({start_year + rsp}).")
 
     def _grid_for_calendar_year(cal_year, operating_year):
         if grid_mode == "annual_official_series":
@@ -1594,23 +1810,11 @@ def run_scientific_lca_from_app_params(params):
     else:
         energy_intensity = B6_ENERGY_INTENSITY[choice]
 
-    daily_pkm_thousand = float(params.get("daily_pax_km", 0.0))
-    ridership_source = str(params.get("ridership_source", "")).strip()
-    if not ridership_source:
-        raise ScientificInputError("Passenger-km requires a forecast/measurement source.")
-    # FUNCTIONAL-UNIT DENOMINATOR: annual PKM = daily thousand-PKM * 1000 * 365.
-    # PROJECT-SOURCE-REQUIRED: ridership forecast/measurement; 365 is calendar-day definition.
-    annual_pkm = daily_pkm_thousand * 1000.0 * 365.0
-    annual_pkm_by_year = {
-        year: ProjectQuantity(
-            annual_pkm,
-            "passenger-km/year",
-            ridership_source,
-            "daily thousand passenger-km x 1000 x 365",
-        )
-        for year in range(1, rsp + 1)
-    }
+    # FUNCTIONAL-UNIT DENOMINATOR — built by the explicit annual service model.
+    # There is no hard-coded 365 anywhere on this path: operating days are a sourced input.
+    annual_pkm_by_year, b6_service_basis = build_annual_pkm_by_year(params, rsp, start_year)
     b6 = calculate_b6(annual_pkm_by_year, grid_by_year, energy_intensity)
+    b6["service_basis"] = b6_service_basis
 
     # Independent construction-year grid record (A5 electricity uses the CONSTRUCTION year's
     # grid CI). With an annual series it reads THAT calendar year's row; with a constant
@@ -1886,9 +2090,18 @@ def run_scientific_lca_from_app_params(params):
         "factor_sources_complete": bool(not checks.get("issues")),
         "mass_balance_valid": bool(mass_balance_valid),
         "stage_applicability_complete": bool(stage_applicability_complete),
-        "project_specific_data_complete": bool(grid_project_specific and not proxy_used),
+        # Project-specific data is complete only when the grid factors are a real annual
+        # project series AND the B6 denominator comes from the sourced annual service
+        # table — a repeated constant-day scenario is a disclosed scenario, not project data.
+        "project_specific_data_complete": bool(
+            grid_project_specific
+            and not proxy_used
+            and b6_service_basis == "project_annual_service_table"),
         "grid_mode": grid_mode,
         "grid_is_project_specific_annual": bool(grid_project_specific),
+        "b6_service_basis": b6_service_basis,
+        "b6_is_project_annual_service_table": bool(
+            b6_service_basis == "project_annual_service_table"),
         "proxy_factors_used": bool(proxy_used),
         "user_supplied_evidence_used": bool(user_supplied_used),
         "uncertainty_complete": False,  # Phase-4 MC wiring for the scientific engine is pending

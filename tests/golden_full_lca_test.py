@@ -29,6 +29,26 @@ _A5_DECL = {c: "documented_zero" for c in (
 G = dict(
     concrete=700.0, steel=100.0, aluminum=5.0, wood=2.0, frp=0.0, glass=0.5,
     glass_thickness_mm=12.0, daily_pax_km=500.0, analysis_start_year=2026,
+    # B6 denominator: an explicit sourced annual service table (never a hard-coded 365).
+    # 182,500,000 pkm/yr is a deterministic TEST-FIXTURE value, labelled as such.
+    b6_service_mode="annual_service_table",
+    b6_annual_service_rows=[
+        {
+            "operating_year": y,
+            "calendar_year": 2025 + y,
+            "service_input_mode": "direct_annual_pkm",
+            "direct_annual_pkm": 182_500_000.0,
+            "demand_passengers_per_day": 0.0,
+            "capacity_passengers_per_day": 0.0,
+            "trip_length_km": 0.0,
+            "availability_fraction": 1.0,
+            "operating_days": 0.0,
+            "source_file": "ridership forecast 2026 v1",
+            "source_location": f"annual service table year {y}",
+            "note": "golden deterministic fixture",
+        }
+        for y in range(1, 51)
+    ],
     a4_mode="simple", transport_distance_km=50.0, transport_mode="truck",
     a4_route_source="route survey rev1", a4_scope="wtw",
     assessment_lifetime=50, assessment_lifetime_source="design-life clause 3.2",

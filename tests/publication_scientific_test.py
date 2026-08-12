@@ -67,7 +67,19 @@ def build(captured):
             return "PROJECT EVIDENCE: file rev A, table 4, p5"
         return value
 
-    def data_editor(data, **k): return data
+    def data_editor(data, **k):
+        key = str(k.get("key", ""))
+        # The B6 annual-service editor must return a REAL sourced table: the engine no
+        # longer accepts a silent 365, and a zero-PKM row is rejected. These are explicit
+        # deterministic TEST values, not defaults leaking in from the app.
+        if key == "lca_b6_annual_service_editor":
+            df = pd.DataFrame(data).copy()
+            df["service_input_mode"] = "direct_annual_pkm"
+            df["direct_annual_pkm"] = 182_500_000.0
+            df["source_file"] = "ridership forecast 2026 v1"
+            df["source_location"] = "annual service table (test fixture)"
+            return df
+        return data
     def file_uploader(*a, **k): return None
     def columns(n, **k):
         n = n if isinstance(n, int) else len(n)

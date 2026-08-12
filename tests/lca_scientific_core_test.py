@@ -119,6 +119,9 @@ full.update({
     "wood_density_kg_m3": 600.0, "wood_density_source": "timber datasheet",
     "glass_density_kg_m3": 2500.0, "glass_density_source": "glass datasheet",
     "boq_source": "BOQ rev A 2026-01", "ridership_source": "forecast 2026 v1",
+    # B6 denominator: disclosed constant-day SCENARIO. Operating days are an explicit
+    # input — the engine no longer assumes 365 silently.
+    "b6_service_mode": "constant_daily_scenario", "b6_constant_operating_days": 365.0,
     "grid_generation": 0.40, "grid_td": 0.03, "grid_upstream": 0.05,
     "grid_source": "Egypt grid table 2025", "grid_location": "table 4 p5",
     "energy_intensity_choice": "uk_light_rail_weighted_proxy",
