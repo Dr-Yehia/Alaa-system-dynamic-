@@ -325,8 +325,29 @@ def add_lca_source_inputs(st, assessment_lifetime_default=50):
     a4_load_factor = st.number_input(
         "A4 load factor (0–1) — vehicle_km derivation", value=1.0, min_value=0.01, max_value=1.0,
         step=0.05, format="%.2f", key="lca_a4_load_factor")
-    a4_return_source = st.text_input(
-        "A4 return-assumption source (file + location)", value="", key="lca_a4_return_source")
+    # RICS A4 requires the return journey to be addressed. Provenance is split so the
+    # file, the exact location inside it, and the reasoning are separately auditable —
+    # a single free-text blob cannot be checked by a reviewer.
+    a4_return_source_file = st.text_input(
+        "A4 return-assumption source file",
+        value="",
+        key="lca_a4_return_source_file",
+    )
+    a4_return_source_location = st.text_input(
+        "A4 return-assumption source page/table/clause",
+        value="",
+        key="lca_a4_return_source_location",
+    )
+    a4_return_justification = st.text_input(
+        "A4 return/empty-running justification",
+        value="",
+        key="lca_a4_return_justification",
+    )
+    st.caption(
+        "RICS A4 section 5.1.3 requires the return journey to be addressed. The UK 43% "
+        "empty-running default is NOT auto-filled for this Egypt project — supply project "
+        "or local evidence, or a documented zero/N-A with source and justification."
+    )
 
     st.markdown("#### A5 construction provenance")
     st.caption(
@@ -422,7 +443,9 @@ def add_lca_source_inputs(st, assessment_lifetime_default=50):
         "a4_payload_assumption": a4_payload_assumption,
         "a4_return_fraction": a4_return_fraction,
         "a4_empty_return_factor": a4_empty_return_factor,
-        "a4_return_source": a4_return_source,
+        "a4_return_source_file": a4_return_source_file,
+        "a4_return_source_location": a4_return_source_location,
+        "a4_return_justification": a4_return_justification,
         "a4_return_factor_unit": a4_return_factor_unit,
         "a4_number_of_trips": a4_number_of_trips,
         "a4_vehicle_capacity": a4_vehicle_capacity,
@@ -628,7 +651,15 @@ def build_a4_scientific_legs(params, masses):
     # Unit-aware: tonne_km multiplies load mass; vehicle_km multiplies empty vehicle trips.
     return_fraction = float(params.get("a4_return_fraction", 0.0))
     empty_return_ef = float(params.get("a4_empty_return_factor", 0.0))
-    return_source = str(params.get("a4_return_source", "")).strip()
+    # The return assumption is proven by file + exact location; the justification is
+    # recorded alongside it. Both halves must be present before the pair counts as a source.
+    return_source_file = str(params.get("a4_return_source_file", "")).strip()
+    return_source_location = str(params.get("a4_return_source_location", "")).strip()
+    return_justification = str(params.get("a4_return_justification", "")).strip()
+    return_source = (
+        f"{return_source_file} | {return_source_location}"
+        if return_source_file and return_source_location else ""
+    )
     return_unit = str(params.get("a4_return_factor_unit", "tonne_km")).lower()
     return_trips = float(params.get("a4_number_of_trips", 0.0))
     vehicle_capacity_t = float(params.get("a4_vehicle_capacity", 0.0))
@@ -822,9 +853,23 @@ def build_a4_scientific_legs(params, masses):
     # Outward-only note keys off whether a return leg was ACTUALLY added (tonne-km OR
     # vehicle-km), not off return_fraction alone.
     if road_present and not return_leg_added:
-        note = ("Road legs are outward-only (average-laden factor); a documented empty-return "
-                "assumption (empty-running EF + source, and fraction or vehicle trips) is required "
-                "to add the return trip.")
+        # A documented ZERO return is acceptable, but only when it is actually documented:
+        # a source file + exact location + a justification saying why the return load is
+        # zero or accounted for elsewhere. Silence is not a declaration.
+        documented_zero_return = bool(
+            return_source_file and return_source_location and return_justification)
+        if documented_zero_return:
+            note = ("Road A4 return/empty-running declared as documented zero / accounted "
+                    f"elsewhere. Evidence: {return_source}. Justification: {return_justification}")
+        else:
+            note = (
+                "Road A4 return/empty-running is unresolved. RICS A4 requires the return journey "
+                "to be addressed. No UK empty-running default is silently applied to this Egypt project."
+            )
+            # METHOD-REFERENCE E3A_RICS_A4 — an outward-only road route is not a closed
+            # RICS A4 route, so Publication mode must not report it as connected.
+            if bool(params.get("publication_mode", False)):
+                return [], "incomplete_sources", note, audit
     return legs, "connected", note, audit
 
 
@@ -1413,6 +1458,92 @@ def build_module_d_cfg_from_rows(rows):
     return cfg
 
 
+def _c2_return_closure(row, mat, mass_kg, outward_km):
+    """Close the RICS C2 road return/empty-running journey for one material row.
+
+    METHOD-REFERENCE E3C_RICS_C2 — Royal Institution of Chartered Surveyors (RICS),
+    "Whole life carbon assessment for the built environment", 2nd ed. September 2023,
+    Version 3 August 2024, section 5.6.3 "Transport impacts (C2)".
+
+    Exactly three ways to close it, and nothing is assumed:
+      1. tonne-km return  — a return fraction of the outward tonne-km, with its own
+         empty-running EF and source;
+      2. vehicle-km return — a measured number of empty return trips, or trips derived
+         from vehicle capacity x load factor, with its own EF and source;
+      3. documented zero / not-applicable — source file + location + justification.
+
+    NOTE: the RICS UK default of 43% empty running is a UK figure. It is never
+    auto-filled here, because this is an Egypt project and an unevidenced UK default
+    would be a fabricated project fact.
+
+    Returns ``(closed, note, return_leg_or_None)``.
+    """
+    unit = str(row.get("c2_return_factor_unit", "tonne_km")).strip().lower() or "tonne_km"
+    fraction = float(row.get("c2_return_fraction", 0.0) or 0.0)
+    empty_ef = float(row.get("c2_empty_return_factor", 0.0) or 0.0)
+    trips = float(row.get("c2_number_of_return_trips", 0.0) or 0.0)
+    capacity_t = float(row.get("c2_vehicle_capacity_t", 0.0) or 0.0)
+    load_factor = float(row.get("c2_load_factor", 1.0) or 1.0)
+    src_file = str(row.get("c2_return_source_file", "")).strip()
+    src_loc = str(row.get("c2_return_source_location", "")).strip()
+    justification = str(row.get("c2_return_justification", "")).strip()
+    source = f"{src_file} | {src_loc}" if src_file and src_loc else ""
+
+    # Route 1 — tonne-km empty return.
+    if unit == "tonne_km" and fraction > 0.0:
+        if empty_ef <= 0.0 or not source:
+            return (False,
+                    f"C2 {mat}: tonne-km return needs an empty-running EF > 0 and "
+                    "source_file + source_location.", None)
+        ret_ev = make_project_evidence(
+            f"C2-RETURN-{mat.upper()}", empty_ef, "kgCO2e/tonne.km", "C2",
+            source, f"documented empty-return: fraction={fraction}",
+            "C2 road empty-return running",
+            note=justification or "documented road return-trip assumption")
+        return (True, "", {
+            "material": mat, "mass_kg": mass_kg, "distance_km": outward_km * fraction,
+            "mode": "truck", "scope": "wtw",
+            "mass_source": f"C2 return of remaining {mat} mass",
+            "distance_source": source, "factor_override": ret_ev, "leg": "return"})
+
+    # Route 2 — vehicle-km empty return (measured trips, or capacity x load factor).
+    if unit == "vehicle_km":
+        n_trips = trips
+        derivation = "measured empty return trips"
+        if n_trips <= 0.0 and capacity_t > 0.0:
+            payload_t = capacity_t * (load_factor if 0.0 < load_factor <= 1.0 else 1.0)
+            if payload_t > 0.0:
+                n_trips = math.ceil((mass_kg / 1000.0) / payload_t)
+                derivation = (f"trips derived = ceil(route tonnes / (capacity {capacity_t} t "
+                              f"x load factor {load_factor}))")
+        if n_trips <= 0.0 or empty_ef <= 0.0 or not source:
+            return (False,
+                    f"C2 {mat}: vehicle-km return needs trips (measured or derived from "
+                    "capacity x load factor), an EF > 0 and source_file + source_location.", None)
+        ret_ev = make_project_evidence(
+            f"C2-RETURN-VKM-{mat.upper()}", empty_ef, "kgCO2e/vehicle.km", "C2",
+            source, f"documented empty-return: trips={n_trips}; {derivation}",
+            "C2 road empty-return running",
+            note=justification or "documented road return-trip assumption")
+        # A vehicle-km factor is charged per empty vehicle-km, so the "mass" carried by
+        # the leg identity is one tonne per trip and the distance is trips x outward km.
+        return (True, "", {
+            "material": mat, "mass_kg": n_trips * 1000.0, "distance_km": outward_km,
+            "mode": "truck", "scope": "wtw",
+            "mass_source": f"{n_trips} empty return vehicle trips ({derivation})",
+            "distance_source": source, "factor_override": ret_ev, "leg": "return"})
+
+    # Route 3 — documented zero / not applicable.
+    if source and justification:
+        return (True, "", None)
+
+    return (False,
+            f"C2 {mat}: road return/empty-running unresolved under RICS C2. Supply a "
+            "tonne-km or vehicle-km return with its own EF and source, or a documented "
+            "zero/N-A with source_file + source_location + justification. The UK 43% "
+            "empty-running default is not applied automatically to this project.", None)
+
+
 def build_c1c4_scientific_inputs(params, remaining_masses, grid_eol):
     """Build calculate_c1_c4 inputs from the C-stage editor, using the REMAINING mass
     after B2-B5 (the user cannot type a free C-stage mass).
@@ -1464,16 +1595,32 @@ def build_c1c4_scientific_inputs(params, remaining_masses, grid_eol):
             status = "validation_failed"
             notes.append(f"C1-C4 {mat}: reuse+recycle+disposal must equal 1."); continue
 
-        # C2 transport of the remaining mass (route/segment-style single leg).
+        # ── C2 transport of the remaining mass ────────────────────────────────────
+        # METHOD-REFERENCE E3C_RICS_C2 — RICS section 5.6.3. The outward leg alone does
+        # NOT close a road C2 route: the return/empty-running journey must be addressed
+        # with project evidence, or documented as zero/N-A with source + justification.
+        # The UK 43% empty-running default is deliberately NOT pre-filled for this
+        # Egypt project; it may be quoted in a methodology note only.
         dist = float(row.get("c2_distance_km", 0.0) or 0.0)
+        c2_mode = str(row.get("c2_mode", "truck")).strip().lower() or "truck"
         if dist > 0.0:
             if str(row.get("c2_source", "")).strip():
                 c2_legs.append({"material": mat, "mass_kg": mass, "distance_km": dist,
-                                "mode": str(row.get("c2_mode", "truck")).strip().lower() or "truck",
+                                "mode": c2_mode,
                                 "scope": "wtw", "mass_source": remaining_masses[mat].source,
-                                "distance_source": str(row.get("c2_source")).strip()})
+                                "distance_source": str(row.get("c2_source")).strip(),
+                                "leg": "outward"})
             else:
                 status = "incomplete_sources"; notes.append(f"C1-C4 {mat}: C2 distance without source.")
+
+            if c2_mode == "truck":
+                c2_ret_ok, c2_ret_note, c2_ret_leg = _c2_return_closure(row, mat, mass, dist)
+                if c2_ret_leg is not None:
+                    c2_legs.append(c2_ret_leg)
+                if c2_ret_note:
+                    notes.append(c2_ret_note)
+                if not c2_ret_ok and bool(params.get("publication_mode", False)):
+                    status = "incomplete_sources"
 
         route_codes = _A5_WASTE_ROUTE.get(mat, {})
         reuse_f = recycle_f = disposal_f = None

@@ -226,7 +226,9 @@ check("A4 segment without a distance source → incomplete_sources",
 ret_params = {"a4_route_source": "route", "a4_scope": "wtw", "boq_source": "BOQ",
               "transport_distance_km": 100.0, "transport_mode": "truck", "a4_mode": "simple",
               "a4_return_fraction": 0.5, "a4_empty_return_factor": 0.08,
-              "a4_return_source": "RICS assumption doc", "a4_payload_assumption": "avg laden"}
+              "a4_return_source_file": "RICS assumption doc",
+              "a4_return_source_location": "clause 5.1.3",
+              "a4_return_justification": "documented empty-running assumption", "a4_payload_assumption": "avg laden"}
 _rl, _rst, _rn, _ra = _b4a(ret_params, _masses_stub)
 check("A4 road return adds a return leg only with documented assumption",
       any(a["leg"] == "return" for a in _ra))
@@ -235,11 +237,32 @@ rail_ret = dict(ret_params); rail_ret["transport_mode"] = "rail"
 _rl2, _, _, _ra2 = _b4a(rail_ret, _masses_stub)
 check("A4 rail has no return leg (return is road-only)",
       not any(a["leg"] == "return" for a in _ra2))
-# no hard-coded 0.5: without a documented return assumption, road is outward-only.
+# No hard-coded 0.5 and no inherited UK 43%: with the return numbers set to zero but the
+# source + justification present, this is a DOCUMENTED ZERO return — declared, not assumed.
 noret = dict(ret_params); noret["a4_return_fraction"] = 0.0; noret["a4_empty_return_factor"] = 0.0
-_nl, _, _nn, _na = _b4a(noret, _masses_stub)
-check("A4 no hard-coded return: outward-only without documented assumption",
-      not any(a["leg"] == "return" for a in _na) and "outward-only" in _nn)
+_nl, _nst0, _nn, _na = _b4a(noret, _masses_stub)
+check("A4 no hard-coded return: no return leg is invented when the fraction is zero",
+      not any(a["leg"] == "return" for a in _na))
+check("A4 documented-zero return is declared (source + location + justification)",
+      _nst0 == "connected" and "documented zero" in _nn.lower())
+
+# RICS A4 return closure is MANDATORY in publication mode: strip the return evidence and
+# the road route must not be reported as connected.
+_undoc = {k: v for k, v in noret.items()
+          if k not in ("a4_return_source_file", "a4_return_source_location",
+                       "a4_return_justification")}
+_ul, _ust, _un, _ua = _b4a(dict(_undoc, publication_mode=True), _masses_stub)
+check("A4 publication: road route with unresolved return is NOT connected",
+      _ust == "incomplete_sources" and _ul == [])
+check("A4 publication: no UK empty-running default is silently applied",
+      "No UK empty-running default is silently applied" in _un)
+_dl, _dst, _dn, _da = _b4a(dict(_undoc, publication_mode=False), _masses_stub)
+check("A4 developer mode: unresolved return is a warning, not a block",
+      _dst == "connected")
+# With full return evidence the publication road route closes.
+_pl, _pst, _pn, _pa = _b4a(dict(ret_params, publication_mode=True), _masses_stub)
+check("A4 publication: documented return evidence closes the route",
+      _pst == "connected" and any(a["leg"] == "return" for a in _pa))
 check("A4 activity audit carries mass_source + distance_source + payload/return",
       all({"mass_source", "distance_source", "payload_assumption", "return_assumption"} <= set(a)
           for a in _ra))
@@ -533,7 +556,8 @@ except _SIE:
 # A4 empty-return unit-aware: vehicle-km uses trips, not payload mass.
 _veh = {"a4_scope": "wtw", "boq_source": "BOQ", "a4_mode": "simple", "transport_mode": "truck",
         "transport_distance_km": 100.0, "a4_route_source": "route",
-        "a4_empty_return_factor": 0.9, "a4_return_source": "veh doc",
+        "a4_empty_return_factor": 0.9, "a4_return_source_file": "veh doc",
+        "a4_return_source_location": "table 1", "a4_return_justification": "empty return trips",
         "a4_return_factor_unit": "vehicle_km", "a4_number_of_trips": 40.0}
 _vl, _vst, _vn, _vaud = _b4b(_veh, {"steel": ProjectQuantity(1e6, "kg", "BOQ", "x")})
 check("A4 vehicle-km return leg present (trips-based)",
@@ -652,7 +676,8 @@ check("blank verification → user_supplied",
 # A4 vehicle-km: trips derived from capacity; both trips+capacity → conflict.
 _veh_cap = {"a4_scope": "wtw", "boq_source": "BOQ", "a4_mode": "simple", "transport_mode": "truck",
             "transport_distance_km": 100.0, "a4_route_source": "route",
-            "a4_empty_return_factor": 0.9, "a4_return_source": "veh doc",
+            "a4_empty_return_factor": 0.9, "a4_return_source_file": "veh doc",
+        "a4_return_source_location": "table 1", "a4_return_justification": "empty return trips",
             "a4_return_factor_unit": "vehicle_km", "a4_vehicle_capacity": 20.0, "a4_load_factor": 1.0}
 _cl, _cst, _cn, _caud = _b4b(_veh_cap, {"steel": ProjectQuantity(1e6, "kg", "BOQ", "x")})
 check("A4 vehicle-km trips derived from capacity → connected + return leg",
@@ -692,7 +717,10 @@ check("A5 dict declarations (full record) accepted → connected",
 
 # A4 advanced + global vehicle-km trips → validation_failed (double-count guard).
 _veh_adv = {"a4_scope": "wtw", "boq_source": "BOQ", "a4_mode": "advanced",
-            "a4_empty_return_factor": 0.9, "a4_return_source": "veh", "a4_return_factor_unit": "vehicle_km",
+            "a4_empty_return_factor": 0.9, "a4_return_source_file": "veh",
+            "a4_return_source_location": "table 1",
+            "a4_return_justification": "empty return trips",
+            "a4_return_factor_unit": "vehicle_km",
             "a4_number_of_trips": 40.0,
             "a4_advanced_legs": [{"material": "steel", "route_id": "1", "route_share": 1.0,
                                   "segment_no": 1, "distance_km": 50.0, "mode": "truck",
@@ -853,6 +881,97 @@ check("A5 no default 100% landfill in publication (shares required)",
 # C1/C2/C3/C4 independent sub-statuses are exposed.
 check("C1-C4 exposes independent submodule statuses",
       set(_r_c["modules"]["C1_C4"]["submodule_status"]) == {"C1", "C2", "C3", "C4"})
+
+# ── Module D exact RICS Appendix K arithmetic ─────────────────────────────────
+# RICS Appendix K reproduces EN 15804:
+#   D1 = (MMR_out - MMR_in) * [EMR_after_EoW_out - EVMSub_out * (QR_out / QSub)]
+# Qnet=1000 kg, q=0.8, EF_primary=2.0, EF_recovery=0.5
+# D1_standard_signed = 1000 * (0.5 - 0.8*2.0) / 1000 = -1.1 tCO2e.
+# The superseded implementation used Qnet*q*(EF_primary - EF_recovery) = +1.2 tCO2e,
+# so this exact value is what distinguishes the corrected equation from the old one.
+prim_exact = make_project_evidence(
+    "D-PRIM-EXACT", 2.0, "kgCO2e/kg", "D1",
+    "primary factor source", "row 1", "A1-A3/substitution point"
+)
+rec_exact = make_project_evidence(
+    "D-REC-EXACT", 0.5, "kgCO2e/kg", "D1",
+    "recovery process source", "row 2", "after EoW to substitution point"
+)
+d_exact = calculate_module_d1([{
+    "material": "steel",
+    "recovered_output_kg": 1000.0,
+    "secondary_input_kg": 0.0,
+    "substitution_ratio": 0.8,
+    "flow_source": "EOL plan",
+    "substitution_source": "quality study",
+    "primary_factor": prim_exact,
+    "recovery_to_substitution_factor": rec_exact,
+}])
+check("Module D RICS standard-signed exact arithmetic",
+      abs(d_exact["standard_signed_tco2e"] - (-1.1)) < 1e-12)
+check("Module D negative signed value maps to positive benefit magnitude",
+      abs(d_exact["benefit_positive_tco2e"] - 1.1) < 1e-12)
+check("Module D benefit case has zero positive load",
+      abs(d_exact["load_positive_tco2e"]) < 1e-12)
+check("Module D is NOT the superseded q*(primary-recovery) form",
+      abs(d_exact["standard_signed_tco2e"] - 1.2) > 1e-9)
+# A load case: recovery burden exceeds the substituted primary credit.
+d_load = calculate_module_d1([{
+    "material": "steel", "recovered_output_kg": 1000.0, "secondary_input_kg": 0.0,
+    "substitution_ratio": 0.1, "flow_source": "EOL plan", "substitution_source": "quality study",
+    "primary_factor": prim_exact, "recovery_to_substitution_factor": rec_exact,
+}])
+check("Module D positive signed value = potential load",
+      d_load["standard_signed_tco2e"] > 0.0
+      and abs(d_load["load_positive_tco2e"] - d_load["standard_signed_tco2e"]) < 1e-12
+      and abs(d_load["benefit_positive_tco2e"]) < 1e-12)
+
+# ── RICS C2 road return / empty-running closure ───────────────────────────────
+_c2_base = dict(_c1c4)  # fully-sourced C1-C4 scenario used above
+def _c2row(**kw):
+    row = {"material": "concrete", "reuse_share": 0.0, "recycle_share": 0.0,
+           "disposal_share": 1.0, "share_source": "EOL plan",
+           "c2_distance_km": 40.0, "c2_source": "haul", "c2_mode": "truck"}
+    row.update(kw)
+    return row
+
+_c2_open = dict(_c2_base, publication_mode=True, c1c4_rows=[_c2row()])
+check("C2 publication: road route without return closure is NOT connected",
+      run_scientific_lca_from_app_params(_c2_open)["stage_status"]["C1-C4"] == "incomplete_sources")
+
+_c2_tkm = dict(_c2_base, publication_mode=True, c1c4_rows=[_c2row(
+    c2_return_factor_unit="tonne_km", c2_return_fraction=0.4, c2_empty_return_factor=0.08,
+    c2_return_source_file="haulier study", c2_return_source_location="table 3 p4",
+    c2_return_justification="40% of C2 road tonne-km run empty")])
+_r_c2t = run_scientific_lca_from_app_params(_c2_tkm)
+check("C2 publication: tonne-km return closure connects the route",
+      _r_c2t["stage_status"]["C1-C4"] == "connected")
+
+_c2_vkm = dict(_c2_base, publication_mode=True, c1c4_rows=[_c2row(
+    c2_return_factor_unit="vehicle_km", c2_number_of_return_trips=12.0,
+    c2_empty_return_factor=0.9,
+    c2_return_source_file="haulier study", c2_return_source_location="table 4 p5",
+    c2_return_justification="12 measured empty return trips")])
+check("C2 publication: vehicle-km return closure connects the route",
+      run_scientific_lca_from_app_params(_c2_vkm)["stage_status"]["C1-C4"] == "connected")
+
+_c2_zero = dict(_c2_base, publication_mode=True, c1c4_rows=[_c2row(
+    c2_return_source_file="EOL contract", c2_return_source_location="clause 9.2",
+    c2_return_justification="Return leg is carried by the incoming aggregate delivery")])
+check("C2 publication: documented zero/N-A return with source + justification is accepted",
+      run_scientific_lca_from_app_params(_c2_zero)["stage_status"]["C1-C4"] == "connected")
+
+# A return EF/fraction WITHOUT a source is not a declaration.
+_c2_nosrc = dict(_c2_base, publication_mode=True, c1c4_rows=[_c2row(
+    c2_return_factor_unit="tonne_km", c2_return_fraction=0.4, c2_empty_return_factor=0.08)])
+check("C2 publication: return numbers without a source do not close the route",
+      run_scientific_lca_from_app_params(_c2_nosrc)["stage_status"]["C1-C4"] == "incomplete_sources")
+
+# No Egypt project silently inherits the RICS UK 43% empty-running default.
+import lca_scientific_integration as _lsi_src
+_src_text = open(_lsi_src.__file__, encoding="utf-8").read()
+check("no automatic UK 43% empty-running default anywhere in the integration",
+      "0.43" not in _src_text)
 
 print("\nALL SCIENTIFIC CORE TESTS PASSED" if ok else "\nSOME TESTS FAILED")
 sys.exit(0 if ok else 1)
