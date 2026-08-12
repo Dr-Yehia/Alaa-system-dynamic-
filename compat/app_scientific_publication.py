@@ -1,1 +1,1 @@
-../apps/publication.py
+../apps/_publication_impl.py
