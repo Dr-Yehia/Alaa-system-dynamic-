@@ -2,6 +2,13 @@
 scientific engine (not legacy). Execs the real app top-to-bottom against a stub that fills
 the scientific provenance so run_scientific_lca_from_app_params() computes."""
 import sys, os, types, numpy as np, pandas as pd
+import os as _os, sys as _sys
+# The app now imports sibling domain modules; these suites exec it from tests/,
+# so the repository root must be importable.
+_SEP_ROOT = _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))
+if _SEP_ROOT not in _sys.path:
+    _sys.path.insert(0, _SEP_ROOT)
+
 
 # Run from anywhere: put the repo root on sys.path so the app's local imports
 # (lca_scientific_*) resolve even when this file is launched as tests/<name>.py.

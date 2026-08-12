@@ -2,6 +2,13 @@
 run the full app top-to-bottom in BOTH Publication and Developer mode, and verify
 no exceptions + scientific identities + no dashboard leakage in publication exports."""
 import sys, types, numpy as np, pandas as pd
+import os as _os, sys as _sys
+# The app now imports sibling domain modules; these suites exec it from tests/,
+# so the repository root must be importable.
+_SEP_ROOT = _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))
+if _SEP_ROOT not in _sys.path:
+    _sys.path.insert(0, _SEP_ROOT)
+
 
 def build_app_namespace(publication_mode, captured):
     st = types.ModuleType("streamlit")

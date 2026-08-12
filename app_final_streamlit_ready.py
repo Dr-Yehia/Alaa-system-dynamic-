@@ -25,6 +25,16 @@ except Exception as _sci_import_err:  # pragma: no cover - defensive
     SCI_LCA_AVAILABLE = False
     _SCI_IMPORT_ERROR = str(_sci_import_err)
 
+# ── Separated assessment domains ──────────────────────────────────────────────
+# Each domain lives in its own module and none of them imports another. The neutral
+# layers (project context, system dynamics state) are shared; carbon, money and
+# benefits are not. See assessment_orchestrator.py for how the three are combined.
+from project_context import ASSESSMENT_LIFETIME_YEARS, ProjectContext, context_from_params
+from system_dynamics_core import simulate_asset_condition, calculate_dynamic_b6
+from legacy_lcc_engine import (b6_energy_pv_cost, calculate_lcc_npv,
+                               calculate_lcc_npv_activity_based)
+from benefits_core import calculate_benefit_kpis
+
 # ═══════════════════════════════════════════════════════════════
 # PAGE CONFIGURATION
 # ═══════════════════════════════════════════════════════════════
@@ -528,7 +538,6 @@ def calculate_cross_category_interactions(mat_score, env_score, op_score, econ_s
 
 
 
-ASSESSMENT_LIFETIME_YEARS = 50
 
 
 def calculate_a4_transport_co2(material_masses_kg, distance_km, mode, advanced_legs=None):
@@ -601,28 +610,6 @@ def calculate_lca_summary(embodied_co2_tons, annual_operational_co2_tons, embodi
     }
 
 
-def calculate_lcc_npv(construction_cost_m, annual_maintenance_m, annual_energy_cost_m=0.0,
-                      replacement_costs=None, end_of_life_cost_m=0.0, residual_value_m=0.0,
-                      discount_rate_pct=5.0, lifetime_years=50, energy_pv_cost_override_m=None):
-    r = discount_rate_pct / 100.0
-    n = lifetime_years
-    replacement_costs = replacement_costs or {}
-
-    def pv_single(cost, year):
-        return cost / ((1 + r) ** year) if r > 0 else cost
-
-    upv = (1 - (1 + r) ** (-n)) / r if r > 0 else n
-
-    pv_maintenance = annual_maintenance_m * upv
-    # R17-energycost: prefer the tariff-based escalating energy PV when supplied.
-    pv_energy = energy_pv_cost_override_m if energy_pv_cost_override_m is not None else annual_energy_cost_m * upv
-    pv_replacement = sum(pv_single(cost, year) for year, cost in replacement_costs.items())
-    pv_end_of_life = pv_single(end_of_life_cost_m, n)
-    pv_residual = pv_single(residual_value_m, n)
-
-    npv_lcc = construction_cost_m + pv_maintenance + pv_energy + pv_replacement + pv_end_of_life - pv_residual
-
-    return {"npv_lcc_m": npv_lcc, "discount_rate_pct": discount_rate_pct, "lifetime_years": n}
 
 # ═══════════════════════════════════════════════════════════════
 # PHASE 2 — SYSTEM DYNAMICS LAYER FOR B6 (asset condition -> energy)
@@ -654,65 +641,8 @@ def calculate_lcc_npv(construction_cost_m, annual_maintenance_m, annual_energy_c
 # maintenance, or measured operational-energy data. The model is NOT validated.
 # ═══════════════════════════════════════════════════════════════
 
-def simulate_asset_condition(C0=1.0, delta=0.005, maintenance_interval=5,
-                             rho=0.05, tau=1, lifetime_years=ASSESSMENT_LIFETIME_YEARS, dt=1.0):
-    """Stock-flow simulation of asset condition C(t).
-    Returns (rows, condition_start) where condition_start[t-1] = C at start of year t.
-    Degradation is applied first, then delayed maintenance recovery, each capped."""
-    def is_maint_year(yr):
-        return bool(maintenance_interval) and maintenance_interval > 0 and yr >= 1 and (yr % maintenance_interval == 0)
-
-    rows, condition_start = [], []
-    C = float(np.clip(C0, 0.0, 1.0))
-    for t in range(1, int(lifetime_years) + 1):
-        C_start = C
-        condition_start.append(C_start)
-        # Outflow: degradation (constant annual loss, capped so condition stays >= 0)
-        DR = min(delta, C_start / dt) if dt > 0 else 0.0
-        C_pre = max(0.0, C_start - dt * DR)
-        # Inflow: delayed maintenance recovery (capped so condition stays <= 1)
-        m_action = 1 if is_maint_year(t) else 0
-        src_year = t - tau
-        delayed = 1 if (src_year >= 1 and is_maint_year(src_year)) else 0
-        MR_request = rho * delayed
-        MR_actual = max(0.0, min(MR_request, (1.0 - C_pre) / dt)) if dt > 0 else 0.0
-        C_end = float(np.clip(C_pre + dt * MR_actual, 0.0, 1.0))
-        rows.append({
-            'year': t, 'C_start': C_start,
-            'maintenance_action': m_action, 'delayed_maintenance': delayed,
-            'degradation_flow': dt * DR, 'maintenance_recovery_flow': dt * MR_actual,
-            'C_end': C_end,
-        })
-        C = C_end
-    return rows, condition_start
 
 
-def calculate_dynamic_b6(condition_start, EI0, daily_pkm, CI,
-                         lifetime_years=ASSESSMENT_LIFETIME_YEARS, alpha=0.10, g=0.0):
-    """Condition-dependent dynamic B6 operational carbon vs static baseline.
-    EI_t = EI0*(1+alpha*(1-C_t)); PKM_t = daily_pkm*365*(1+g)^(t-1); CI_t = CI (no renewable)."""
-    yearly, b6_dyn, b6_static, ei_sum, pkm_sum = [], 0.0, 0.0, 0.0, 0.0
-    for idx, t in enumerate(range(1, int(lifetime_years) + 1)):
-        C_t = condition_start[idx]
-        EI_t = EI0 * (1.0 + alpha * (1.0 - C_t))
-        # (1+g)^(t-1): the first operating year (t=1) is the baseline (no growth yet)
-        PKM_t = daily_pkm * 365.0 * ((1.0 + g) ** (t - 1))
-        co2_dyn = EI_t * PKM_t * CI / 1000.0
-        co2_static = EI0 * PKM_t * CI / 1000.0
-        b6_dyn += co2_dyn
-        b6_static += co2_static
-        ei_sum += EI_t
-        pkm_sum += PKM_t
-        yearly.append({'year': t, 'C_t': C_t, 'EI_t': EI_t, 'PKM_t': PKM_t, 'B6_co2_tons': co2_dyn})
-    n = int(lifetime_years) if lifetime_years else 1
-    return {
-        'yearly': yearly,
-        'b6_dynamic_tons': b6_dyn,
-        'b6_static_tons': b6_static,
-        'delta_b6_tons': b6_dyn - b6_static,
-        'average_EI': ei_sum / n,
-        'total_pkm': pkm_sum,
-    }
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -1012,37 +942,6 @@ def update_material_mass_balance(initial_masses_kg, added_kg, removed_kg):
     return {'mass_balance_by_material': table, 'remaining_masses_for_c1_c4': remaining}
 
 
-def calculate_lcc_npv_activity_based(construction_cost_m, annual_energy_cost_m, maintenance_mode,
-                                     annual_maintenance_m, b2b3b5_costs_by_year, replacement_costs_by_year,
-                                     end_of_life_cost_m=0.0, residual_value_m=0.0,
-                                     discount_rate_pct=5.0, lifetime_years=ASSESSMENT_LIFETIME_YEARS,
-                                     energy_pv_cost_override_m=None):
-    """LCCA with a maintenance mode that prevents double counting:
-      simple_annual : routine cost = annual_maintenance (NO activity routine costs)
-      activity_based: routine cost = Σ B2/B3/B5 activity costs (NO annual_maintenance)
-    B4 replacement cost is a discrete capital event added in BOTH modes (so B4 LCA
-    emissions always have a matching LCCA cost)."""
-    r = discount_rate_pct / 100.0
-    n = int(lifetime_years)
-
-    def pv(cost, year):
-        return cost / ((1 + r) ** year) if r > 0 else cost
-
-    upv = (1 - (1 + r) ** (-n)) / r if r > 0 else n
-    # R17-energycost: when a tariff-based escalating energy PV is supplied (kWh×tariff),
-    # use it instead of the flat annual_energy_cost·UPV (mutually exclusive — no double count).
-    pv_energy = energy_pv_cost_override_m if energy_pv_cost_override_m is not None else annual_energy_cost_m * upv
-    if maintenance_mode == 'activity_based':
-        pv_routine = sum(pv(c, y) for y, c in (b2b3b5_costs_by_year or {}).items())
-    else:
-        pv_routine = annual_maintenance_m * upv
-    pv_replacement = sum(pv(c, y) for y, c in (replacement_costs_by_year or {}).items())
-    pv_eol = pv(end_of_life_cost_m, n)
-    pv_residual = pv(residual_value_m, n)
-    npv = construction_cost_m + pv_routine + pv_energy + pv_replacement + pv_eol - pv_residual
-    return {'npv_lcc_m': npv, 'discount_rate_pct': discount_rate_pct, 'lifetime_years': n,
-            'maintenance_mode': maintenance_mode, 'pv_routine_m': pv_routine,
-            'pv_replacement_m': pv_replacement}
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -1241,69 +1140,8 @@ def b6_served_annual_pkm(params):
                  'avg_trip_km': trip, 'availability': avail, 'capacity_binding': capacity > 0 and demand > capacity}
 
 
-def b6_energy_pv_cost(annual_kwh, tariff_per_kwh, escalation_pct, discount_pct, years):
-    """R11: PV of B6 energy cost from energy × tariff.
-        PV = Σ_t (annual_kwh · tariff · (1+esc)^(t-1)) / (1+disc)^t
-    Returns (pv_cost, undiscounted_cost). With tariff 0 → (0, 0)."""
-    pv = 0.0
-    undisc = 0.0
-    for t in range(1, int(years) + 1):
-        cost_t = annual_kwh * tariff_per_kwh * (1.0 + escalation_pct / 100.0) ** (t - 1)
-        undisc += cost_t
-        pv += cost_t / (1.0 + discount_pct / 100.0) ** t
-    return pv, undisc
 
 
-def calculate_benefit_kpis(params, annual_pkm, lifetime_years=ASSESSMENT_LIFETIME_YEARS):
-    """R15: SEPARATE societal co-benefit KPIs. These are reported ALONGSIDE the LCA
-    and are NEVER subtracted from gross or net LCA carbon. Every KPI is a documented
-    equation rather than a hand-entered figure. All defaults are 0 → no co-benefit
-    claimed unless inputs are supplied."""
-    # 1) Operational CO2 avoided vs a displaced baseline mode (car/bus), per pkm.
-    ef_base = float(params.get('benefit_baseline_ci_pkm', 0.0))            # kgCO2e/pkm displaced mode
-    ef_mono = float(params.get('energy_per_pax', 0.0)) * float(params.get('carbon_intensity', 0.0))  # kgCO2e/pkm monorail B6
-    annual_co2_avoided_t = max(ef_base - ef_mono, 0.0) * annual_pkm / 1000.0
-    lifetime_co2_avoided_t = annual_co2_avoided_t * lifetime_years
-
-    # 2) Time saving + value of time saved (VoTS).
-    annual_trips = float(params.get('benefit_annual_trips', 0.0))          # trips/yr
-    dt_min = float(params.get('benefit_time_saved_min', 0.0))             # minutes saved per trip vs baseline
-    annual_hours_saved = annual_trips * dt_min / 60.0
-    vot = float(params.get('benefit_value_of_time', 0.0))                 # $/h
-    annual_vots_m = annual_hours_saved * vot / 1e6
-    lifetime_vots_m = annual_vots_m * lifetime_years
-
-    # 3) Jobs supported (capex-driven construction jobs + operational jobs).
-    capex = float(params.get('construction_cost', 0.0))                   # $M
-    jobs_construction = float(params.get('benefit_jobs_per_musd', 0.0)) * capex
-    jobs_operational = float(params.get('benefit_operational_jobs', 0.0))
-    total_jobs = jobs_construction + jobs_operational
-
-    # 4) Economic impact (output multiplier on capital investment).
-    economic_impact_m = capex * float(params.get('economic_multiplier', 1.0))
-
-    # 5) Land-use efficiency (project footprint per million pkm/yr).
-    land_ha = float(params.get('benefit_land_ha', 0.0))
-    land_ha_per_mpkm = (land_ha / (annual_pkm / 1e6)) if annual_pkm > 0 else float('nan')
-
-    # 6) Noise reduction ratio vs baseline mode.
-    n_base = float(params.get('benefit_noise_baseline_db', 0.0))
-    n_mono = float(params.get('benefit_noise_monorail_db', 0.0))
-    noise_reduction_db = n_base - n_mono
-    noise_reduction_ratio = (noise_reduction_db / n_base) if n_base > 0 else 0.0
-
-    return {
-        'note': 'Co-benefits reported SEPARATELY (EN 15804 module-independent); never netted into LCA gross/net.',
-        'annual_co2_avoided_tons': annual_co2_avoided_t,
-        'lifetime_co2_avoided_tons': lifetime_co2_avoided_t,
-        'baseline_ci_pkm': ef_base, 'monorail_ci_pkm': ef_mono,
-        'annual_hours_saved': annual_hours_saved,
-        'annual_vots_musd': annual_vots_m, 'lifetime_vots_musd': lifetime_vots_m,
-        'jobs_construction': jobs_construction, 'jobs_operational': jobs_operational,
-        'total_jobs': total_jobs, 'economic_impact_musd': economic_impact_m,
-        'land_ha_per_million_pkm': land_ha_per_mpkm,
-        'noise_reduction_db': noise_reduction_db, 'noise_reduction_ratio': noise_reduction_ratio,
-    }
 
 
 def calculate_core_lca_lcc(params):

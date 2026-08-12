@@ -5,6 +5,13 @@ in the real Streamlit runtime, not the headless stub):
   - st.button / st.download_button must each have a key OR a unique label
 """
 import re, sys
+import os as _os, sys as _sys
+# The app now imports sibling domain modules; these suites exec it from tests/,
+# so the repository root must be importable.
+_SEP_ROOT = _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))
+if _SEP_ROOT not in _sys.path:
+    _sys.path.insert(0, _SEP_ROOT)
+
 from collections import Counter
 
 src = open("app_final_streamlit_ready.py", encoding="utf-8").read()

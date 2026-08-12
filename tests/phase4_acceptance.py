@@ -1,4 +1,11 @@
 import sys
+import os as _os, sys as _sys
+# The app now imports sibling domain modules; these suites exec it from tests/,
+# so the repository root must be importable.
+_SEP_ROOT = _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))
+if _SEP_ROOT not in _sys.path:
+    _sys.path.insert(0, _SEP_ROOT)
+
 import numpy as np
 HARNESS = "tests/smoke_headless.py"
 src = open(HARNESS).read().split('# ---- Execute the app module ----')[0]
