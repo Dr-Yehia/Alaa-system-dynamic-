@@ -739,6 +739,11 @@ _b4row = [{"event_id": "E1", "module": "B4", "year": 25, "event_source": "OM pla
            "new_material": "steel", "new_material_kg": 5000.0, "material_source": "BOQ",
            "removed_material": "steel", "removed_material_kg": 5000.0,
            "removed_material_source": "OM removal log",
+           # Removed mass must reconcile: reuse+recycle+disposal+other == removed.
+           "removed_reuse_kg": 0.0, "removed_recycle_kg": 5000.0,
+           "removed_disposal_kg": 0.0, "removed_other_kg": 0.0,
+           "removed_flow_source": "OM removal log, table 2",
+           "transport_purpose": "new_material_inbound",
            "transport_km": 30.0, "transport_source": "route", "transport_mode": "truck"}]
 _ev, _mstat, _mnote = _bb5(_b4row, 50)
 check("B2-B5 event built; added/removed DERIVED from activity",
@@ -775,8 +780,10 @@ check("B2-B5 mass balance neutral for like-for-like B4 (added == removed)",
 
 # Aggregation: two steel rows in one event are SUMMED (not overwritten).
 _agg_rows = [
-    dict(_b4row_src[0], new_material_kg=3000.0, removed_material_kg=3000.0),
-    dict(_b4row_src[0], new_material_kg=2000.0, removed_material_kg=2000.0)]
+    dict(_b4row_src[0], new_material_kg=3000.0, removed_material_kg=3000.0,
+         removed_recycle_kg=3000.0),
+    dict(_b4row_src[0], new_material_kg=2000.0, removed_material_kg=2000.0,
+         removed_recycle_kg=2000.0)]
 _aev, _amst, _an = _bb5(_agg_rows, 50)
 check("B2-B5 same-material rows summed (3000+2000=5000)",
       len(_aev) == 1 and abs(_aev[0]["added_mass_kg"]["steel"] - 5000.0) < 1e-6)
@@ -966,6 +973,56 @@ _c2_nosrc = dict(_c2_base, publication_mode=True, c1c4_rows=[_c2row(
     c2_return_factor_unit="tonne_km", c2_return_fraction=0.4, c2_empty_return_factor=0.08)])
 check("C2 publication: return numbers without a source do not close the route",
       run_scientific_lca_from_app_params(_c2_nosrc)["stage_status"]["C1-C4"] == "incomplete_sources")
+
+# ── B2-B5 removed-flow reconciliation ─────────────────────────────────────────
+# Mass removed from the asset does not vanish: reuse + recycle + disposal + other must
+# equal removed_material_kg, and the allocation needs its own source.
+_rf_ok = _bb5([dict(_b4row[0])], 50)
+check("B2-B5 reconciled removed flow is accepted",
+      _rf_ok[1]["B4"] == "connected"
+      and _rf_ok[0][0]["removed_flow_reconciliation"][0]["allocated_kg"] == 5000.0)
+
+_rf_short = _bb5([dict(_b4row[0], removed_recycle_kg=4000.0)], 50)  # 4000 != 5000
+check("B2-B5 removed-flow allocation that does not equal removed mass is rejected",
+      _rf_short[1]["B4"] == "incomplete_sources"
+      and "removed-flow allocation must equal" in _rf_short[2])
+
+_rf_nosrc = _bb5([dict(_b4row[0], removed_flow_source="")], 50)
+check("B2-B5 removed-flow allocation without its own source is rejected",
+      _rf_nosrc[1]["B4"] == "incomplete_sources")
+
+_rf_neg = _bb5([dict(_b4row[0], removed_recycle_kg=6000.0, removed_disposal_kg=-1000.0)], 50)
+check("B2-B5 negative removed-flow allocation is rejected",
+      _rf_neg[1]["B4"] == "incomplete_sources")
+
+# Outbound removed-material transport carries the REMOVED mass, not the new-material mass.
+_rt = _bb5([dict(_b4row[0], new_material_kg=9999.0, removed_transport_km=25.0,
+                 removed_transport_mode="truck", removed_transport_source="removal haul")], 50)
+_out_legs = [l for l in _rt[0][0]["transport_legs"] if l.get("purpose") == "removed_material_outbound"]
+_in_legs = [l for l in _rt[0][0]["transport_legs"] if l.get("purpose") == "new_material_inbound"]
+check("B2-B5 outbound transport uses the removed mass (not the new-material mass)",
+      len(_out_legs) == 1 and _out_legs[0]["mass_kg"] == 5000.0
+      and len(_in_legs) == 1 and _in_legs[0]["mass_kg"] == 9999.0)
+
+_rt_nomass = _bb5([dict(_b4row[0], removed_material="", removed_material_kg=0.0,
+                        removed_reuse_kg=0.0, removed_recycle_kg=0.0,
+                        removed_transport_km=25.0, removed_transport_source="haul")], 50)
+check("B2-B5 outbound transport without a reconciled removed mass is rejected",
+      _rt_nomass[1]["B4"] == "incomplete_sources")
+
+_rt_purpose = _bb5([dict(_b4row[0], transport_purpose="removed_material_outbound")], 50)
+check("B2-B5 inbound leg mislabelled as outbound is rejected",
+      _rt_purpose[1]["B4"] == "incomplete_sources")
+
+# Legacy waste_kg may not exceed the reconciled recycle+disposal+other flow.
+_w_over = _bb5([dict(_b4row[0], waste_kg=9000.0, waste_factor_code="metal_landfill",
+                     waste_source="waste log")], 50)
+check("B2-B5 waste_kg exceeding the reconciled removed flow is rejected",
+      _w_over[1]["B4"] == "incomplete_sources" and "exceeds the reconciled" in _w_over[2])
+_w_ok = _bb5([dict(_b4row[0], waste_kg=4000.0, waste_factor_code="metal_landfill",
+                   waste_source="waste log")], 50)
+check("B2-B5 waste_kg within the reconciled removed flow is accepted",
+      _w_ok[1]["B4"] == "connected")
 
 # No Egypt project silently inherits the RICS UK 43% empty-running default.
 import lca_scientific_integration as _lsi_src

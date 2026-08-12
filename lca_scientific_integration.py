@@ -1195,7 +1195,9 @@ def build_module_d_rows_from_c3(c1_c4_result, cfg):
 _B2B5_MODULES = ("B2", "B3", "B4", "B5")
 _A1A3_MATERIALS = ("concrete", "steel", "aluminum", "wood", "frp", "glass")
 _TRANSPORT_MODES = ("truck", "rail", "ship")
-# removed_same_event is intentionally NOT allowed yet (needs removed-flow reconciliation).
+# Inbound new-material transport and outbound removed-material transport are DISTINCT
+# legs carrying different masses; they are never merged into one generic leg.
+_TRANSPORT_PURPOSES = ("new_material_inbound", "removed_material_outbound")
 _MASS_ROLES = ("retained_in_asset", "consumable", "temporary")
 
 
@@ -1281,6 +1283,7 @@ def build_b2b5_events_from_rows(rows, rsp, module_declarations=None):
             diesel_total, diesel_srcs = 0.0, []
             elec_total, elec_srcs = 0.0, []
             transport_legs, waste_items = [], []
+            removed_flow_rows = []
             has_activity, bad = False, False
 
             def _num(v):
@@ -1311,6 +1314,7 @@ def build_b2b5_events_from_rows(rows, rsp, module_declarations=None):
                             has_activity = True
                 rmat = str(r.get("removed_material", "")).strip().lower()
                 rkg = _num(r.get("removed_material_kg"))
+                row_removed_kg = 0.0
                 if rmat or (r.get("removed_material_kg") not in (None, "", 0, 0.0)):
                     if rkg is None:
                         bad = True; notes.append(f"Event {eid}: invalid removed_material_kg.")
@@ -1318,8 +1322,46 @@ def build_b2b5_events_from_rows(rows, rsp, module_declarations=None):
                         if not str(r.get("removed_material_source", "")).strip():
                             bad = True; notes.append(f"Event {eid} {rmat}: removed mass without source.")
                         else:
-                            removed[rmat] = removed.get(rmat, 0.0) + rkg
-                            has_activity = True
+                            # ── Removed-flow reconciliation ───────────────────────────
+                            # Mass taken out of the asset does not vanish: it is reused,
+                            # recycled, disposed of, or goes to a declared other route.
+                            # The allocation must add up to the removed mass, otherwise the
+                            # C-stage remaining mass and the B-stage waste are inconsistent.
+                            _rre = _num(r.get("removed_reuse_kg")) or 0.0
+                            _rrc = _num(r.get("removed_recycle_kg")) or 0.0
+                            _rdi = _num(r.get("removed_disposal_kg")) or 0.0
+                            _rot = _num(r.get("removed_other_kg")) or 0.0
+                            if any(_num(r.get(k)) is None for k in (
+                                    "removed_reuse_kg", "removed_recycle_kg",
+                                    "removed_disposal_kg", "removed_other_kg")):
+                                bad = True
+                                notes.append(f"Event {eid} {rmat}: invalid removed-flow allocation value.")
+                            elif min(_rre, _rrc, _rdi, _rot) < 0.0:
+                                bad = True
+                                notes.append(f"Event {eid} {rmat}: removed-flow allocation cannot be negative.")
+                            else:
+                                allocated_removed = _rre + _rrc + _rdi + _rot
+                                # SOFTWARE-TOLERANCE: 1e-6 kg reconciliation tolerance, not scientific evidence.
+                                if abs(allocated_removed - rkg) > 1e-6:
+                                    bad = True
+                                    notes.append(
+                                        f"Event {eid} {rmat}: removed-flow allocation must equal "
+                                        f"removed_material_kg (allocated {allocated_removed} kg vs "
+                                        f"removed {rkg} kg).")
+                                elif not str(r.get("removed_flow_source", "")).strip():
+                                    bad = True
+                                    notes.append(
+                                        f"Event {eid} {rmat}: removed-flow allocation needs its own source.")
+                                else:
+                                    removed[rmat] = removed.get(rmat, 0.0) + rkg
+                                    row_removed_kg = rkg
+                                    removed_flow_rows.append({
+                                        "event_id": eid, "module": module, "material": rmat,
+                                        "removed_kg": rkg, "reuse_kg": _rre, "recycle_kg": _rrc,
+                                        "disposal_kg": _rdi, "other_kg": _rot,
+                                        "allocated_kg": allocated_removed,
+                                        "flow_source": str(r.get("removed_flow_source")).strip()})
+                                    has_activity = True
                 dl = _num(r.get("diesel_l"))
                 if dl is None:
                     bad = True; notes.append(f"Event {eid}: invalid diesel_l.")
@@ -1336,12 +1378,26 @@ def build_b2b5_events_from_rows(rows, rsp, module_declarations=None):
                         bad = True; notes.append(f"Event {eid}: electricity without source.")
                     else:
                         elec_total += ek; elec_srcs.append(str(r.get("elec_source")).strip()); has_activity = True
+                # ── Inbound transport of NEW material ─────────────────────────────
+                # The carried mass is the new-material mass of this row. A free typed
+                # transport mass is never accepted: the mass must be one that the event
+                # actually moves, so the mass balance and the transport agree.
                 tkm = _num(r.get("transport_km"))
+                _purpose = str(r.get("transport_purpose", "new_material_inbound")).strip() \
+                    or "new_material_inbound"
                 if tkm is None:
                     bad = True; notes.append(f"Event {eid}: invalid transport_km.")
                 elif tkm > 0.0:
                     _tmode = str(r.get("transport_mode", "truck")).strip().lower() or "truck"
-                    if not (str(r.get("transport_source", "")).strip() and mat and nkg):
+                    if _purpose not in _TRANSPORT_PURPOSES:
+                        bad = True
+                        notes.append(f"Event {eid}: unknown transport_purpose '{_purpose}'.")
+                    elif _purpose != "new_material_inbound":
+                        bad = True
+                        notes.append(
+                            f"Event {eid}: transport_km is the INBOUND new-material leg; use "
+                            "removed_transport_km for the outbound removed-material leg.")
+                    elif not (str(r.get("transport_source", "")).strip() and mat and nkg):
                         bad = True; notes.append(f"Event {eid}: transport without source/material.")
                     elif _tmode not in _TRANSPORT_MODES:
                         bad = True; notes.append(f"Event {eid}: unknown transport mode '{_tmode}'.")
@@ -1349,7 +1405,36 @@ def build_b2b5_events_from_rows(rows, rsp, module_declarations=None):
                         transport_legs.append({
                             "material": mat, "mass_kg": nkg, "distance_km": tkm, "mode": _tmode,
                             "scope": "wtw", "mass_source": esrc,
-                            "distance_source": str(r.get("transport_source")).strip()})
+                            "distance_source": str(r.get("transport_source")).strip(),
+                            "purpose": "new_material_inbound"})
+                        has_activity = True
+
+                # ── Outbound transport of REMOVED material ────────────────────────
+                # The carried mass is the RECONCILED removed mass of this row — never the
+                # new-material mass and never a free typed value.
+                rtkm = _num(r.get("removed_transport_km"))
+                if rtkm is None:
+                    bad = True; notes.append(f"Event {eid}: invalid removed_transport_km.")
+                elif rtkm > 0.0:
+                    _rtmode = str(r.get("removed_transport_mode", "truck")).strip().lower() or "truck"
+                    if row_removed_kg <= 0.0:
+                        bad = True
+                        notes.append(
+                            f"Event {eid}: removed-material transport requires a reconciled "
+                            "removed mass on the same row.")
+                    elif not str(r.get("removed_transport_source", "")).strip():
+                        bad = True
+                        notes.append(f"Event {eid}: removed-material transport without source.")
+                    elif _rtmode not in _TRANSPORT_MODES:
+                        bad = True
+                        notes.append(f"Event {eid}: unknown removed transport mode '{_rtmode}'.")
+                    else:
+                        transport_legs.append({
+                            "material": rmat, "mass_kg": row_removed_kg, "distance_km": rtkm,
+                            "mode": _rtmode, "scope": "wtw",
+                            "mass_source": str(r.get("removed_material_source", "")).strip() or esrc,
+                            "distance_source": str(r.get("removed_transport_source")).strip(),
+                            "purpose": "removed_material_outbound"})
                         has_activity = True
                 wkg = _num(r.get("waste_kg"))
                 wcode = str(r.get("waste_factor_code", "")).strip()
@@ -1363,6 +1448,24 @@ def build_b2b5_events_from_rows(rows, rsp, module_declarations=None):
                                             "waste_source": str(r.get("waste_source")).strip(),
                                             "factor_code": wcode})
                         has_activity = True
+
+            # `waste_kg` is a backward-compatibility field. It is kept so the app does not
+            # break, but it may not silently exceed the reconciled removed flow: the waste
+            # leaving an event has to come from mass that was actually removed.
+            if waste_items and removed_flow_rows:
+                _treatable = sum(w["recycle_kg"] + w["disposal_kg"] + w["other_kg"]
+                                 for w in removed_flow_rows)
+                _declared_waste = sum(float(w["waste_kg"]) for w in waste_items)
+                # SOFTWARE-TOLERANCE: 1e-6 kg reconciliation tolerance, not scientific evidence.
+                if _declared_waste - _treatable > 1e-6:
+                    bad = True
+                    notes.append(
+                        f"Event {eid}: declared waste_kg ({_declared_waste} kg) exceeds the "
+                        f"reconciled removed recycle+disposal+other flow ({_treatable} kg).")
+            elif waste_items and not removed_flow_rows:
+                notes.append(
+                    f"Event {eid}: waste_kg is declared without a reconciled removed flow "
+                    "(legacy compatibility field — prefer the removed-flow allocation).")
 
             if bad or not has_activity:
                 module_bad.add(module)
@@ -1382,7 +1485,8 @@ def build_b2b5_events_from_rows(rows, rsp, module_declarations=None):
                 "event_source": esrc,
                 "new_materials_kg": new_materials, "diesel_litres": diesel, "diesel_scope": "wtw",
                 "electricity_kwh": elec, "transport_legs": transport_legs, "waste_items": waste_items,
-                "added_mass_kg": added, "removed_mass_kg": removed})
+                "added_mass_kg": added, "removed_mass_kg": removed,
+                "removed_flow_reconciliation": removed_flow_rows})
 
     # Per-module status; a seen-but-not-bad module with at least one event is connected.
     # A module declaration only counts when it carries status + justification + source.

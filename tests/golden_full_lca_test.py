@@ -83,7 +83,15 @@ G = dict(
                       "mass_role": "retained_in_asset",
                       "removed_material": "steel", "removed_material_kg": 5000.0,
                       "removed_material_source": "O&M removal log",
-                      "transport_km": 30.0, "transport_source": "route", "transport_mode": "truck"}],
+                      # Removed mass is reconciled: reuse+recycle+disposal+other == removed.
+                      "removed_reuse_kg": 0.0, "removed_recycle_kg": 4000.0,
+                      "removed_disposal_kg": 1000.0, "removed_other_kg": 0.0,
+                      "removed_flow_source": "O&M removal log, table 2",
+                      # Inbound (new material) and outbound (removed material) are distinct legs.
+                      "transport_purpose": "new_material_inbound",
+                      "transport_km": 30.0, "transport_source": "route", "transport_mode": "truck",
+                      "removed_transport_km": 25.0, "removed_transport_mode": "truck",
+                      "removed_transport_source": "removal haul route"}],
     b2b5_module_declarations={m: dict(_DECL) for m in ("B2", "B3", "B5")},
     # C1-C4 from remaining mass; C1 sourced, C2 sourced route, disposal via registry.
     include_c1c4=True, c1_diesel_l=5000.0, c1_diesel_source="demolition fuel log",
