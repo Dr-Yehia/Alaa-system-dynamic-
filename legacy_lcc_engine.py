@@ -103,3 +103,87 @@ def calculate_lcc_npv_activity_based(construction_cost_m, annual_energy_cost_m, 
     return {'npv_lcc_m': npv, 'discount_rate_pct': discount_rate_pct, 'lifetime_years': n,
             'maintenance_mode': maintenance_mode, 'pv_routine_m': pv_routine,
             'pv_replacement_m': pv_replacement}
+
+def calculate_legacy_lcc(params, shared):
+    """Legacy economic result, computed from PROJECT PARAMS + NEUTRAL SHARED ACTIVITY.
+
+    This is the separation boundary for the LCC domain. The signature is the contract:
+    it receives `shared` — a `SharedActivity` carrying physical facts only (annual kWh,
+    the dated intervention schedule, scope flags) — and NEVER an LCA result. No carbon
+    value can therefore reach a cash flow.
+
+    Note that the B6 energy present value is computed HERE, not on the environmental
+    side. It is money (kWh x tariff, escalated and discounted), so it belongs to this
+    domain; only the kWh crosses the boundary. Arithmetic is unchanged from the monolith.
+
+    Returns the same keys the legacy dashboard has always consumed.
+    """
+    schedule_rows = shared.schedule_as_rows()
+    include_c1c4 = bool(shared.end_of_life_included)
+
+    # R11: PV of B6 energy cost from energy x tariff (0 tariff -> 0). Moved verbatim
+    # from the environmental block, where it never belonged.
+    b6_energy_pv_cost_m, b6_energy_undisc_cost_m = b6_energy_pv_cost(
+        shared.annual_operational_kwh, float(params.get('b6_energy_tariff', 0.0)),
+        float(params.get('b6_energy_escalation_pct', 0.0)),
+        float(params.get('discount_rate', 5.0)), ASSESSMENT_LIFETIME_YEARS)
+
+    # R28: contract factor adjusts the base CAPEX before it enters the NPV
+    # (CAPEX_contract = CAPEX_base x contract_factor). Default 1.0 -> no change.
+    contract_factor = float(params.get('contract_factor', 1.0))
+    construction_cost_base = params['construction_cost']
+    construction_cost = construction_cost_base * contract_factor
+    annual_maintenance = params['maintenance_cost']
+    total_maintenance_cost = annual_maintenance * ASSESSMENT_LIFETIME_YEARS
+
+    # LCCA — when B2-B5 is active, use the mode-aware activity LCCA (prevents
+    # double counting); B4 replacement cost is a discrete capital event in BOTH modes.
+    lcca_maint_mode = params.get('lcca_maint_mode', 'simple_annual')
+    b4_cost_per_event = params.get('b4_cost_per_event_m', 0.0)
+    b2_cost_per_event = params.get('b2_cost_per_event_m', 0.0)
+    replacement_costs_by_year = {row['year']: b4_cost_per_event
+                                 for row in schedule_rows if row['B4_count'] and b4_cost_per_event}
+    b2b3b5_costs_by_year = {row['year']: row['B2_count'] * b2_cost_per_event
+                            for row in schedule_rows if row['B2_count'] and b2_cost_per_event}
+    # EOL cost enters the LCCA exactly once (only when C1-C4 is included).
+    eol_cost_m = params.get('eol_cost_m', 0.0) if include_c1c4 else 0.0
+    # R17-energycost: a B6 energy tariff (>0) replaces the flat annual energy cost with the
+    # escalating, discounted PV from kWh x tariff (the two are mutually exclusive).
+    use_energy_tariff = float(params.get('b6_energy_tariff', 0.0)) > 0.0
+    energy_pv_override = (b6_energy_pv_cost_m / 1e6) if use_energy_tariff else None  # $ -> $M
+    annual_energy_cost_m = 0.0 if use_energy_tariff else params.get("annual_energy_cost", 0.0)
+    if shared.use_stage_included:
+        lcc_results = calculate_lcc_npv_activity_based(
+            construction_cost_m=construction_cost,
+            annual_energy_cost_m=annual_energy_cost_m,
+            maintenance_mode=lcca_maint_mode,
+            annual_maintenance_m=annual_maintenance,
+            b2b3b5_costs_by_year=b2b3b5_costs_by_year,
+            replacement_costs_by_year=replacement_costs_by_year,
+            end_of_life_cost_m=eol_cost_m,
+            residual_value_m=params.get("residual_value", 0.0),
+            discount_rate_pct=params.get("discount_rate", 5.0),
+            lifetime_years=ASSESSMENT_LIFETIME_YEARS,
+            energy_pv_cost_override_m=energy_pv_override)
+    else:
+        lcc_results = calculate_lcc_npv(
+            construction_cost_m=construction_cost,
+            annual_maintenance_m=annual_maintenance,
+            annual_energy_cost_m=annual_energy_cost_m,
+            end_of_life_cost_m=eol_cost_m,
+            residual_value_m=params.get("residual_value", 0.0),
+            discount_rate_pct=params.get("discount_rate", 5.0),
+            lifetime_years=ASSESSMENT_LIFETIME_YEARS,
+            energy_pv_cost_override_m=energy_pv_override)
+
+    return {
+        'contract_factor': contract_factor,
+        'construction_cost_base': construction_cost_base,
+        'construction_cost': construction_cost,
+        'annual_maintenance': annual_maintenance,
+        'total_maintenance_cost': total_maintenance_cost,
+        'lcca_maint_mode': lcca_maint_mode,
+        'lcc_results': lcc_results,
+        'b6_energy_pv_cost_m': b6_energy_pv_cost_m,
+        'b6_energy_undisc_cost_m': b6_energy_undisc_cost_m,
+    }

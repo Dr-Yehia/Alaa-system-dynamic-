@@ -74,3 +74,21 @@ def calculate_benefit_kpis(params, annual_pkm, lifetime_years=ASSESSMENT_LIFETIM
         'land_ha_per_million_pkm': land_ha_per_mpkm,
         'noise_reduction_db': noise_reduction_db, 'noise_reduction_ratio': noise_reduction_ratio,
     }
+
+def calculate_legacy_jobs(params):
+    """Employment co-benefit — a BENEFIT, not a cost.
+
+    Jobs and the economic multiplier used to sit inside the monolith's economic block,
+    which made them look like part of the LCC. They are not: they are a societal
+    co-benefit and must never enter LCC_NPV. Separating them here is what makes the
+    'benefits never reduce cost' rule structural instead of a convention.
+
+    Arithmetic unchanged from the monolith.
+    """
+    jobs_created = params['jobs_created']
+    economic_multiplier = params['economic_multiplier']
+    return {
+        'jobs_created': jobs_created,
+        'economic_multiplier': economic_multiplier,
+        'total_jobs': jobs_created * economic_multiplier,
+    }

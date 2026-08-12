@@ -24,7 +24,7 @@ scientific change is intended, reviewed and described in the commit message.
 
 SCOPE
 -----
-Covers the legacy dashboard engine (`calculate_core_lca_lcc`), the frozen scientific LCA
+Covers the legacy dashboard engine (`calculate_legacy_dashboard_results`), the frozen scientific LCA
 engine, and the deterministic scientific LCC core — the three things the separation touches.
 """
 import json
@@ -65,7 +65,7 @@ def _legacy_fingerprint():
     fp = {}
     for mode in (False, True):
         ns = build_ns(publication_mode=mode)
-        result = ns["calculate_core_lca_lcc"](dict(ns["params"]))
+        result = ns["calculate_legacy_dashboard_results"](dict(ns["params"]))
         tag = "publication" if mode else "developer"
         fp.update({f"legacy.{tag}.{k}": v for k, v in _flatten(result).items()})
     return fp

@@ -94,6 +94,14 @@ def context_from_params(params: dict) -> ProjectContext:
             params.get("assessment_lifetime", ASSESSMENT_LIFETIME_YEARS)
             or ASSESSMENT_LIFETIME_YEARS),
         currency=str(params.get("currency", "EGP") or "EGP"),
-        price_base_year=int(params.get("price_base_year",
-                                       params.get("analysis_start_year", 2026)) or 2026),
+        # Boundary mapping, not a scientific choice. The UI collects this field as
+        # `price_year`, while the LCC ledger names it `price_base_year`. Both spellings
+        # are accepted, in that order of precedence, so a project whose price base year
+        # differs from its analysis start year cannot lose it silently:
+        #     price_base_year -> price_year -> analysis_start_year
+        price_base_year=int(
+            params.get("price_base_year")
+            or params.get("price_year")
+            or params.get("analysis_start_year", 2026)
+            or 2026),
     )

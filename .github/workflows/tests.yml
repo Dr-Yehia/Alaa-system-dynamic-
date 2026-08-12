@@ -36,7 +36,13 @@ jobs:
             tests/lca_reference_integrity_test.py \
             tests/golden_full_lca_test.py \
             tests/publication_scientific_test.py \
-            tests/lcc_scientific_core_test.py ; do
+            tests/lcc_scientific_core_test.py \
+            tests/architecture_baseline_pin.py \
+            tests/domain_dependency_test.py \
+            tests/lca_independence_test.py \
+            tests/lcc_independence_test.py \
+            tests/benefits_independence_test.py \
+            tests/full_separation_parity_test.py ; do
             echo "=== $t ==="
             python "$t"
           done

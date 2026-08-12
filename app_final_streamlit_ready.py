@@ -30,10 +30,13 @@ except Exception as _sci_import_err:  # pragma: no cover - defensive
 # layers (project context, system dynamics state) are shared; carbon, money and
 # benefits are not. See assessment_orchestrator.py for how the three are combined.
 from project_context import ASSESSMENT_LIFETIME_YEARS, ProjectContext, context_from_params
-from system_dynamics_core import simulate_asset_condition, calculate_dynamic_b6
+from system_dynamics_core import simulate_asset_condition
+from legacy_lca_engine import calculate_dynamic_b6
 from legacy_lcc_engine import (b6_energy_pv_cost, calculate_lcc_npv,
                                calculate_lcc_npv_activity_based)
-from benefits_core import calculate_benefit_kpis
+from benefits_core import calculate_benefit_kpis, calculate_legacy_jobs
+from legacy_lcc_engine import calculate_legacy_lcc
+from shared_activity import build_shared_activity, SharedActivity
 
 # ═══════════════════════════════════════════════════════════════
 # PAGE CONFIGURATION
@@ -1144,7 +1147,19 @@ def b6_served_annual_pkm(params):
 
 
 
-def calculate_core_lca_lcc(params):
+def calculate_legacy_dashboard_results(params):
+    """LEGACY-DEVELOPER dashboard result set — NOT the Publication path.
+
+    Formerly `calculate_core_lca_lcc()`. The name was the clearest symptom of the
+    problem: one function owning both domains. It no longer contains any economic or
+    benefit equation — those are delegated across the neutral activity boundary to
+    `legacy_lcc_engine` and `benefits_core`. What remains is the legacy environmental
+    computation plus assembly of the historical result dictionary the dashboard and the
+    regression suites expect.
+
+    Publication-mode LCA comes from the frozen scientific engines; Publication-mode LCC
+    will come from `lcc_scientific_core`. Neither routes through here.
+    """
     """SCIENTIFIC CORE — modular gross A1-C4 LCA (A1-A3 + A4 + A5 + B6; B2-B5/C1-C4
     in later sub-phases) + NPV-LCCA. ONLY publication-grade quantities."""
     # Material masses (unit harmonisation)
@@ -1198,11 +1213,9 @@ def calculate_core_lca_lcc(params):
     # Lifetime B6 CO2 via the CI_t trajectory (Σ_t energy·CI_eff,t). With flat defaults
     # this equals annual_co2_operational · lifetime, so the baseline is unchanged.
     lifetime_b6_co2_traj = sum(energy_per_pax_km * annual_pkm * y['ci_eff'] for y in ci_trajectory) / 1000.0
-    # R11: PV of B6 energy cost from energy × tariff (0 tariff → 0; legacy cost input untouched).
-    b6_energy_pv_cost_m, b6_energy_undisc_cost_m = b6_energy_pv_cost(
-        annual_operational_energy, float(params.get('b6_energy_tariff', 0.0)),
-        float(params.get('b6_energy_escalation_pct', 0.0)),
-        float(params.get('discount_rate', 5.0)), ASSESSMENT_LIFETIME_YEARS)
+    # NOTE: the B6 energy PRESENT VALUE used to be computed here. It is money, so it
+    # moved to legacy_lcc_engine.calculate_legacy_lcc(); only the kWh crosses the
+    # domain boundary now. See the DOMAIN BOUNDARY block below.
 
     steel_recycle_rate = params['steel_recycle'] / 100.0
     recycling_scenario = params.get("recycling_scenario", "none")
@@ -1378,57 +1391,34 @@ def calculate_core_lca_lcc(params):
     publication_grade_full_lca = bool(publication_grade and shares_ok and module_d_ok
                                       and recycled_secondary_ok and not rc_basis_conflict)
 
-    # Economic (LCCA)
-    # R28: contract factor adjusts the base CAPEX before it enters the NPV
-    # (CAPEX_contract = CAPEX_base · contract_factor). Default 1.0 → no change.
-    contract_factor = float(params.get('contract_factor', 1.0))
-    construction_cost_base = params['construction_cost']
-    construction_cost = construction_cost_base * contract_factor
-    annual_maintenance = params['maintenance_cost']
-    jobs_created = params['jobs_created']
-    economic_multiplier = params['economic_multiplier']
-    total_jobs = jobs_created * economic_multiplier
-    total_maintenance_cost = annual_maintenance * ASSESSMENT_LIFETIME_YEARS
+    # ── DOMAIN BOUNDARY: physical activity crosses, results do not ────────────
+    # Everything above this line is environmental. Everything the economic domain
+    # needs is packaged as NEUTRAL physical activity first, so the LCC engine can be
+    # called without ever seeing a carbon value, and Benefits are computed separately
+    # so they can never offset a cost.
+    _shared = build_shared_activity(
+        served_annual_pkm=annual_pkm,
+        lifetime_pkm=annual_pkm * ASSESSMENT_LIFETIME_YEARS,
+        annual_operational_kwh=annual_operational_energy,
+        schedule_rows=b2b5_schedule,
+        use_stage_included=b2b5['included'],
+        end_of_life_included=include_c1c4,
+    )
+    _lcc = calculate_legacy_lcc(params, _shared)
+    contract_factor = _lcc['contract_factor']
+    construction_cost_base = _lcc['construction_cost_base']
+    construction_cost = _lcc['construction_cost']
+    annual_maintenance = _lcc['annual_maintenance']
+    total_maintenance_cost = _lcc['total_maintenance_cost']
+    lcca_maint_mode = _lcc['lcca_maint_mode']
+    lcc_results = _lcc['lcc_results']
+    b6_energy_pv_cost_m = _lcc['b6_energy_pv_cost_m']
+    b6_energy_undisc_cost_m = _lcc['b6_energy_undisc_cost_m']
 
-    # LCCA — when B2-B5 is active, use the mode-aware activity LCCA (prevents
-    # double counting); B4 replacement cost is a discrete capital event in BOTH modes.
-    lcca_maint_mode = params.get('lcca_maint_mode', 'simple_annual')
-    b4_cost_per_event = params.get('b4_cost_per_event_m', 0.0)
-    b2_cost_per_event = params.get('b2_cost_per_event_m', 0.0)
-    replacement_costs_by_year = {row['year']: b4_cost_per_event
-                                 for row in b2b5_schedule if row['B4_count'] and b4_cost_per_event}
-    b2b3b5_costs_by_year = {row['year']: row['B2_count'] * b2_cost_per_event
-                            for row in b2b5_schedule if row['B2_count'] and b2_cost_per_event}
-    # EOL cost enters the LCCA exactly once (only when C1-C4 is included).
-    eol_cost_m = params.get('eol_cost_m', 0.0) if include_c1c4 else 0.0
-    # R17-energycost: a B6 energy tariff (>0) replaces the flat annual energy cost with the
-    # escalating, discounted PV from kWh×tariff (the two are mutually exclusive).
-    use_energy_tariff = float(params.get('b6_energy_tariff', 0.0)) > 0.0
-    energy_pv_override = (b6_energy_pv_cost_m / 1e6) if use_energy_tariff else None  # $ → $M
-    annual_energy_cost_m = 0.0 if use_energy_tariff else params.get("annual_energy_cost", 0.0)
-    if b2b5['included']:
-        lcc_results = calculate_lcc_npv_activity_based(
-            construction_cost_m=construction_cost,
-            annual_energy_cost_m=annual_energy_cost_m,
-            maintenance_mode=lcca_maint_mode,
-            annual_maintenance_m=annual_maintenance,
-            b2b3b5_costs_by_year=b2b3b5_costs_by_year,
-            replacement_costs_by_year=replacement_costs_by_year,
-            end_of_life_cost_m=eol_cost_m,
-            residual_value_m=params.get("residual_value", 0.0),
-            discount_rate_pct=params.get("discount_rate", 5.0),
-            lifetime_years=ASSESSMENT_LIFETIME_YEARS,
-            energy_pv_cost_override_m=energy_pv_override)
-    else:
-        lcc_results = calculate_lcc_npv(
-            construction_cost_m=construction_cost,
-            annual_maintenance_m=annual_maintenance,
-            annual_energy_cost_m=annual_energy_cost_m,
-            end_of_life_cost_m=eol_cost_m,
-            residual_value_m=params.get("residual_value", 0.0),
-            discount_rate_pct=params.get("discount_rate", 5.0),
-            lifetime_years=ASSESSMENT_LIFETIME_YEARS,
-            energy_pv_cost_override_m=energy_pv_override)
+    _jobs = calculate_legacy_jobs(params)
+    jobs_created = _jobs['jobs_created']
+    economic_multiplier = _jobs['economic_multiplier']
+    total_jobs = _jobs['total_jobs']
 
     return {
         'total_co2': total_co2,
@@ -1600,7 +1590,7 @@ def calculate_dashboard_display_scores(params, core):
 def run_full_assessment(params):
     """Orchestrator: SCIENTIFIC CORE + DASHBOARD-ONLY, kept logically separate.
     Returns a merged dict for backward-compatible UI consumption."""
-    core = calculate_core_lca_lcc(params)
+    core = calculate_legacy_dashboard_results(params)
     dashboard = calculate_dashboard_display_scores(params, core)
     return {**core, **dashboard}
 
@@ -4273,7 +4263,7 @@ with TABS['about']:
 - Dashboard-only visualization score — **NOT** a sustainability index.
 - It is not used as an ISO LCA/LCCA result.
 - Scientific conclusions must be taken from the LCA and NPV-LCCA outputs only.
-- Computed in `calculate_dashboard_display_scores()`, kept separate from the scientific core (`calculate_core_lca_lcc()`).
+- Computed in `calculate_dashboard_display_scores()`, kept separate from the scientific core (`calculate_legacy_dashboard_results()`).
 
 | Category | Weight | Key Components |
 |---|---|---|
