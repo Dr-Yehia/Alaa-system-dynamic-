@@ -52,7 +52,11 @@ from benefits_core import calculate_benefit_kpis, calculate_legacy_jobs
 # ── Scientific Benefits (referenced, evidence-gated) ──────────────────────────
 # The Publication Benefits engine. It computes nothing without evidence and marks
 # every KPI with the provenance state that decides whether it may be published.
-from benefits_reference_registry import EQUATIONS as BENEFITS_EQUATIONS, REFERENCES as BENEFITS_REFERENCES
+from benefits_reference_registry import (
+    EQUATIONS as BENEFITS_EQUATIONS,
+    REFERENCES as BENEFITS_REFERENCES,
+    permitted_statuses_for as benefits_permitted_statuses_for,
+)
 from benefits_scientific_integration import (
     PUBLICATION_ELIGIBLE_STATES as BENEFITS_PUBLICATION_STATES,
     ScientificBenefitsResult,
@@ -110,6 +114,26 @@ BENEFIT_EVIDENCE_STATUSES = [
 _BENEFIT_REF_CHOICES = ["(none)"] + sorted(BENEFITS_REFERENCES)
 
 
+def _benefit_status_choices(ref_id):
+    """The statuses this reference can actually back, plus the project routes.
+
+    Offering the full list beside every reference is what makes authority
+    escalation a two-click mistake. A method reference can only back its own
+    role; a project claim is reached by describing the project document instead,
+    which the form then insists on completing.
+    """
+    if ref_id and ref_id != "(none)":
+        permitted = list(benefits_permitted_statuses_for(ref_id))
+    else:
+        permitted = []
+    # PROJECT-SPECIFIC is never granted by a registry document; it is granted by
+    # a project source record, which the caller collects below.
+    choices = ["SOURCE-OPEN"] + [s for s in permitted if s != "SOURCE-OPEN"]
+    if "PROJECT-SPECIFIC" not in choices:
+        choices.append("PROJECT-SPECIFIC")
+    return choices
+
+
 def benefit_evidence_input(label, *, key, unit, default_ref="(none)",
                            monetary=False, help_text=""):
     """Collect one numeric quantity together with the provenance that justifies it.
@@ -129,11 +153,15 @@ def benefit_evidence_input(label, *, key, unit, default_ref="(none)",
                               if default_ref in _BENEFIT_REF_CHOICES else 0,
                               key=f"{key}_ref")
     with cols[2]:
-        status = st.selectbox("Evidence status", BENEFIT_EVIDENCE_STATUSES,
+        # Only what the chosen reference can actually back. A method reference
+        # cannot be relabelled into project data from this box.
+        _status_choices = _benefit_status_choices(ref_id)
+        status = st.selectbox("Evidence status", _status_choices,
                               index=0, key=f"{key}_status",
-                              help="METHOD-REFERENCE supports the equation. Only "
-                                   "PROJECT-SPECIFIC and OFFICIAL-PROJECT-DATA can "
-                                   "carry a project headline.")
+                              help="METHOD-REFERENCE supports the equation. "
+                                   "PROJECT-SPECIFIC requires the project document "
+                                   "fields below; it is never granted by citing a "
+                                   "method reference.")
     cols2 = st.columns([1.2, 1.4, 1.0])
     with cols2[0]:
         source_file = st.text_input("Source file / report", value="", key=f"{key}_file")
@@ -143,6 +171,35 @@ def benefit_evidence_input(label, *, key, unit, default_ref="(none)",
                                       "number makes a reviewer hunt.")
     with cols2[2]:
         geography = st.text_input("Geography", value="", key=f"{key}_geo")
+
+    # A project claim is certified by a project document, not by the registry.
+    project_src = None
+    if status in ("PROJECT-SPECIFIC", "OFFICIAL-PROJECT-DATA"):
+        st.caption("Project numeric source — required for a project claim. "
+                   "All fields must be filled or this input stays source-open.")
+        pcols = st.columns([1.2, 1.0, 1.0])
+        with pcols[0]:
+            ps_title = st.text_input("Project document title", value="", key=f"{key}_ps_title")
+        with pcols[1]:
+            ps_issuer = st.text_input("Issuer / author", value="", key=f"{key}_ps_issuer")
+        with pcols[2]:
+            ps_date = st.text_input("Observation date", value="", key=f"{key}_ps_date",
+                                    help="When the number was measured or reported.")
+        pcols2 = st.columns([1.2, 1.4])
+        with pcols2[0]:
+            ps_file = st.text_input("Project file or URL", value="", key=f"{key}_ps_file")
+        with pcols2[1]:
+            ps_loc = st.text_input("Exact location in the project document",
+                                   value="", key=f"{key}_ps_loc")
+        project_src = {
+            "title": ps_title, "issuer": ps_issuer, "file_or_url": ps_file,
+            "exact_location": ps_loc, "geography": geography,
+            "observation_date": ps_date, "evidence_status": status,
+        }
+
+    observation_date = None
+    if project_src:
+        observation_date = project_src["observation_date"] or None
 
     currency = price_year = None
     if monetary:
@@ -175,18 +232,26 @@ def benefit_evidence_input(label, *, key, unit, default_ref="(none)",
         "evidence_status": status,
         "currency": currency or None,
         "price_base_year": price_year,
+        "observation_date": observation_date,
+        "project_source": project_src,
     }
 
 
-def _benefit_area_table(label, *, key, help_text=""):
-    """Collect land-use class areas as 'class = area' lines.
+def _benefit_area_table(label, *, key, help_text="", unit="ha", collect_evidence=True):
+    """Collect land-use class areas, with the provenance of the map behind them.
 
     A free-text block rather than a widget grid, because the class schema itself
     is project evidence: the baseline and the project must use the SAME classes,
     and a fixed set of boxes would quietly impose a schema the maps do not have.
+
+    The areas come back wrapped in the same evidence envelope as every other
+    project number. A land-use index computed from an unattributed map is not
+    publishable, and a free-text "analysis area source" line one screen away is a
+    note, not an evidence record — a reviewer cannot tell from it which layer,
+    which date or which classification produced the areas.
     """
     st.markdown(f"**{label}**" + (f"  \n_{help_text}_" if help_text else ""))
-    raw = st.text_input("one 'class = area' per line, separated by ';'",
+    raw = st.text_input(f"one 'class = area' per line, separated by ';' (areas in {unit})",
                         value="", key=key)
     areas = {}
     for line in str(raw or "").replace("\n", ";").split(";"):
@@ -198,7 +263,41 @@ def _benefit_area_table(label, *, key, help_text=""):
             areas[name] = float(amount.strip())
         except (TypeError, ValueError):
             continue
-    return areas
+    if not areas or not collect_evidence:
+        return areas or {}
+
+    mcols = st.columns([1.2, 1.0, 1.0])
+    with mcols[0]:
+        map_title = st.text_input("Map / layer title", value="", key=f"{key}_m_title")
+    with mcols[1]:
+        map_issuer = st.text_input("Produced by", value="", key=f"{key}_m_issuer")
+    with mcols[2]:
+        map_date = st.text_input("Observation date", value="", key=f"{key}_m_date")
+    mcols2 = st.columns([1.2, 1.4, 1.0])
+    with mcols2[0]:
+        map_file = st.text_input("Map file or URL", value="", key=f"{key}_m_file")
+    with mcols2[1]:
+        map_loc = st.text_input("Analysis extent + class schema", value="", key=f"{key}_m_loc",
+                                help="e.g. 'Node-A 800 m buffer, class schema v2'.")
+    with mcols2[2]:
+        map_geo = st.text_input("Geography", value="", key=f"{key}_m_geo")
+
+    project_src = {
+        "title": map_title, "issuer": map_issuer, "file_or_url": map_file,
+        "exact_location": map_loc, "geography": map_geo,
+        "observation_date": map_date, "evidence_status": "PROJECT-SPECIFIC",
+    }
+    return {
+        "value": areas,
+        "unit": unit,
+        "source_ref_id": "",
+        "source_file": map_file,
+        "source_location": map_loc,
+        "geography": map_geo,
+        "evidence_status": "PROJECT-SPECIFIC",
+        "observation_date": map_date,
+        "project_source": project_src,
+    }
 
 
 def collect_benefits_scientific_inputs():
@@ -271,7 +370,10 @@ def collect_benefits_scientific_inputs():
             "Project land-use areas", key="sben_lu_proj",
             help_text="Must use exactly the same class names as the baseline."),
     }
-    land_use["class_schema"] = sorted(land_use["baseline_area_by_class"])
+    _baseline_maps = land_use["baseline_area_by_class"]
+    if isinstance(_baseline_maps, dict) and "value" in _baseline_maps:
+        _baseline_maps = _baseline_maps.get("value") or {}
+    land_use["class_schema"] = sorted(_baseline_maps)
 
     st.markdown("#### 🏙️ Urban growth (SDG 11.3.1)")
     gcols = st.columns(2)
@@ -402,12 +504,27 @@ def render_scientific_benefits_panel(container, benefits_result, *, compact=Fals
     gate = benefits_result.publication_gate
     rows = benefits_result.rows
 
-    if gate["publication_ready"]:
+    # Three distinct states, because "one KPI is sourced" and "the Benefits
+    # domain is publication-ready" are different claims and conflating them is
+    # how a chapter gets written on a single closed input.
+    if gate["full_publication_ready"]:
         container.success(
-            "🟢 **Referenced Benefits engine.** Every value below was computed from an "
-            "equation with a registered source and from inputs whose provenance passed "
-            "the Benefits evidence gate."
+            "🟢 **Referenced Benefits engine — publication-ready.** Every required KPI "
+            "was computed from an equation with a registered source, using inputs whose "
+            "provenance passed the Benefits evidence gate."
         )
+    elif gate["partial_publication_ready"]:
+        container.warning(
+            "🟡 **Partially sourced — NOT publication-ready as a domain.** Some KPIs "
+            "are backed by project evidence, but required items are still open, so the "
+            "Benefits chapter cannot yet be presented as closed. Individual eligible "
+            "KPIs are marked below."
+        )
+        if gate["missing_required_kpis"]:
+            container.markdown(
+                "Required and still open: "
+                + "; ".join(gate["missing_required_kpis"])
+            )
     else:
         container.warning(
             "🟠 **Benefits are not publication-ready.** The referenced engine computed "
@@ -3134,35 +3251,39 @@ with TABS['sci_benefits']:
     st.markdown("---")
     st.markdown("#### 📤 Traceable exports")
     _ben_parity_ok, _ben_parity_problems = benefits_export_parity_ok(scientific_benefits)
+    # FAIL CLOSED. If the exports disagree with the computed result, the exports
+    # are the thing that leaves the building and gets cited, so they are withheld
+    # rather than offered with a warning above them.
     if _ben_parity_ok:
         st.caption("Export parity verified: every exported row matches the computed "
                    "result, and every publication-eligible value resolves to a "
-                   "registered equation and a registered numeric source.")
+                   "registered equation and a numeric source.")
+        _ben_cols = st.columns(3)
+        with _ben_cols[0]:
+            st.download_button(
+                "⬇️ Benefits CSV (full provenance)",
+                data=scientific_benefits_csv(scientific_benefits),
+                file_name="scientific_benefits.csv", mime="text/csv",
+                key="sci_ben_csv_dl")
+        with _ben_cols[1]:
+            st.download_button(
+                "⬇️ Benefits Excel (8 sheets)",
+                data=scientific_benefits_excel_bytes(scientific_benefits),
+                file_name="scientific_benefits.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                key="sci_ben_xlsx_dl")
+        with _ben_cols[2]:
+            st.download_button(
+                "⬇️ Source appendix (text)",
+                data=scientific_benefits_source_appendix(scientific_benefits),
+                file_name="scientific_benefits_source_appendix.txt", mime="text/plain",
+                key="sci_ben_appendix_dl")
     else:
-        st.error("Export parity FAILED — exports disagree with the computed result:")
+        st.error("Export parity FAILED — downloads are **withheld**. The exports "
+                 "disagree with the computed result, and an export is what gets "
+                 "cited after it leaves this screen:")
         for _problem in _ben_parity_problems[:10]:
             st.markdown(f"- {_problem}")
-
-    _ben_cols = st.columns(3)
-    with _ben_cols[0]:
-        st.download_button(
-            "⬇️ Benefits CSV (full provenance)",
-            data=scientific_benefits_csv(scientific_benefits),
-            file_name="scientific_benefits.csv", mime="text/csv",
-            key="sci_ben_csv_dl")
-    with _ben_cols[1]:
-        st.download_button(
-            "⬇️ Benefits Excel (8 sheets)",
-            data=scientific_benefits_excel_bytes(scientific_benefits),
-            file_name="scientific_benefits.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            key="sci_ben_xlsx_dl")
-    with _ben_cols[2]:
-        st.download_button(
-            "⬇️ Source appendix (text)",
-            data=scientific_benefits_source_appendix(scientific_benefits),
-            file_name="scientific_benefits_source_appendix.txt", mime="text/plain",
-            key="sci_ben_appendix_dl")
 
 
 # ═══════════════════════════════════════════════════════════════

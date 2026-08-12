@@ -48,8 +48,13 @@ from benefits_reference_registry import (
     METHOD_EVIDENCE_CLASSES,
     PUBLICATION_ACCEPTABLE_NUMERIC_EVIDENCE,
     REFERENCES,
+    reference_permits,
 )
-from benefits_scientific_core import EvidenceValue, ScientificBenefitInputError
+from benefits_scientific_core import (
+    EvidenceValue,
+    ProjectNumericSource,
+    ScientificBenefitInputError,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -73,6 +78,161 @@ STATUS_BLOCKED = "BLOCKED"
 
 #: Only these states may carry a project headline in Publication mode.
 PUBLICATION_ELIGIBLE_STATES = frozenset({STATUS_COMPUTED, STATUS_OFFICIAL_REPORTED})
+
+#: The physical core a Benefits chapter rests on. `full_publication_ready` means
+#: ALL of these closed — not "at least one KPI happens to be sourced". The list is
+#: explicit rather than derived so that widening the claim requires a deliberate
+#: edit here, reviewed like any other scientific decision.
+REQUIRED_PUBLICATION_KPI_IDS = (
+    "BEN-KPI-PKM",
+    "BEN-KPI-MODAL",
+    "BEN-KPI-MODE-SPLIT",
+    "BEN-KPI-GHG-AVOIDED",
+    "BEN-KPI-TIME-SAVED",
+)
+
+
+# ---------------------------------------------------------------------------
+# Unit contracts
+# ---------------------------------------------------------------------------
+#
+# Requiring a non-empty unit string only proves someone typed something. It does
+# not stop `gCO2e/pkm` arriving where the equation expects `kgCO2e/pkm`, which
+# would understate avoided emissions by a factor of a thousand while every gate
+# reported green. So each input declares the unit its equation expects, and an
+# alternative unit is accepted only when the conversion to that expectation is
+# stated here explicitly.
+
+#: alias (lowercased, spaces stripped) -> (canonical unit, multiplier to canonical)
+_UNIT_ALIASES: dict[str, tuple[str, float]] = {
+    # counts and rates
+    "passengers/day": ("passengers/day", 1.0),
+    "pax/day": ("passengers/day", 1.0),
+    "passengers/year": ("passengers/day", 1.0 / 365.0),
+    "trips/year": ("trips/year", 1.0),
+    "trips/yr": ("trips/year", 1.0),
+    "days/year": ("days/year", 1.0),
+    "days/yr": ("days/year", 1.0),
+    "jobs": ("jobs", 1.0),
+    "persons": ("persons", 1.0),
+    "people": ("persons", 1.0),
+    "inhabitants": ("persons", 1.0),
+    # dimensionless
+    "fraction": ("fraction", 1.0),
+    "fraction0-1": ("fraction", 1.0),
+    "ratio": ("fraction", 1.0),
+    "%": ("fraction", 0.01),
+    "percent": ("fraction", 0.01),
+    # length and area
+    "km": ("km", 1.0),
+    "km/passenger": ("km", 1.0),
+    "m": ("m", 1.0),
+    "metres": ("m", 1.0),
+    "meters": ("m", 1.0),
+    "km_radius": ("m", 1000.0),
+    "m2": ("m2", 1.0),
+    "sqm": ("m2", 1.0),
+    "ha": ("m2", 10_000.0),
+    "hectares": ("m2", 10_000.0),
+    "km2": ("m2", 1_000_000.0),
+    # time
+    "min": ("min", 1.0),
+    "minutes": ("min", 1.0),
+    "h": ("min", 60.0),
+    "hr": ("min", 60.0),
+    "hours": ("min", 60.0),
+    # emission factors, per passenger-km
+    "kgco2e/pkm": ("kgCO2e/pkm", 1.0),
+    "kgco2e/passenger-km": ("kgCO2e/pkm", 1.0),
+    "gco2e/pkm": ("kgCO2e/pkm", 0.001),
+    "tco2e/pkm": ("kgCO2e/pkm", 1000.0),
+    # acoustics — a level, never rescaled
+    "db": ("dB", 1.0),
+    "db(a)": ("dB", 1.0),
+    "dba": ("dB", 1.0),
+    # money and investment
+    "millionconstant2015usd": ("million constant 2015 USD", 1.0),
+    "musdconstant2015": ("million constant 2015 USD", 1.0),
+    "jobsperus$1m": ("jobs per US$1m", 1.0),
+    "jobsperusd1m": ("jobs per US$1m", 1.0),
+    "jobs/musd": ("jobs per US$1m", 1.0),
+}
+
+#: input name -> the canonical unit its equation consumes.
+_EXPECTED_UNITS: dict[str, str] = {
+    "passengers_per_day": "passengers/day",
+    "avg_distance_km": "km",
+    "operating_days_per_year": "days/year",
+    "modal_shift_fraction": "fraction",
+    "car_share_of_shift": "fraction",
+    "bus_share_of_shift": "fraction",
+    "car_emission_factor": "kgCO2e/pkm",
+    "bus_emission_factor": "kgCO2e/pkm",
+    "project_emission_factor": "kgCO2e/pkm",
+    "annual_trips": "trips/year",
+    "baseline_time_min": "min",
+    "project_time_min": "min",
+    "generated_trips": "trips/year",
+    "influence_radius_m": "m",
+    "built_up_past": "m2",
+    "built_up_present": "m2",
+    "population_past": "persons",
+    "population_present": "persons",
+    "official_construction_jobs": "jobs",
+    "official_operational_jobs": "jobs",
+    "proxy_investment_constant_2015_usd_m": "million constant 2015 USD",
+    "jobs_per_musd_proxy": "jobs per US$1m",
+    "baseline_db": "dB",
+    "project_db": "dB",
+    "baseline_area_by_class": "m2",
+    "project_area_by_class": "m2",
+}
+
+#: Inputs whose unit is a currency the project declares, so the literal string
+#: cannot be pinned — only its presence, plus currency and price base year.
+_FREE_UNIT_INPUTS = frozenset(
+    {"value_of_time", "A_matrix", "final_demand_change"}
+)
+
+
+def _normalise_unit(unit: str) -> str:
+    return "".join(str(unit or "").lower().split())
+
+
+def resolve_unit(name: str, unit: str) -> tuple[Optional[float], str]:
+    """Return the multiplier that brings `unit` to the expected unit for `name`.
+
+    Returns ``(None, reason)`` when the unit is unknown or belongs to a different
+    physical quantity — refusing is the point, because a silent pass is how a
+    gram becomes a kilogram.
+    """
+    expected = _EXPECTED_UNITS.get(name)
+    if expected is None:
+        return 1.0, ""
+    key = _normalise_unit(unit)
+    if not key:
+        return None, "no unit given"
+    mapped = _UNIT_ALIASES.get(key)
+    if mapped is None:
+        return None, f"unrecognised unit {unit!r}; expected {expected}"
+    canonical, factor = mapped
+    if canonical != expected:
+        return None, (
+            f"unit {unit!r} measures {canonical}, but this input feeds an "
+            f"equation expecting {expected}"
+        )
+    return factor, ""
+
+
+def _scale(value, factor: float):
+    """Apply a unit conversion to a scalar, a vector or a class->area mapping."""
+    if factor == 1.0:
+        return value
+    if isinstance(value, dict):
+        return {k: float(v) * factor for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [float(v) * factor for v in value]
+    return float(value) * factor
 
 
 # ---------------------------------------------------------------------------
@@ -146,6 +306,31 @@ def evidence_from_dict(raw: Any) -> Optional[EvidenceValue]:
             price_base_year=raw.get("price_base_year"),
             currency=raw.get("currency"),
             factor_basis=raw.get("factor_basis"),
+            observation_date=raw.get("observation_date"),
+            project_source=project_source_from_dict(raw.get("project_source")),
+            note=str(raw.get("note", "") or ""),
+        )
+    return None
+
+
+def project_source_from_dict(raw: Any) -> Optional[ProjectNumericSource]:
+    """Accept a ProjectNumericSource, a mapping describing one, or nothing."""
+    if raw is None:
+        return None
+    if isinstance(raw, ProjectNumericSource):
+        return raw
+    if isinstance(raw, dict):
+        if not any(str(raw.get(k, "") or "").strip() for k in
+                   ("title", "issuer", "file_or_url", "exact_location")):
+            return None
+        return ProjectNumericSource(
+            title=str(raw.get("title", "") or ""),
+            issuer=str(raw.get("issuer", "") or ""),
+            file_or_url=str(raw.get("file_or_url", "") or ""),
+            exact_location=str(raw.get("exact_location", "") or ""),
+            geography=str(raw.get("geography", "") or ""),
+            observation_date=str(raw.get("observation_date", "") or ""),
+            evidence_status=str(raw.get("evidence_status", "") or "PROJECT-SPECIFIC"),
             note=str(raw.get("note", "") or ""),
         )
     return None
@@ -157,6 +342,12 @@ class _EvidenceCheck:
 
     missing: list[str] = field(default_factory=list)
     incomplete: list[str] = field(default_factory=list)
+    #: Inputs whose claimed authority exceeds what their cited source can back.
+    escalated: list[str] = field(default_factory=list)
+    #: Inputs whose unit does not match the equation's unit contract.
+    unit_errors: list[str] = field(default_factory=list)
+    #: name -> value converted into the equation's expected unit.
+    values: dict = field(default_factory=dict)
     method_only: list[str] = field(default_factory=list)
     proxy: list[str] = field(default_factory=list)
     historical: list[str] = field(default_factory=list)
@@ -168,29 +359,62 @@ class _EvidenceCheck:
     statuses: list[str] = field(default_factory=list)
     currency: Optional[str] = None
     price_base_year: Optional[int] = None
+    project_sources: list = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
 
     @property
     def usable(self) -> bool:
-        """True when every required input has a value that can be computed with."""
-        return not self.missing and not self.incomplete
+        """True when every required input has a value that can be computed with.
+
+        A unit error blocks computation outright rather than downgrading the
+        result: multiplying a gram-based factor as if it were kilogram-based
+        produces a number that is wrong by a factor of a thousand, and no
+        provenance label makes that publishable.
+        """
+        return not (self.missing or self.incomplete or self.unit_errors)
+
+    @property
+    def gaps(self) -> list[str]:
+        """Everything a reviewer would need to fix, in one list."""
+        return list(self.missing) + list(self.incomplete) + list(self.unit_errors) + list(self.escalated)
 
     def status(self) -> str:
         if not self.usable:
             return STATUS_SOURCE_OPEN
+        # An escalated claim is demoted to what its source can actually back, so
+        # the number still appears but never as project evidence.
         if self.proxy:
             return STATUS_PROXY
-        if self.method_only or self.historical:
+        if self.method_only or self.historical or self.escalated:
             return STATUS_SCENARIO_ONLY
         return STATUS_COMPUTED
 
 
-def _check_evidence(named_inputs: dict, *, require_money: bool = False) -> _EvidenceCheck:
+def _check_evidence(
+    named_inputs: dict,
+    *,
+    require_money: bool = False,
+    require_observation_date: bool = False,
+) -> _EvidenceCheck:
     """Inspect a KPI's inputs and classify the evidence behind each one.
 
     `named_inputs` maps a human-readable input name to an `EvidenceValue` or
-    None. Completeness is judged on what a reviewer would need to check the
-    number: a value, a unit, a reference id, an exact location and a geography.
+    None. Three separate judgements happen here, and keeping them separate is
+    what makes the result auditable:
+
+    COMPLETENESS — is there a value, a unit, a source, an exact location and a
+    geography? Anything missing leaves the input unusable.
+
+    UNIT CONTRACT — does the declared unit match the unit the equation consumes?
+    A recognised alternative is converted explicitly; an unrecognised unit, or a
+    unit measuring a different quantity, blocks computation rather than being
+    assumed compatible.
+
+    AUTHORITY — can the cited source actually back the claimed status? A method
+    reference selected from a list, with PROJECT-SPECIFIC typed beside it, is the
+    easiest way to launder a UK study into Cairo evidence. The registry decides
+    what each document may back, and a project claim needs a project numeric
+    source record rather than a relabelled method reference.
     """
     result = _EvidenceCheck()
 
@@ -199,12 +423,17 @@ def _check_evidence(named_inputs: dict, *, require_money: bool = False) -> _Evid
             result.missing.append(name)
             continue
 
+        claimed = str(ev.evidence_status).strip().upper()
+        project_source = ev.project_source
+
         gaps = []
         if not str(ev.unit).strip():
             gaps.append("unit")
-        if not str(ev.source_ref_id).strip():
+        # A project claim is sourced by its project document; a non-project claim
+        # is sourced by the registry. One of the two must be present.
+        if not (str(ev.source_ref_id).strip() or project_source is not None):
             gaps.append("source reference")
-        if not str(ev.source_location).strip():
+        if not str(ev.source_location).strip() and project_source is None:
             gaps.append("exact source location")
         if not str(ev.geography).strip():
             gaps.append("geography")
@@ -213,30 +442,97 @@ def _check_evidence(named_inputs: dict, *, require_money: bool = False) -> _Evid
                 gaps.append("currency")
             if ev.price_base_year is None:
                 gaps.append("price base year")
+        if require_observation_date and not str(
+            ev.observation_date or (project_source.observation_date if project_source else "") or ""
+        ).strip():
+            gaps.append("observation date")
         if gaps:
             result.incomplete.append(f"{name} (missing {', '.join(gaps)})")
             continue
 
-        status = str(ev.evidence_status).strip().upper()
-        result.statuses.append(status)
-        if status in METHOD_EVIDENCE_CLASSES:
+        # --- unit contract ------------------------------------------------
+        if name in _FREE_UNIT_INPUTS:
+            factor = 1.0
+        else:
+            factor, unit_problem = resolve_unit(name, ev.unit)
+            if factor is None:
+                result.unit_errors.append(f"{name} ({unit_problem})")
+                continue
+
+        # --- authority ----------------------------------------------------
+        ref_id = str(ev.source_ref_id).strip()
+        effective = claimed
+        if claimed in PUBLICATION_ACCEPTABLE_NUMERIC_EVIDENCE:
+            if project_source is not None:
+                incomplete_fields = project_source.missing_fields()
+                if incomplete_fields:
+                    result.incomplete.append(
+                        f"{name} (project source missing "
+                        f"{', '.join(incomplete_fields)})"
+                    )
+                    continue
+            elif ref_id and reference_permits(ref_id, claimed):
+                # e.g. OFFICIAL-PROJECT-DATA from the report that states the figure.
+                pass
+            else:
+                # Authority escalation. The number is kept and computed, but it is
+                # demoted to what its source can actually support.
+                permitted = REFERENCES[ref_id].permitted_evidence_statuses if ref_id in REFERENCES else ()
+                demoted = permitted[0] if permitted else "SCENARIO-ONLY"
+                result.escalated.append(
+                    f"{name} claims {claimed} but "
+                    + (
+                        f"{ref_id} may only back {', '.join(permitted)}"
+                        if permitted
+                        else "no project numeric source was supplied"
+                    )
+                    + "; demoted"
+                )
+                effective = demoted
+        elif ref_id and ref_id in REFERENCES and not reference_permits(ref_id, claimed):
+            permitted = REFERENCES[ref_id].permitted_evidence_statuses
+            result.escalated.append(
+                f"{name} claims {claimed} but {ref_id} may only back "
+                f"{', '.join(permitted)}; demoted"
+            )
+            effective = permitted[0]
+
+        result.statuses.append(effective)
+        if effective in METHOD_EVIDENCE_CLASSES:
             result.method_only.append(name)
-        elif status == "REF-PROXY":
+        elif effective == "REF-PROXY":
             result.proxy.append(name)
-        elif status in {"HISTORICAL", "SCENARIO-ONLY"}:
+        elif effective in {"HISTORICAL", "SCENARIO-ONLY"}:
             result.historical.append(name)
-        elif status not in PUBLICATION_ACCEPTABLE_NUMERIC_EVIDENCE:
+        elif effective not in PUBLICATION_ACCEPTABLE_NUMERIC_EVIDENCE:
             # SOURCE-OPEN, BLOCKED or an unrecognised label: not usable evidence.
-            result.incomplete.append(f"{name} (evidence status {status})")
+            result.incomplete.append(f"{name} (evidence status {effective})")
+            result.statuses.pop()
             continue
 
-        ref_id = str(ev.source_ref_id).strip()
-        result.refs.append(ref_id)
+        result.values[name] = _scale(ev.value, factor)
+        if factor != 1.0:
+            result.notes.append(
+                f"{name}: converted from {ev.unit} to {_EXPECTED_UNITS[name]} "
+                f"(x{factor:g})"
+            )
+
         record = REFERENCES.get(ref_id)
-        result.titles.append(record.title if record else ref_id)
-        result.files.append(str(ev.source_file or (record.local_source_file if record else "")))
-        result.locations.append(str(ev.source_location))
-        result.geographies.append(str(ev.geography))
+        if project_source is not None:
+            result.titles.append(project_source.title)
+            result.files.append(project_source.file_or_url)
+            result.locations.append(project_source.exact_location)
+            result.geographies.append(project_source.geography or str(ev.geography))
+            result.project_sources.append(project_source)
+        if ref_id:
+            result.refs.append(ref_id)
+            if project_source is None:
+                result.titles.append(record.title if record else ref_id)
+                result.files.append(
+                    str(ev.source_file or (record.local_source_file if record else ""))
+                )
+                result.locations.append(str(ev.source_location))
+                result.geographies.append(str(ev.geography))
         if ev.currency and result.currency is None:
             result.currency = str(ev.currency)
         if ev.price_base_year is not None and result.price_base_year is None:
@@ -303,7 +599,7 @@ def _row(
     check = check or _EvidenceCheck()
     eligible = status in PUBLICATION_ELIGIBLE_STATES and value is not None
 
-    gaps = list(check.missing) + list(check.incomplete)
+    gaps = check.gaps
     return {
         "kpi_id": kpi_id,
         "kpi_name": kpi_name,
@@ -361,7 +657,9 @@ def _section_transport_physical(transport: dict, shared, rows: list[dict]) -> di
     if pkm_check.usable:
         try:
             annual_pkm = core.annual_passenger_km(
-                _value(passengers), _value(distance), _value(days)
+                pkm_check.values["passengers_per_day"],
+                pkm_check.values["avg_distance_km"],
+                pkm_check.values["operating_days_per_year"],
             )
         except ScientificBenefitInputError as exc:
             pkm_status = STATUS_SOURCE_OPEN
@@ -404,7 +702,8 @@ def _section_transport_physical(transport: dict, shared, rows: list[dict]) -> di
     modal_note = ""
     if annual_pkm is not None and modal_check.usable:
         try:
-            shifted = core.shifted_passenger_km(annual_pkm, _value(modal))
+            shifted = core.shifted_passenger_km(
+                annual_pkm, modal_check.values["modal_shift_fraction"])
         except ScientificBenefitInputError as exc:
             modal_status, modal_note = STATUS_SOURCE_OPEN, str(exc)
         # A shifted figure can never be stronger evidence than the activity it
@@ -443,7 +742,10 @@ def _section_transport_physical(transport: dict, shared, rows: list[dict]) -> di
     split_note = ""
     if shifted is not None and split_check.usable:
         try:
-            split = core.allocate_shifted_pkm(shifted, _value(car_share), _value(bus_share))
+            split = core.allocate_shifted_pkm(
+                shifted,
+                split_check.values["car_share_of_shift"],
+                split_check.values["bus_share_of_shift"])
             car_pkm, bus_pkm = split["car_pkm"], split["bus_pkm"]
         except ScientificBenefitInputError as exc:
             split_status, split_note = STATUS_SOURCE_OPEN, str(exc)
@@ -492,9 +794,11 @@ def _section_transport_physical(transport: dict, shared, rows: list[dict]) -> di
             # Each factor is already expressed in CO2e per passenger-km, so the
             # CO2e route is used and no warming potential is applied a second time.
             baseline = core.emissions_from_co2e_factor(
-                car_pkm, _value(car_ef)
-            ) + core.emissions_from_co2e_factor(bus_pkm, _value(bus_ef))
-            project = core.emissions_from_co2e_factor(shifted, _value(project_ef))
+                car_pkm, ef_check.values["car_emission_factor"]
+            ) + core.emissions_from_co2e_factor(
+                bus_pkm, ef_check.values["bus_emission_factor"])
+            project = core.emissions_from_co2e_factor(
+                shifted, ef_check.values["project_emission_factor"])
             result = core.avoided_emissions(baseline, project)
             avoided = result["avoided_co2e"]
             direction = result["benefit_direction"]
@@ -549,9 +853,10 @@ def _section_time(transport: dict, rows: list[dict]) -> tuple[dict, dict]:
         try:
             # Surveys report minutes; value of time is per hour. The conversion is
             # a named step so it cannot hide inside the multiplication.
-            baseline_h = core.minutes_to_hours(_value(base_min))
-            project_h = core.minutes_to_hours(_value(proj_min))
-            hours = core.passenger_hours_saved(_value(trips), baseline_h, project_h)
+            baseline_h = core.minutes_to_hours(time_check.values["baseline_time_min"])
+            project_h = core.minutes_to_hours(time_check.values["project_time_min"])
+            hours = core.passenger_hours_saved(
+                time_check.values["annual_trips"], baseline_h, project_h)
         except ScientificBenefitInputError as exc:
             time_status, time_note = STATUS_SOURCE_OPEN, str(exc)
 
@@ -582,7 +887,8 @@ def _section_time(transport: dict, rows: list[dict]) -> tuple[dict, dict]:
     money_note = ""
     if hours is not None and vot_check.usable:
         try:
-            time_money = core.monetize_time_saving(hours, _value(vot))
+            time_money = core.monetize_time_saving(
+                hours, vot_check.values["value_of_time"])
         except ScientificBenefitInputError as exc:
             money_status, money_note = STATUS_SOURCE_OPEN, str(exc)
         if time_status != STATUS_COMPUTED and money_status == STATUS_COMPUTED:
@@ -619,7 +925,9 @@ def _section_time(transport: dict, rows: list[dict]) -> tuple[dict, dict]:
     if gen_check.usable and vot_check.usable and baseline_h is not None:
         try:
             gen_value = core.generated_traffic_benefit_rule_of_half(
-                _value(generated), baseline_h - project_h, _value(vot)
+                gen_check.values["generated_trips"],
+                baseline_h - project_h,
+                vot_check.values["value_of_time"],
             )
         except ScientificBenefitInputError as exc:
             gen_status, gen_note = STATUS_SOURCE_OPEN, str(exc)
@@ -666,8 +974,45 @@ def _section_land_use(land_use: dict, rows: list[dict]) -> dict:
     """Shannon land-use diversity for the baseline and project states."""
     out: dict = {}
 
-    baseline_areas = land_use.get("baseline_area_by_class") or {}
-    project_areas = land_use.get("project_area_by_class") or {}
+    # The land-use maps are project spatial evidence, so they arrive in the same
+    # envelope as every other project number: areas as the value, plus unit,
+    # source, exact location, geography, observation date and evidence status. A
+    # bare mapping of class -> area is still accepted for Developer work, but it
+    # carries no provenance and therefore cannot reach a publication claim — a
+    # free-text "analysis_area_source" line is a note, not an evidence record.
+    baseline_ev = evidence_from_dict(land_use.get("baseline_area_by_class"))
+    project_ev = evidence_from_dict(land_use.get("project_area_by_class"))
+
+    raw_baseline = land_use.get("baseline_area_by_class") or {}
+    raw_project = land_use.get("project_area_by_class") or {}
+    if baseline_ev is None and isinstance(raw_baseline, dict) and raw_baseline:
+        baseline_areas = dict(raw_baseline)
+        structured = False
+    else:
+        baseline_areas = {}
+        structured = True
+    if project_ev is None and isinstance(raw_project, dict) and raw_project:
+        project_areas = dict(raw_project)
+    else:
+        project_areas = {}
+
+    map_check = _EvidenceCheck()
+    if baseline_ev is not None or project_ev is not None:
+        map_check = _check_evidence(
+            {
+                "baseline_area_by_class": baseline_ev,
+                "project_area_by_class": project_ev,
+            },
+            require_observation_date=True,
+        )
+        if map_check.usable:
+            baseline_areas = map_check.values["baseline_area_by_class"]
+            project_areas = map_check.values["project_area_by_class"]
+        else:
+            baseline_areas = project_areas = {}
+    else:
+        structured = False
+
     schema = list(land_use.get("class_schema") or [])
 
     status = STATUS_SOURCE_OPEN
@@ -675,28 +1020,39 @@ def _section_land_use(land_use: dict, rows: list[dict]) -> dict:
     lud_base = lud_proj = lud_delta = None
 
     if not baseline_areas or not project_areas:
-        note = "baseline and/or project land-use areas were not supplied"
+        note = (
+            "; ".join(map_check.gaps)
+            if map_check.gaps
+            else "baseline and/or project land-use areas were not supplied"
+        )
+    elif not isinstance(baseline_areas, dict) or not isinstance(project_areas, dict):
+        note = "land-use areas must be supplied as a mapping of class -> area"
     elif set(baseline_areas) != set(project_areas):
-        status = STATUS_SOURCE_OPEN
         note = (
             "baseline and project use different land-use classes; the difference "
             f"would measure the schema, not the project (baseline: "
             f"{sorted(baseline_areas)}, project: {sorted(project_areas)})"
         )
     elif schema and set(schema) != set(baseline_areas):
-        status = STATUS_SOURCE_OPEN
         note = "the declared class schema does not match the supplied area classes"
     else:
         try:
             lud_base = core.normalized_land_use_diversity(core.land_use_shares(baseline_areas))
             lud_proj = core.normalized_land_use_diversity(core.land_use_shares(project_areas))
             lud_delta = core.land_use_diversity_delta(lud_proj, lud_base)
-            # Land-use maps are project spatial data; they are project-specific
-            # only when their source and date are declared.
-            source = str(land_use.get("analysis_area_source", "") or "")
-            status = STATUS_COMPUTED if source.strip() else STATUS_SCENARIO_ONLY
-            if not source.strip():
-                note = "no GIS source and date declared for the land-use maps"
+            if structured and map_check.usable:
+                # The maps carry their own evidence record, so the normal
+                # authority rules decided the status for us.
+                status = map_check.status()
+            else:
+                # Areas with no evidence record compute, but they can never be a
+                # project finding: nobody can tell which maps produced them.
+                status = STATUS_SCENARIO_ONLY
+                note = (
+                    "land-use areas were supplied without an evidence record "
+                    "(unit, source, exact location, geography, observation date, "
+                    "evidence status), so the indices cannot be published"
+                )
         except ScientificBenefitInputError as exc:
             status, note = STATUS_SOURCE_OPEN, str(exc)
 
@@ -706,22 +1062,12 @@ def _section_land_use(land_use: dict, rows: list[dict]) -> dict:
     out["lud_status"] = status
     out["analysis_area_id"] = land_use.get("analysis_area_id", "")
     out["analysis_area_source"] = land_use.get("analysis_area_source", "")
+    out["land_use_evidence_gaps"] = map_check.gaps
 
-    # The land-use maps are project spatial data, not a registry document, so the
-    # evidence trace for these KPIs is the declared GIS source and analysis area
-    # rather than a REF-* id. Recording it here is what keeps the audit chain
-    # unbroken: without it these rows would be publication-eligible with nothing
-    # behind them in the export.
-    check = _EvidenceCheck()
-    if status != STATUS_SOURCE_OPEN:
-        area_id = str(land_use.get("analysis_area_id", "") or "project analysis area")
-        area_source = str(land_use.get("analysis_area_source", "") or "")
-        check.geographies.append(area_id)
-        if area_source:
-            check.titles.append(f"Project land-use maps: {area_source}")
-            check.locations.append(f"analysis area {area_id}; GIS source {area_source}")
-            check.files.append(area_source)
-            check.statuses.append("PROJECT-SPECIFIC")
+    check = map_check
+    area_id = str(land_use.get("analysis_area_id", "") or "")
+    if area_id and status != STATUS_SOURCE_OPEN:
+        check.notes.append(f"analysis area: {area_id}")
 
     for kpi_id, name, eq_id, val in (
         ("BEN-KPI-LUD-BASE", "Land-use diversity — baseline", "BEN-LUD-01", lud_base),
@@ -746,14 +1092,14 @@ def _section_land_use(land_use: dict, rows: list[dict]) -> dict:
     # project evidence or it stays open.
     radius = evidence_from_dict(land_use.get("influence_radius_m"))
     radius_check = _check_evidence({"influence_radius_m": radius})
-    out["influence_radius_m"] = _value(radius)
+    out["influence_radius_m"] = radius_check.values.get("influence_radius_m")
     out["influence_radius_status"] = radius_check.status()
     rows.append(
         _row(
             kpi_id="BEN-KPI-TOD-RADIUS",
             kpi_name="TOD influence radius",
             equation_id=None,
-            value=_value(radius),
+            value=radius_check.values.get("influence_radius_m"),
             unit="m",
             result_group="physical",
             status=radius_check.status(),
@@ -800,7 +1146,8 @@ def _section_urban_growth(urban: dict, rows: list[dict]) -> dict:
     bu_note = ""
     if bu_check.usable:
         try:
-            change_pct = core.built_up_change_pct(_value(bu_past), _value(bu_present))
+            change_pct = core.built_up_change_pct(
+                bu_check.values["built_up_past"], bu_check.values["built_up_present"])
         except ScientificBenefitInputError as exc:
             bu_status, bu_note = STATUS_SOURCE_OPEN, str(exc)
 
@@ -808,7 +1155,9 @@ def _section_urban_growth(urban: dict, rows: list[dict]) -> dict:
     lcr_note = bu_note
     if bu_check.usable and period_years and period_years > 0:
         try:
-            lcr = core.land_consumption_rate(_value(bu_past), _value(bu_present), period_years)
+            lcr = core.land_consumption_rate(
+                bu_check.values["built_up_past"],
+                bu_check.values["built_up_present"], period_years)
         except ScientificBenefitInputError as exc:
             lcr_status, lcr_note = STATUS_SOURCE_OPEN, str(exc)
     elif bu_check.usable:
@@ -823,7 +1172,8 @@ def _section_urban_growth(urban: dict, rows: list[dict]) -> dict:
     if pop_check.usable and period_years and period_years > 0:
         try:
             pgr = core.population_growth_rate(
-                _value(pop_past), _value(pop_present), period_years
+                pop_check.values["population_past"],
+                pop_check.values["population_present"], period_years
             )
         except ScientificBenefitInputError as exc:
             pgr_status, pgr_note = STATUS_SOURCE_OPEN, str(exc)
@@ -854,7 +1204,8 @@ def _section_urban_growth(urban: dict, rows: list[dict]) -> dict:
     if bu_check.usable and pop_check.usable:
         try:
             per_capita = core.built_up_area_per_capita(
-                _value(bu_present), _value(pop_present)
+                bu_check.values["built_up_present"],
+                pop_check.values["population_present"]
             )
             # Area per capita needs the two observations, not the growth rate.
             # Coupling it to PGR would downgrade a perfectly sourced ratio just
@@ -922,8 +1273,9 @@ def _section_input_output(io_inputs: dict, rows: list[dict]) -> dict:
 
     if io_check.usable:
         try:
-            leontief = core.leontief_inverse(_value(a_ev))
-            output_response = core.io_output_response(leontief, _value(demand_ev))
+            leontief = core.leontief_inverse(io_check.values["A_matrix"])
+            output_response = core.io_output_response(
+                leontief, io_check.values["final_demand_change"])
             multipliers = core.output_multiplier(leontief)
             total_output_response = sum(output_response)
             if labels and len(labels) != len(output_response):
@@ -1014,9 +1366,11 @@ def _section_employment(employment: dict, rows: list[dict]) -> dict:
     con_status = _official_status(con_check)
     ops_status = _official_status(ops_check)
 
-    out["official_reported_construction_jobs"] = _value(official_con)
+    out["official_reported_construction_jobs"] = con_check.values.get(
+        "official_construction_jobs")
     out["official_reported_construction_jobs_status"] = con_status
-    out["official_reported_operational_jobs"] = _value(official_ops)
+    out["official_reported_operational_jobs"] = ops_check.values.get(
+        "official_operational_jobs")
     out["official_reported_operational_jobs_status"] = ops_status
 
     rows.append(
@@ -1024,7 +1378,7 @@ def _section_employment(employment: dict, rows: list[dict]) -> dict:
             kpi_id="BEN-KPI-JOBS-OFFICIAL-CONSTRUCTION",
             kpi_name="Officially reported construction jobs",
             equation_id=None,
-            value=_value(official_con),
+            value=con_check.values.get("official_construction_jobs"),
             unit="jobs",
             result_group="employment",
             status=con_status,
@@ -1037,7 +1391,7 @@ def _section_employment(employment: dict, rows: list[dict]) -> dict:
             kpi_id="BEN-KPI-JOBS-OFFICIAL-OPERATIONAL",
             kpi_name="Officially reported operational jobs",
             equation_id=None,
-            value=_value(official_ops),
+            value=ops_check.values.get("official_operational_jobs"),
             unit="jobs",
             result_group="employment",
             status=ops_status,
@@ -1061,7 +1415,9 @@ def _section_employment(employment: dict, rows: list[dict]) -> dict:
     proxy_note = "no proxy investment and job-content evidence supplied"
     if proxy_check.usable:
         try:
-            proxy_value = core.jobs_proxy(_value(investment), _value(job_content))
+            proxy_value = core.jobs_proxy(
+                proxy_check.values["proxy_investment_constant_2015_usd_m"],
+                proxy_check.values["jobs_per_musd_proxy"])
             # A cross-country benchmark stays a benchmark whatever else is true.
             proxy_status = STATUS_PROXY
             proxy_note = ""
@@ -1140,8 +1496,8 @@ def _section_noise(noise_inputs: dict, rows: list[dict]) -> dict:
                 "receptor_id": str(row.get("receptor_id", "")),
                 "metric": row.get("metric", ""),
                 "assessment_period": row.get("assessment_period", ""),
-                "baseline_db": _value(baseline),
-                "project_db": _value(project),
+                "baseline_db": check.values.get("baseline_db"),
+                "project_db": check.values.get("project_db"),
                 "_check": check,
             }
         )
@@ -1271,10 +1627,38 @@ def _build_gate(rows: list[dict]) -> dict:
     noise_rows = [r for r in rows if r["equation_id"] == "BEN-NOISE-PHYS-01"]
     noise_physical_ready = any(r["publication_eligible"] for r in noise_rows)
 
+    eligible_ids = [r["kpi_id"] for r in rows if r["publication_eligible"]]
+
+    # "At least one KPI is sourced" and "the Benefits domain is publication-ready"
+    # are different claims, and conflating them is how a chapter gets written on
+    # one closed input. The required set is named explicitly in
+    # REQUIRED_PUBLICATION_KPI_IDS; everything outside it is reported but does not
+    # gate the headline.
+    by_id = {r["kpi_id"]: r for r in rows}
+    required_state = {
+        kpi_id: bool(by_id.get(kpi_id, {}).get("publication_eligible"))
+        for kpi_id in REQUIRED_PUBLICATION_KPI_IDS
+    }
+    missing_required = [
+        f"{kpi_id} ({by_id[kpi_id]['kpi_name']}): {by_id[kpi_id]['status']}"
+        if kpi_id in by_id
+        else f"{kpi_id}: not evaluated"
+        for kpi_id, closed in required_state.items()
+        if not closed
+    ]
+    full_publication_ready = not missing_required
+
     return {
-        # The headline gate: at least the physical core must stand on project
-        # evidence before Benefits can be presented as a project finding.
-        "publication_ready": bool(physical_ready),
+        # The strict claim. Kept under the original key so every existing caller
+        # tightens rather than silently keeping the looser meaning.
+        "publication_ready": bool(full_publication_ready),
+        "full_publication_ready": bool(full_publication_ready),
+        # Something is publishable, but the domain as a whole is not.
+        "partial_publication_ready": bool(eligible_ids) and not full_publication_ready,
+        "any_publication_eligible": bool(eligible_ids),
+        "required_kpi_ids": list(REQUIRED_PUBLICATION_KPI_IDS),
+        "required_kpi_state": required_state,
+        "missing_required_kpis": missing_required,
         "physical_ready": bool(physical_ready),
         "monetized_time_ready": bool(monetized_time_ready),
         "economic_impact_ready": bool(economic_impact_ready),
@@ -1283,7 +1667,7 @@ def _build_gate(rows: list[dict]) -> dict:
         "blocked_items": blocked_items,
         "warnings": warnings,
         "source_open_items": source_open_items,
-        "eligible_kpi_ids": [r["kpi_id"] for r in rows if r["publication_eligible"]],
+        "eligible_kpi_ids": eligible_ids,
     }
 
 

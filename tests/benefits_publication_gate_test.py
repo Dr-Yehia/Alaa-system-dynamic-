@@ -56,6 +56,20 @@ def row_by_id(result, kpi_id):
     return None
 
 
+def proj_src(**kw):
+    base = dict(
+        title="Cairo Monorail demand and operations study",
+        issuer="Project team",
+        file_or_url="project-file.pdf",
+        exact_location="test fixture, section 1",
+        geography="Cairo, Egypt",
+        observation_date="2025-06",
+        evidence_status="PROJECT-SPECIFIC",
+    )
+    base.update(kw)
+    return base
+
+
 def ev(value, unit, status="PROJECT-SPECIFIC", **kw):
     base = dict(
         value=value,
@@ -65,7 +79,12 @@ def ev(value, unit, status="PROJECT-SPECIFIC", **kw):
         source_location=kw.pop("source_location", "test fixture"),
         geography=kw.pop("geography", "Cairo, Egypt"),
         evidence_status=status,
+        observation_date=kw.pop("observation_date", "2025-06"),
     )
+    # A project claim needs a project document. A weaker claim is backed by the
+    # registry alone, so it must NOT carry one or the test would prove nothing.
+    if status in {"PROJECT-SPECIFIC", "OFFICIAL-PROJECT-DATA"} and "project_source" not in kw:
+        base["project_source"] = proj_src()
     base.update(kw)
     return base
 
@@ -498,6 +517,317 @@ check("the uncertainty orchestrator holds no Benefits distribution",
       "benefits_scientific" not in unc_src)
 for token in ("modal_shift", "value_of_time", "jobs_per_musd", "lognormal", "triangular"):
     check(f"the uncertainty orchestrator defines no {token!r} distribution", token not in unc_src)
+
+
+# ===========================================================================
+# EVIDENCE-GATE HARDENING
+# ===========================================================================
+
+# ---------------------------------------------------------------------------
+# 13. Authority escalation: a method reference relabelled as project data
+# ---------------------------------------------------------------------------
+
+# Selecting a reference from a list and then typing a stronger status beside it
+# is the easiest way to launder a method document into project evidence, and it
+# is the one thing a free-text form cannot stop by itself.
+escalation = run(
+    {
+        "transport": dict(
+            ACTIVITY,
+            **TIME_INPUTS,
+            value_of_time=ev(
+                18.3, "EGP/hour",
+                source_ref_id="REF-EGY-VOT-2022",   # a METHOD reference
+                status="PROJECT-SPECIFIC",           # claimed as project data
+                project_source=None,                 # with no project document
+                currency="EGP", price_base_year=2026, geography="Egypt",
+            ),
+        )
+    }
+)
+esc_row = row_by_id(escalation, "BEN-KPI-TIME-VALUE")
+check("an escalated claim is not publication eligible", esc_row["publication_eligible"] is False)
+check("an escalated claim is demoted to what its source can back",
+      esc_row["status"] == STATUS_SCENARIO_ONLY)
+check("the escalation is named in the audit", "may only back" in esc_row["evidence_gaps"])
+check(
+    "the demoted status is the reference's own authority, not the claim",
+    "METHOD-REFERENCE" in esc_row["evidence_status"],
+)
+
+# A UK study relabelled as Cairo project data must be demoted the same way.
+uk_escalation = run(
+    {
+        "transport": dict(
+            ACTIVITY,
+            modal_shift_fraction=ev(
+                0.30, "fraction", source_ref_id="REF-TRD-MODAL-2024",
+                status="PROJECT-SPECIFIC", project_source=None,
+                geography="United Kingdom",
+            ),
+        )
+    }
+)
+check(
+    "a foreign method study cannot be relabelled as project evidence",
+    row_by_id(uk_escalation, "BEN-KPI-MODAL")["publication_eligible"] is False,
+)
+
+# A cross-country proxy cannot be promoted either.
+proxy_escalation = run(
+    {
+        "employment": {
+            "proxy_investment_constant_2015_usd_m": ev(
+                500.0, "million constant 2015 USD", source_ref_id="REF-MOSZORO-2024",
+                status="PROJECT-SPECIFIC", project_source=None),
+            "jobs_per_musd_proxy": ev(
+                13.0, "jobs per US$1m", source_ref_id="REF-MOSZORO-2024",
+                status="PROJECT-SPECIFIC", project_source=None),
+        }
+    }
+)
+check(
+    "a benchmark proxy cannot be promoted to project-specific",
+    row_by_id(proxy_escalation, "BEN-KPI-JOBS-PROXY")["publication_eligible"] is False,
+)
+
+# The registry decides. It permits OFFICIAL-PROJECT-DATA only from a document
+# that reports figures about THIS project, and permits PROJECT-SPECIFIC from no
+# registry document at all.
+from benefits_reference_registry import REFERENCES, reference_permits  # noqa: E402
+
+check("no registry document may back PROJECT-SPECIFIC",
+      not any("PROJECT-SPECIFIC" in r.permitted_evidence_statuses for r in REFERENCES.values()))
+check("the green bond report may back OFFICIAL-PROJECT-DATA",
+      reference_permits("REF-EGY-GB-2022", "OFFICIAL-PROJECT-DATA"))
+check("the Egyptian VOT study may not back OFFICIAL-PROJECT-DATA",
+      not reference_permits("REF-EGY-VOT-2022", "OFFICIAL-PROJECT-DATA"))
+check("the UK modal-shift study may back only its own method role",
+      REFERENCES["REF-TRD-MODAL-2024"].permitted_evidence_statuses == ("METHOD-REFERENCE",))
+check("an unknown reference backs nothing", not reference_permits("REF-NOPE", "METHOD-REFERENCE"))
+
+# A project source that is present but incomplete does not compute at all — a
+# title with no location leaves a reviewer unable to find the number again.
+incomplete_source = run(
+    {
+        "transport": dict(
+            ACTIVITY,
+            modal_shift_fraction=ev(
+                0.30, "fraction", source_ref_id="",
+                project_source=proj_src(exact_location="", observation_date="")),
+        )
+    }
+)
+inc_row = row_by_id(incomplete_source, "BEN-KPI-MODAL")
+check("an incomplete project source does not compute", inc_row["value"] is None)
+check("the incomplete project-source fields are named",
+      "project source missing" in inc_row["evidence_gaps"])
+
+# The legitimate route still works: an official project figure from the report
+# that states it, with no project source record needed.
+official = run(
+    {
+        "employment": {
+            "official_construction_jobs": ev(
+                4000.0, "jobs", source_ref_id="REF-EGY-GB-2022",
+                status="OFFICIAL-PROJECT-DATA", project_source=None),
+        }
+    }
+)
+check(
+    "an official figure from the reporting document is still accepted",
+    row_by_id(official, "BEN-KPI-JOBS-OFFICIAL-CONSTRUCTION")["publication_eligible"] is True,
+)
+
+# ---------------------------------------------------------------------------
+# 14. Land-use provenance must be a structured evidence record
+# ---------------------------------------------------------------------------
+
+MAP_EV = lambda areas, **kw: dict(
+    value=areas, unit="ha", source_ref_id="", source_file="landuse.gpkg",
+    source_location="Node-A 800 m buffer", geography="Cairo, Egypt",
+    evidence_status="PROJECT-SPECIFIC", observation_date="2025-03",
+    project_source=proj_src(title="Cairo land-use classification",
+                            issuer="Project GIS team", file_or_url="landuse.gpkg",
+                            exact_location="Node-A 800 m buffer, class schema v2",
+                            observation_date="2025-03"),
+    **kw,
+)
+
+bare_maps = run(
+    {
+        "land_use": {
+            "analysis_area_id": "Node-A",
+            "analysis_area_source": "some GIS layer",
+            "baseline_area_by_class": {"res": 40.0, "com": 60.0},
+            "project_area_by_class": {"res": 50.0, "com": 50.0},
+        }
+    }
+)
+bare_row = row_by_id(bare_maps, "BEN-KPI-LUD-BASE")
+check("a free-text analysis-area string does not certify the maps",
+      bare_row["publication_eligible"] is False)
+check("bare land-use areas are SCENARIO-ONLY", bare_row["status"] == STATUS_SCENARIO_ONLY)
+
+structured_maps = run(
+    {
+        "land_use": {
+            "analysis_area_id": "Node-A",
+            "baseline_area_by_class": MAP_EV({"res": 40.0, "com": 60.0}),
+            "project_area_by_class": MAP_EV({"res": 50.0, "com": 50.0}),
+        }
+    }
+)
+check("structured map evidence computes and is eligible",
+      row_by_id(structured_maps, "BEN-KPI-LUD-BASE")["publication_eligible"] is True)
+
+for gap_field in ("observation_date", "geography"):
+    partial = run(
+        {
+            "land_use": {
+                "baseline_area_by_class": dict(MAP_EV({"res": 40.0, "com": 60.0}),
+                                               project_source=None, **{gap_field: ""}),
+                "project_area_by_class": dict(MAP_EV({"res": 50.0, "com": 50.0}),
+                                              project_source=None, **{gap_field: ""}),
+            }
+        }
+    )
+    check(f"map evidence missing {gap_field} does not compute",
+          row_by_id(partial, "BEN-KPI-LUD-BASE")["value"] is None)
+
+# ---------------------------------------------------------------------------
+# 15. One eligible KPI is not a publication-ready domain
+# ---------------------------------------------------------------------------
+
+from benefits_scientific_integration import REQUIRED_PUBLICATION_KPI_IDS  # noqa: E402
+
+one_kpi = run({"transport": dict(ACTIVITY)})
+gate = one_kpi.publication_gate
+check("a single sourced KPI is eligible", gate["any_publication_eligible"] is True)
+check("a single sourced KPI does NOT make the domain publication-ready",
+      gate["full_publication_ready"] is False)
+check("publication_ready now means the strict claim",
+      gate["publication_ready"] == gate["full_publication_ready"])
+check("the partial state is reported explicitly", gate["partial_publication_ready"] is True)
+check("the unclosed required KPIs are named", len(gate["missing_required_kpis"]) >= 3)
+check("the required KPI set is exposed",
+      tuple(gate["required_kpi_ids"]) == REQUIRED_PUBLICATION_KPI_IDS)
+
+full = run(
+    {
+        "transport": dict(
+            ACTIVITY,
+            **TIME_INPUTS,
+            modal_shift_fraction=ev(0.30, "fraction"),
+            car_share_of_shift=ev(0.6, "fraction"),
+            bus_share_of_shift=ev(0.4, "fraction"),
+            car_emission_factor=ev(0.15, "kgCO2e/pkm"),
+            bus_emission_factor=ev(0.05, "kgCO2e/pkm"),
+            project_emission_factor=ev(0.02, "kgCO2e/pkm"),
+        )
+    }
+)
+full_gate = full.publication_gate
+check("closing every required KPI makes the domain publication-ready",
+      full_gate["full_publication_ready"] is True)
+check("a ready domain is not also reported as partial",
+      full_gate["partial_publication_ready"] is False)
+check("no required KPI remains unclosed", full_gate["missing_required_kpis"] == [])
+check("blocked topics do not prevent readiness of the required physical core",
+      full_gate["full_publication_ready"] and len(full_gate["blocked_items"]) == 3)
+
+# ---------------------------------------------------------------------------
+# 16. Unit contracts are semantic, not merely non-empty
+# ---------------------------------------------------------------------------
+
+from benefits_scientific_integration import resolve_unit  # noqa: E402
+
+check("the expected unit passes with no conversion", resolve_unit("car_emission_factor", "kgCO2e/pkm") == (1.0, ""))
+check("a known alternative converts explicitly",
+      resolve_unit("car_emission_factor", "gCO2e/pkm")[0] == 0.001)
+check("hectares convert to square metres", resolve_unit("built_up_past", "ha")[0] == 10_000.0)
+check("hours convert to minutes", resolve_unit("baseline_time_min", "h")[0] == 60.0)
+
+for name, bad_unit in (
+    ("car_emission_factor", "kgCO2e/vehicle-km"),
+    ("car_emission_factor", "km"),
+    ("built_up_past", "persons"),
+    ("baseline_time_min", "m2"),
+    ("annual_trips", "passengers/day"),
+):
+    factor, reason = resolve_unit(name, bad_unit)
+    check(f"{name} rejects the unit {bad_unit!r}", factor is None and bool(reason))
+
+wrong_unit = run(
+    {
+        "transport": dict(
+            ACTIVITY,
+            modal_shift_fraction=ev(0.30, "fraction"),
+            car_share_of_shift=ev(0.6, "fraction"),
+            bus_share_of_shift=ev(0.4, "fraction"),
+            # gCO2e/pkm supplied where the equation consumes kgCO2e/pkm.
+            car_emission_factor=ev(150.0, "gCO2e/pkm"),
+            bus_emission_factor=ev(50.0, "gCO2e/pkm"),
+            project_emission_factor=ev(20.0, "gCO2e/pkm"),
+        )
+    }
+)
+converted = run(
+    {
+        "transport": dict(
+            ACTIVITY,
+            modal_shift_fraction=ev(0.30, "fraction"),
+            car_share_of_shift=ev(0.6, "fraction"),
+            bus_share_of_shift=ev(0.4, "fraction"),
+            car_emission_factor=ev(0.15, "kgCO2e/pkm"),
+            bus_emission_factor=ev(0.05, "kgCO2e/pkm"),
+            project_emission_factor=ev(0.02, "kgCO2e/pkm"),
+        )
+    }
+)
+check(
+    "a gram-based factor is converted, not silently treated as kilograms",
+    abs(wrong_unit.physical["avoided_co2e_kg"] - converted.physical["avoided_co2e_kg"]) < 1e-6,
+)
+check("the conversion is recorded in the audit",
+      "converted from" in row_by_id(wrong_unit, "BEN-KPI-GHG-AVOIDED")["note"])
+
+unknown_unit = run(
+    {
+        "transport": dict(
+            ACTIVITY,
+            modal_shift_fraction=ev(0.30, "fraction"),
+            car_share_of_shift=ev(0.6, "fraction"),
+            bus_share_of_shift=ev(0.4, "fraction"),
+            car_emission_factor=ev(0.15, "kgCO2e/vehicle-km"),
+            bus_emission_factor=ev(0.05, "kgCO2e/vehicle-km"),
+            project_emission_factor=ev(0.02, "kgCO2e/vehicle-km"),
+        )
+    }
+)
+unknown_row = row_by_id(unknown_unit, "BEN-KPI-GHG-AVOIDED")
+check("an unconvertible unit blocks the calculation", unknown_row["value"] is None)
+check("the unit mismatch is explained", "unit" in unknown_row["evidence_gaps"].lower())
+
+# ---------------------------------------------------------------------------
+# 17. Exports fail closed
+# ---------------------------------------------------------------------------
+
+_guard_body = app_src.split("if _ben_parity_ok:")[1].split("    else:")[0]
+check(
+    "the download buttons live inside the parity guard's true branch",
+    "_ben_cols = st.columns(3)" in _guard_body
+    and _guard_body.count("st.download_button") == 3,
+)
+check(
+    "the app states that exports are withheld when parity fails",
+    "withheld" in app_src,
+)
+check(
+    "no Benefits download button sits outside the parity guard",
+    app_src.count("key=\"sci_ben_")
+    == app_src.split("if _ben_parity_ok:")[1].count("key=\"sci_ben_"),
+)
 
 print()
 print("RESULT:", "PASS" if ok else "FAIL")

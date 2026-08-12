@@ -63,6 +63,13 @@ class ReferenceRecord:
     units_or_basis: str
     price_base_year: Optional[int] = None
     evidence_status: str = "METHOD-REFERENCE"
+    #: The evidence statuses this document is ALLOWED to back. This is the
+    #: registry's answer to authority escalation: a user may cite a method
+    #: reference, but citing it cannot turn a number into project data. The green
+    #: bond report is the interesting case — it is a method reference for the
+    #: emission accounting AND official project data for the handful of figures
+    #: it states about this monorail, so it permits both.
+    permitted_evidence_statuses: tuple[str, ...] = ("METHOD-REFERENCE",)
     limitations: str = ""
     notes: str = ""
 
@@ -160,6 +167,10 @@ _register(
             "derived from projected ridership x average passenger distance"
         ),
         evidence_status="METHOD-REFERENCE",
+        # Method for the accounting structure; SCENARIO-ONLY for the 20-50% band and the
+        # 30% featured case; OFFICIAL-PROJECT-DATA only for figures the report
+        # states about this monorail explicitly, such as the reported job counts.
+        permitted_evidence_statuses=("METHOD-REFERENCE", "SCENARIO-ONLY", "OFFICIAL-PROJECT-DATA"),
         limitations=(
             "The 20-50% modal-shift range, the 30% featured scenario, the 365 "
             "operating days and the UK emission factors used inside that report "
@@ -198,6 +209,8 @@ _register(
         evidence_role="METHOD-REFERENCE",
         units_or_basis="passenger-km x emission factor per passenger-km",
         evidence_status="METHOD-REFERENCE",
+        # A UK study. It can never certify a Cairo number.
+        permitted_evidence_statuses=("METHOD-REFERENCE",),
         limitations=(
             "The paper's numerical UK factors are UK factors. They must not be "
             "transferred to Cairo as project emission factors."
@@ -233,6 +246,9 @@ _register(
             "generated traffic entered at half the benefit"
         ),
         evidence_status="METHOD-REFERENCE",
+        # Appraisal method for Egyptian rail. Its own values are railway-project
+        # values, not monorail project data.
+        permitted_evidence_statuses=("METHOD-REFERENCE",),
         limitations=(
             "The Rule of Half applies to generated traffic only. Applying it to "
             "existing passengers halves a benefit the method says is fully "
@@ -277,6 +293,9 @@ _register(
         ),
         price_base_year=2022,
         evidence_status="METHOD-REFERENCE",
+        # The coefficient-ratio equation is method. The reported 32.5 and 18.3 LE/h
+        # are HISTORICAL at the study price year, never a current project value.
+        permitted_evidence_statuses=("METHOD-REFERENCE", "HISTORICAL"),
         limitations=(
             "The reported values belong to the study's price year. They may not "
             "be escalated to a later appraisal year until the source price year "
@@ -311,6 +330,8 @@ _register(
         evidence_role="METHOD-REFERENCE",
         units_or_basis="dimensionless index in [0,1] for non-degenerate share vectors",
         evidence_status="METHOD-REFERENCE",
+        # Defines the index. The land-use maps are separate project evidence.
+        permitted_evidence_statuses=("METHOD-REFERENCE",),
         limitations=(
             "The rendered equation carries a LEADING MINUS SIGN which plain-text "
             "extraction of the PDF silently drops. Implementations that lose it "
@@ -344,6 +365,8 @@ _register(
         evidence_role="METHOD/POLICY-REFERENCE",
         units_or_basis="metres of walking-distance influence radius",
         evidence_status="METHOD-REFERENCE",
+        # An Indian policy benchmark; never a Cairo radius.
+        permitted_evidence_statuses=("METHOD-REFERENCE",),
         limitations=(
             "500-800 m is an Indian policy benchmark. It is not automatically the "
             "Cairo project influence radius; the Cairo radius needs project, "
@@ -377,6 +400,8 @@ _register(
             "built-up area per capita in m2/person"
         ),
         evidence_status="METHOD-REFERENCE",
+        # Indicator methodology only. The observations are project evidence.
+        permitted_evidence_statuses=("METHOD-REFERENCE",),
         limitations=(
             "LCR and PGR must be computed over identical years. A "
             "baseline-versus-design scenario difference is not an SDG 11.3.1 land "
@@ -414,6 +439,9 @@ _register(
         evidence_role="METHOD-REFERENCE plus HISTORICAL numerical evidence",
         units_or_basis="Egypt 2016-2017 input-output table",
         evidence_status="HISTORICAL",
+        # The Leontief method is method; the 2016-2017 multipliers are HISTORICAL and
+        # can never be relabelled as current project data.
+        permitted_evidence_statuses=("METHOD-REFERENCE", "HISTORICAL"),
         limitations=(
             "The published multipliers rest on the 2016-2017 Egyptian I-O table "
             "and the paper itself discusses a limited stability window. They may "
@@ -448,6 +476,9 @@ _register(
         ),
         price_base_year=2015,
         evidence_status="REF-PROXY",
+        # A cross-country benchmark and nothing else. It cannot become PROJECT-SPECIFIC
+        # by relabelling.
+        permitted_evidence_statuses=("REF-PROXY",),
         limitations=(
             "This is a cross-country benchmark, not a Cairo measurement. A model "
             "using it must express investment in the same constant 2015 USD basis "
@@ -476,6 +507,8 @@ _register(
         evidence_role="METHOD-REFERENCE (supplementary rail CBA support)",
         units_or_basis="rail cost-benefit appraisal structure",
         evidence_status="METHOD-REFERENCE",
+        # Slovak values must not be transferred.
+        permitted_evidence_statuses=("METHOD-REFERENCE",),
         limitations="Slovak numerical values must not be transferred to Cairo.",
     )
 )
@@ -501,6 +534,8 @@ _register(
         evidence_role="STANDARD-REFERENCE",
         units_or_basis="dB, Lden and Lnight indicators",
         evidence_status="STANDARD-REFERENCE",
+        # Defines the indicators; supplies no level.
+        permitted_evidence_statuses=("STANDARD-REFERENCE",),
         limitations=(
             "Establishes which acoustic indicators are meaningful. It does not "
             "supply any Cairo noise level."
@@ -526,6 +561,8 @@ _register(
         evidence_role="STANDARD-REFERENCE",
         units_or_basis="dB under a documented common assessment method",
         evidence_status="STANDARD-REFERENCE",
+        # Defines the assessment method; supplies no level.
+        permitted_evidence_statuses=("STANDARD-REFERENCE",),
         limitations=(
             "Establishes that baseline and project levels must share one "
             "assessment method before they can be differenced."
@@ -554,6 +591,8 @@ _register(
         evidence_role="METHOD-REFERENCE for external-cost valuation structure",
         units_or_basis="EUR per unit of exposure, EU price basis",
         evidence_status="METHOD-REFERENCE",
+        # Valuation framework only.
+        permitted_evidence_statuses=("METHOD-REFERENCE",),
         limitations=(
             "No Cairo noise monetisation may be produced from this handbook until "
             "exposed population, exposure levels and an explicit value-transfer "
@@ -1257,6 +1296,40 @@ def validate_registry() -> list[str]:
                 f"{ref_id}: unknown evidence_status {ref.evidence_status!r}"
             )
 
+        if not ref.permitted_evidence_statuses:
+            problems.append(f"{ref_id}: declares no permitted evidence statuses")
+        for status in ref.permitted_evidence_statuses:
+            if status not in ALL_EVIDENCE_CLASSES:
+                problems.append(
+                    f"{ref_id}: permits unknown evidence status {status!r}"
+                )
+        # A reference must permit at least its own declared role, or the record
+        # contradicts itself.
+        if ref.evidence_status not in ref.permitted_evidence_statuses:
+            problems.append(
+                f"{ref_id}: does not permit its own declared status "
+                f"{ref.evidence_status!r}"
+            )
+        # A purely foreign or benchmark source can never back project data. Only
+        # a document that speaks about THIS project may permit
+        # OFFICIAL-PROJECT-DATA, and no registry document may permit
+        # PROJECT-SPECIFIC — that status belongs to project measurements, which
+        # are recorded as project numeric sources rather than registry entries.
+        if "PROJECT-SPECIFIC" in ref.permitted_evidence_statuses:
+            problems.append(
+                f"{ref_id}: no registry document may back PROJECT-SPECIFIC; that "
+                "status requires a project numeric source record"
+            )
+        if (
+            "OFFICIAL-PROJECT-DATA" in ref.permitted_evidence_statuses
+            and "project" not in ref.evidence_role.lower()
+            and "project" not in ref.notes.lower()
+        ):
+            problems.append(
+                f"{ref_id}: permits OFFICIAL-PROJECT-DATA without stating which "
+                "project figures it reports"
+            )
+
         # Any source that is not itself project data must state what it cannot
         # certify, otherwise a later reader will over-claim it.
         if (
@@ -1316,6 +1389,26 @@ def validate_registry() -> list[str]:
             )
 
     return problems
+
+
+def reference_permits(ref_id: str, evidence_status: str) -> bool:
+    """Can this document back a claim of `evidence_status`?
+
+    This is the mechanical form of METHOD SOURCE != NUMERIC SOURCE. Selecting a
+    reference from a list and then typing a stronger status beside it is the
+    easiest way to launder a method document into project data, and it is the one
+    thing a free-text evidence form cannot stop by itself. The registry decides.
+    """
+    record = REFERENCES.get(str(ref_id).strip())
+    if record is None:
+        return False
+    return str(evidence_status).strip().upper() in record.permitted_evidence_statuses
+
+
+def permitted_statuses_for(ref_id: str) -> tuple[str, ...]:
+    """The statuses a reference may back, for populating a UI choice without guessing."""
+    record = REFERENCES.get(str(ref_id).strip())
+    return record.permitted_evidence_statuses if record else ()
 
 
 def reference(ref_id: str) -> ReferenceRecord:

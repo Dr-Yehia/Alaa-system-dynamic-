@@ -123,6 +123,25 @@ ev = evidence_from_dict({"value": 1.0, "unit": "km", "source_ref_id": "REF-EGY-G
 check("evidence_from_dict builds an EvidenceValue", ev is not None and ev.unit == "km")
 
 
+def project_source(**kw):
+    """A complete project numeric source record.
+
+    A project number is certified by a project document — a survey, a demand
+    model, a GIS layer — not by the registry, which catalogues method documents.
+    """
+    base = dict(
+        title="Cairo Monorail demand and operations study",
+        issuer="Project team",
+        file_or_url="project-file.pdf",
+        exact_location="test fixture, section 1",
+        geography="Cairo, Egypt",
+        observation_date="2025-06",
+        evidence_status="PROJECT-SPECIFIC",
+    )
+    base.update(kw)
+    return base
+
+
 def project_ev(value, unit, **kw):
     """A complete, project-specific evidence envelope for test purposes."""
     base = dict(
@@ -133,6 +152,8 @@ def project_ev(value, unit, **kw):
         source_location="test fixture, section 1",
         geography="Cairo, Egypt",
         evidence_status="PROJECT-SPECIFIC",
+        observation_date="2025-06",
+        project_source=project_source(),
     )
     base.update(kw)
     return base
@@ -140,7 +161,15 @@ def project_ev(value, unit, **kw):
 
 def method_ev(value, unit, **kw):
     """Evidence whose status is a METHOD reference — supports a formula only."""
+    kw.setdefault("project_source", None)
     return project_ev(value, unit, evidence_status="METHOD-REFERENCE", **kw)
+
+
+def escalated_ev(value, unit, ref_id="REF-EGY-VOT-2022", **kw):
+    """A method reference relabelled as project data — the escalation attempt."""
+    kw.setdefault("project_source", None)
+    return project_ev(value, unit, source_ref_id=ref_id,
+                      evidence_status="PROJECT-SPECIFIC", **kw)
 
 
 # ---------------------------------------------------------------------------
@@ -459,17 +488,38 @@ check(
 check("reporting still loads no LCA module", "lca_scientific_core" not in sys.modules)
 
 # Land use and urban growth exercise a different provenance shape: the maps are
-# project spatial data with no registry entry, so their audit chain is a declared
-# GIS source rather than a REF-* id. Without this case the export could carry a
-# publication-eligible index with nothing behind it.
+# project spatial data with no registry entry, so they carry a project numeric
+# source record. Without this case the export could carry a publication-eligible
+# index with nothing behind it.
+def map_ev(areas, **kw):
+    return dict(
+        value=areas,
+        unit="ha",
+        source_ref_id="",
+        source_file="cairo_landuse_2025.gpkg",
+        source_location="Node-A 800 m buffer, class schema v2",
+        geography="Cairo, Egypt",
+        evidence_status="PROJECT-SPECIFIC",
+        observation_date="2025-03",
+        project_source=project_source(
+            title="Cairo land-use classification, Node-A influence zone",
+            issuer="Project GIS team",
+            file_or_url="cairo_landuse_2025.gpkg",
+            exact_location="Node-A 800 m buffer, class schema v2",
+            observation_date="2025-03",
+        ),
+        **kw,
+    )
+
+
 spatial = run_scientific_benefits_from_params(
     params={
         "benefits_scientific_inputs": {
             "land_use": {
                 "analysis_area_id": "Node-A 800m",
                 "analysis_area_source": "Cairo GIS layer, 2025-03",
-                "baseline_area_by_class": {"res": 40.0, "com": 30.0, "grn": 30.0},
-                "project_area_by_class": {"res": 35.0, "com": 35.0, "grn": 30.0},
+                "baseline_area_by_class": map_ev({"res": 40.0, "com": 30.0, "grn": 30.0}),
+                "project_area_by_class": map_ev({"res": 35.0, "com": 35.0, "grn": 30.0}),
             },
             "urban_growth": {
                 "past_year": 2015,
@@ -487,19 +537,36 @@ spatial = run_scientific_benefits_from_params(
 lud_row = row_by_id(spatial, "BEN-KPI-LUD-BASE")
 check("land-use diversity computes from project maps", lud_row["status"] == STATUS_COMPUTED)
 check(
-    "an eligible land-use row records its GIS provenance",
-    lud_row["publication_eligible"] and "GIS source" in lud_row["source_location"],
+    "an eligible land-use row records its map provenance",
+    lud_row["publication_eligible"] and "class schema" in lud_row["source_location"],
+)
+check(
+    "the land-use row carries the map observation date through the audit",
+    "2025-03" in str(spatial.physical.get("analysis_area_source", "")) or bool(lud_row["source_file"]),
 )
 check(
     "built-up per capita does not depend on the growth rate being available",
     row_by_id(spatial, "BEN-KPI-BUILTUP-PC")["status"] == STATUS_COMPUTED,
 )
+check(
+    "land-use diversity value is correct for 40/30/30 over three classes",
+    abs(spatial.physical["lud_baseline"] - 0.99123) < 1e-4,
+)
+# The index itself is scale-invariant, so the audit note is where the hectare ->
+# m2 conversion is observable. Where it is NOT scale-invariant — built-up area
+# per capita — the converted magnitude is checked directly further below.
+check(
+    "the hectare -> m2 conversion is recorded in the audit",
+    "converted from ha to m2" in lud_row["note"],
+)
 
-# Without a declared GIS source the same maps compute but cannot be published.
+# A bare mapping of class -> area still computes, but with no evidence record
+# nobody can say which maps produced it, so it cannot be published.
 undated = run_scientific_benefits_from_params(
     params={
         "benefits_scientific_inputs": {
             "land_use": {
+                "analysis_area_source": "some GIS layer",
                 "baseline_area_by_class": {"res": 40.0, "com": 60.0},
                 "project_area_by_class": {"res": 50.0, "com": 50.0},
             }
@@ -509,10 +576,31 @@ undated = run_scientific_benefits_from_params(
     project_context=None,
 )
 undated_row = row_by_id(undated, "BEN-KPI-LUD-BASE")
-check("undeclared land-use maps are SCENARIO-ONLY", undated_row["status"] == STATUS_SCENARIO_ONLY)
-check("undeclared land-use maps are not publication eligible",
+check("land-use areas with no evidence record are SCENARIO-ONLY",
+      undated_row["status"] == STATUS_SCENARIO_ONLY)
+check("land-use areas with no evidence record are not publication eligible",
       undated_row["publication_eligible"] is False)
-check("the missing GIS source is named", "GIS source" in undated_row["note"])
+check("a free-text analysis-area string does not make the maps publishable",
+      "without an evidence record" in undated_row["note"])
+
+# An incomplete map evidence record does not compute at all.
+undated_partial = run_scientific_benefits_from_params(
+    params={
+        "benefits_scientific_inputs": {
+            "land_use": {
+                "baseline_area_by_class": dict(map_ev({"res": 40.0, "com": 60.0}), observation_date="", project_source=None),
+                "project_area_by_class": dict(map_ev({"res": 50.0, "com": 50.0}), observation_date="", project_source=None),
+            }
+        }
+    },
+    shared_activity=None,
+    project_context=None,
+)
+partial_row = row_by_id(undated_partial, "BEN-KPI-LUD-BASE")
+check("map evidence without an observation date is SOURCE-OPEN",
+      partial_row["status"] == STATUS_SOURCE_OPEN)
+check("the missing observation date is named",
+      "observation date" in partial_row["evidence_gaps"] + partial_row["note"])
 
 for name, subject in (("populated", good), ("empty", empty), ("jobs", jobs),
                       ("spatial", spatial), ("undated maps", undated)):

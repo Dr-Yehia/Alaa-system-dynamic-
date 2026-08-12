@@ -53,6 +53,42 @@ class ScientificBenefitInputError(ValueError):
 
 
 @dataclass(frozen=True)
+class ProjectNumericSource:
+    """A project document that measures or reports a number for THIS project.
+
+    This exists because the registry cannot hold it. The registry catalogues
+    method documents — standards, metadata sheets, journal articles — and none of
+    them can certify a Cairo quantity. A project number's provenance is a survey,
+    a demand model, a GIS layer or an official project report, and it enters the
+    system here rather than by relabelling a method reference as project data.
+
+    Every field is required for a publication claim. A title with no location, or
+    a file with no date, leaves a reviewer unable to find the number again.
+    """
+
+    title: str
+    issuer: str
+    file_or_url: str
+    exact_location: str
+    geography: str
+    observation_date: str
+    evidence_status: str = "PROJECT-SPECIFIC"
+    note: str = ""
+
+    def missing_fields(self) -> list[str]:
+        """Which required fields are blank. Empty list means complete."""
+        required = (
+            "title",
+            "issuer",
+            "file_or_url",
+            "exact_location",
+            "geography",
+            "observation_date",
+        )
+        return [f for f in required if not str(getattr(self, f, "") or "").strip()]
+
+
+@dataclass(frozen=True)
 class EvidenceValue:
     """A number together with everything a reviewer needs to check it.
 
@@ -60,6 +96,12 @@ class EvidenceValue:
     is EGP per hour, from an Egyptian logit study, at that study's price year.
     Publication inputs are carried in this envelope so the gate can refuse a
     value whose provenance is a method reference rather than project data.
+
+    `source_ref_id` cites a registry document and establishes what METHOD the
+    number belongs to. `project_source` carries the project document that
+    actually measured it. A publication claim needs the second; citing only the
+    first and typing a stronger status beside it is authority escalation, and the
+    integration layer rejects it.
     """
 
     value: object
@@ -72,6 +114,8 @@ class EvidenceValue:
     price_base_year: Optional[int] = None
     currency: Optional[str] = None
     factor_basis: Optional[str] = None
+    observation_date: Optional[str] = None
+    project_source: Optional[ProjectNumericSource] = None
     note: str = ""
 
 

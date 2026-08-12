@@ -200,6 +200,44 @@ check(
     not (METHOD_EVIDENCE_CLASSES & PUBLICATION_ACCEPTABLE_NUMERIC_EVIDENCE),
 )
 
+# Authority is a registry property, not a user choice. Without this a reviewer
+# could select a method reference in the form and type PROJECT-SPECIFIC beside it.
+from benefits_reference_registry import reference_permits, permitted_statuses_for  # noqa: E402
+
+for ref_id, ref in REFERENCES.items():
+    check(f"{ref_id}: declares which statuses it may back",
+          bool(ref.permitted_evidence_statuses))
+    check(f"{ref_id}: permits its own declared role",
+          ref.evidence_status in ref.permitted_evidence_statuses)
+    check(f"{ref_id}: does not permit PROJECT-SPECIFIC",
+          "PROJECT-SPECIFIC" not in ref.permitted_evidence_statuses)
+    check(f"{ref_id}: reference_permits agrees with the record",
+          all(reference_permits(ref_id, s) for s in ref.permitted_evidence_statuses))
+    check(f"{ref_id}: permitted_statuses_for round-trips",
+          permitted_statuses_for(ref_id) == ref.permitted_evidence_statuses)
+
+check(
+    "a foreign method study may back nothing but its method role",
+    permitted_statuses_for("REF-TRD-MODAL-2024") == ("METHOD-REFERENCE",),
+)
+check(
+    "the cross-country jobs benchmark stays a proxy",
+    permitted_statuses_for("REF-MOSZORO-2024") == ("REF-PROXY",),
+)
+check(
+    "the historical I-O table may not back current project data",
+    not reference_permits("REF-EGY-IO-ALAYOUTY-2022", "OFFICIAL-PROJECT-DATA"),
+)
+check(
+    "only a document reporting this project may back official project data",
+    all(
+        "project" in r.evidence_role.lower() or "project" in r.notes.lower()
+        for r in REFERENCES.values()
+        if "OFFICIAL-PROJECT-DATA" in r.permitted_evidence_statuses
+    ),
+)
+check("an unknown reference backs nothing", not reference_permits("REF-NOT-REAL", "METHOD-REFERENCE"))
+
 for eq_id, eq in EQUATIONS.items():
     method_only = all(
         REFERENCES[r].evidence_status in METHOD_EVIDENCE_CLASSES
